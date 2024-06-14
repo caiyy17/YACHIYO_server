@@ -435,7 +435,7 @@ def main():
         return "TTS Error"
 
 if __name__ == "__main__":
-    speaker_name = "ozawa"
+    speaker_name = "坏女人星瞳"
     if config.webui_config.debug:
         logger.info("Enable DEBUG-LEVEL log")
         logging.basicConfig(level=logging.DEBUG)
