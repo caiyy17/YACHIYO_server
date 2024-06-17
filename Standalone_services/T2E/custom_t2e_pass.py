@@ -7,9 +7,9 @@ def t2e():
     start = time.time()
     data = request.json
     text = data['text']
-    language = data['language']
     print("Original text:", text)
     emotion = 'neutral'
+    print("Time:", time.time() - start)
     return jsonify({'emotion': emotion})
 
 if __name__ == "__main__":

@@ -320,7 +320,7 @@ def asr_llm_tts():
             ##############################
             # RAG part start
             ##############################
-            from RAG.rag import rag_call
+            from RAG.rag import rag_call2 as rag_call
             prompt, image = rag_call(prompt)
             yield json.dumps({'image': image, 'type': "[im]"}) + '\n'
             # yield json.dumps(payload) + '\n'
