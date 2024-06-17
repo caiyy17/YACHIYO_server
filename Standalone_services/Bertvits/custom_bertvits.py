@@ -389,12 +389,15 @@ def gr_util(item):
 from flask import Flask, request, Response
 from scipy.io import wavfile
 from io import BytesIO
+import time
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
 @app.route("/bertvits",methods=['POST'])
 def main():
+    print("Request received")
+    start = time.time()
     data = request.json
     text = data['text']
     text_language = data['text_language']
@@ -430,6 +433,7 @@ def main():
         with BytesIO() as wav:
             wavfile.write(wav, audio[0], audio[1])
             torch.cuda.empty_cache()
+            print("Time:", time.time() - start)
             return Response(wav.getvalue(), mimetype="audio/wav")
     except:
         return "TTS Error"

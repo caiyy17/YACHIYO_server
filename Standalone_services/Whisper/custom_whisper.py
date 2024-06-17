@@ -4,7 +4,7 @@ import whisper
 import time
 app = Flask(__name__)
 
-model = whisper.load_model("large")
+model = whisper.load_model("base")
 
 @app.route('/whisper', methods=['POST'])
 def whisper_custom():
