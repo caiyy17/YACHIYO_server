@@ -13,7 +13,8 @@ def whisper_custom():
     if 'file' in request.files:
         file = request.files['file']
         # 你可以在这里保存文件，或者处理文件内容
-        filename = 'tmp/received_whisper_file.wav'
+        time_stamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        filename = 'tmp/received_file_' + time_stamp + '.wav'
         file.save(filename)
         result = model.transcribe(filename)
         print(result["text"])
