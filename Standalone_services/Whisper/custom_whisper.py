@@ -27,4 +27,4 @@ if __name__ == '__main__':
     # 建立tmp文件夹
     if not os.path.exists('tmp'):
         os.makedirs('tmp')
-    app.run(debug=True, port=5001)
+    app.run(debug=True, port=5052)

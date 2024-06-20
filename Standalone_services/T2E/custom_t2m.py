@@ -31,7 +31,7 @@ def t2e():
     return jsonify({'emotion': emotion})
 
 def classifier(text):
-    url = 'http://100.65.144.45:5000/get_action'
+    url = 'http://127.0.0.1:5000/get_action'
     payload = {'query': text}
     response = requests.post(url, json=payload)
     if response.status_code == 200:
