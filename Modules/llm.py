@@ -29,22 +29,15 @@ class ChatgptCaller:
 
     def set_system_prompt(self, system_prompt, id):
         # set system prompt will reset the history
-        history = []
-        history.append({"role": "system", "content": f"{system_prompt}"})
+        history = self.load_history(id)
+        if len(history) > 0 and history[0]["role"] == "system":
+            history[0] = {"role": "system", "content": f"{system_prompt}"}
+        else:
+            history = []
+            history.append({"role": "system", "content": f"{system_prompt}"})
         self.save_history(history, id)
         return history
-    
-    def call(self, prompt, id):
-        try:
-            history = self.load_history(id)
-            response, history = self.call_model(prompt, history)
-            print(response)
-            self.save_history(history, id)
-            return response
-        except Exception as e:
-            print(e)
-            return "error"
-        
+
     def call_stream(self, prompt, id):
         try:
             history = self.load_history(id)
@@ -61,21 +54,7 @@ class ChatgptCaller:
         except Exception as e:
             print(e)
             return "error"
-        
-    def call_model(self, prompt, history):
-        history.append({"role": "user", "content": f"{prompt}"})
-        try:
-            result = self.client.chat.completions.create(
-                model=self.model,
-                messages=history
-            )
-            response = result.choices[0].message.content.strip()
-            history.append({"role": "assistant", "content": f"{response}"})
-            return response, history
-        except Exception as e:
-            print(e)
-            return "error"
-        
+
     def call_model_stream(self, prompt, history):
         history.append({"role": "user", "content": f"{prompt}"})
         try:
@@ -120,21 +99,14 @@ class ChatglmCaller:
     
     def set_system_prompt(self, system_prompt, id):
         # set system prompt will reset the history
-        history = []
-        history.append({"role": "system", "content": f"{system_prompt}"})
+        history = self.load_history(id)
+        if len(history) > 0 and history[0]["role"] == "system":
+            history[0] = {"role": "system", "content": f"{system_prompt}"}
+        else:
+            history = []
+            history.append({"role": "system", "content": f"{system_prompt}"})
         self.save_history(history, id)
         return history
-
-    def call(self, prompt, id):
-        try:
-            history = self.load_history(id)
-            response, history = self.call_model(prompt, history)
-            print(response)
-            self.save_history(history, id)
-            return response
-        except Exception as e:
-            print(e)
-            return "error"
         
     def call_stream(self, prompt, id):
         try:
@@ -152,17 +124,7 @@ class ChatglmCaller:
         except Exception as e:
             print(e)
             return "error"
-        
-    def call_model(self, prompt, history):
-        try:
-            result = requests.post(addr_ChatglmCaller + "/chatglm", json={'prompt': prompt, 'history': history})
-            response = result.json()["response"]
-            history = result.json()["history"]
-            return response, history
-        except Exception as e:
-            print(e)
-            return "error"
-        
+
     def call_model_stream(self, prompt, history):
         try:
             result = requests.post(addr_ChatglmCaller + "/chatglm_stream", json={'prompt': prompt, 'history': history}, stream=True)

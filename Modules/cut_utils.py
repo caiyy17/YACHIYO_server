@@ -83,13 +83,12 @@ def chinese_process(prompt, length=30):
 def detect_language(prompt):
     # return "zh"
     language = detect(prompt)
-    print("")
     if language[:2] == "zh" or language in ["ja", "ko"]:
         language = "zh"
-        print("Language: ", language)
+        # print("Language: ", language)
     elif language == "en":
         language = "en"
-        print("Language: ", language)
+        # print("Language: ", language)
     else:
         print("Unknown Language: ", language, "Assuming English")
         language = "en"
