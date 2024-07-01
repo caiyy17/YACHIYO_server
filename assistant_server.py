@@ -25,7 +25,7 @@ def image_to_base64(image):
     image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
     return image_base64
 
-from Modules.cut_utils import detect_language, language_process, get_processed
+from Modules.cut_utils import detect_language, cut_prompt, get_text
 from Modules.llm import ChatgptCaller as LLMCaller
 from Modules.image import Dalle3Caller as ImageGenerator
 from Modules.asr import WhisperCaller as ASRCaller
@@ -95,7 +95,7 @@ def call_llm_queue(send_queue, prompt, output_queue, id):
     return answer
 
 def llm_text_process(send_queue, input_queue, output_queue, id):
-    mark = [".", "!", "?", ",", "。", "！", "？", "，"]
+    length_threshold = 1
     language = "zh"
     accumulated_text = ""
     while True:
@@ -104,24 +104,16 @@ def llm_text_process(send_queue, input_queue, output_queue, id):
         prompt = input_queue.get()
         if prompt == "[EoS]":
             if accumulated_text != "":
-                language = detect_language(accumulated_text)
-                output_queue.put([accumulated_text, language])
+                prompts = cut_prompt(accumulated_text, language, length_threshold)
+                for p in prompts:
+                    output_queue.put(p)
             output_queue.put("[EoS]")
             break
         accumulated_text += prompt
-        last_cut = 0
-        for i, char in enumerate(accumulated_text):
-            # 检查是否达到分割条件：标点符号或最大长度
-            if char in mark and i - last_cut >= 8:
-                # 发送当前段落到输出队列
-                p = accumulated_text[last_cut:i + 1].strip()
-                language = detect_language(p)
-                if language == "en":
-                    p = p + " "
-                print("p: " + p + " language: " + language)
-                output_queue.put([p, language])
-                last_cut = i + 1  # 更新上一个分割点的位置
-        accumulated_text = accumulated_text[last_cut:]
+        prompts = cut_prompt(accumulated_text, language, length_threshold)
+        accumulated_text = prompts[-1][0]
+        for p in prompts[:-1]:
+            output_queue.put(p)
 
 def call_tts_queue(send_queue, input_queue, output_queue, id):
     index = 0
@@ -154,16 +146,24 @@ def prepare_response(send_queue, input_queue, output_queue, id):
         if response == "[EoS]":
             break
         p = response[0]
-        audio = AudioSegment.empty()
-        audio += response[1]
-        emotion = response[2]
-        interrupt = response[3]
-        combined += audio
-        audio_base64 = audio_to_base64(audio)
-        print("Response: ", p)
-        result = json.dumps({'text': p, 'emotion': emotion, 'index': index, 'audio': audio_base64, 'type': '[audio]', 'interrupt': interrupt}) + '\n'
-        output_queue.put(result)
-        index += 1
+        try:
+            if get_text(p) != "" and response[1] != "error":
+                audio = AudioSegment.empty()
+                audio += response[1]
+                emotion = response[2]
+                interrupt = response[3]
+            else:
+                audio = AudioSegment.empty()
+                emotion = "none"
+                interrupt = False
+            combined += audio
+            audio_base64 = audio_to_base64(audio)
+            print("Response: ", p)
+            result = json.dumps({'text': p, 'emotion': emotion, 'index': index, 'audio': audio_base64, 'type': '[audio]', 'interrupt': interrupt}) + '\n'
+            output_queue.put(result)
+            index += 1
+        except Exception as e:
+            print(e)
     output_queue.put("[EoS]")
     combined.export("tmp/answer.wav", format="wav")
 
@@ -174,20 +174,19 @@ def tts():
     prompt = data['prompt']
     language = data['language']
 
-    # detect language
-    language = detect_language(prompt)
-    prompts = language_process(prompt, language)
+    prompts = cut_prompt(prompt, language)
 
     combined = AudioSegment.empty()
     try:
         for p in prompts:
-            print("TTS: " + p)
-            audio = tts_caller.call(p, language)
-            combined += audio
+            print("TTS: " + p[0])
+            audio = tts_caller.call(p[0], p[1])
+            if get_text(p[0]) != "" and audio != "error":
+                combined += audio
             print("Time: ", time.time() - start)
         combined.export("tmp/answer.wav", format="wav")
         audio_base64 = audio_to_base64(combined)
-        return jsonify({'audio': audio_base64, 'text': prompts})
+        return jsonify({'audio': audio_base64, 'text': prompt})
     except Exception as e:
         print(e)
         return jsonify({'error': "tts error"})
