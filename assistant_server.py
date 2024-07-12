@@ -8,6 +8,7 @@ from pydub import AudioSegment
 from PIL import Image
 from io import BytesIO
 import base64
+import os
 
 def audio_to_base64(audio):
     buffer = BytesIO()
@@ -331,4 +332,8 @@ def asr_llm_tts():
     return Response(generate(prompt, id), content_type='application/json')
 
 if __name__ == '__main__':
+    # 删除tmp文件夹
+    if os.path.exists('tmp'):
+        os.system('rm -rf tmp')
+    os.makedirs('tmp')
     app.run(debug=True, host='0.0.0.0', port=5005)

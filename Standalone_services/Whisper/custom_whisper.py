@@ -24,7 +24,12 @@ def whisper_custom():
         return jsonify({'error': 'No file part in the request'})
 
 if __name__ == '__main__':
-    # 建立tmp文件夹
-    if not os.path.exists('tmp'):
-        os.makedirs('tmp')
+    # 删除tmp文件夹
+    if os.path.exists('tmp'):
+        os.system('rm -rf tmp')
+    os.makedirs('tmp')
+
+    filename = 'test.wav'
+    res = result = model.transcribe(filename)
+
     app.run(debug=True, port=5052)
