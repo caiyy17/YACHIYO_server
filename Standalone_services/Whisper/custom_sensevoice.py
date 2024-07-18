@@ -28,7 +28,7 @@ def sense_voice_custom():
         res = model.generate(
             input=(filename),
             cache={},
-            language="zh", # "zn", "en", "yue", "ja", "ko", "nospeech"
+            language="auto", # "zn", "en", "yue", "ja", "ko", "nospeech"
             use_itn=False,
             batch_size_s=0, 
         )

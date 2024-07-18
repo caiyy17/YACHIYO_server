@@ -4,16 +4,18 @@ from langdetect import detect
 def detect_language(prompt, preferred_language="en"):
     # return "zh"
     try:
+        if len(prompt) == 0:
+            return preferred_language
         language = detect(prompt)
         if language[:2] == "zh" or language in ["ja", "ko"]:
             language = "zh"
         elif language == "en":
             language = "en"
         else:
-            print("Unknown Language: ", language, ". Assuming ", preferred_language)
+            print("Unknown Language: ", language, ". Assuming ", preferred_language, ". Prompt: ", prompt)
         return language
     except Exception as e:
-        print("Error in detecting language: ", e)
+        print("Error in detecting language: ", e, ". Prompt: ", prompt)
         return preferred_language
 
 def cut_prompt(prompt, preferred_language="en", length_threshold = 8, limit = 200):
