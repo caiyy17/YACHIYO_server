@@ -45,6 +45,7 @@ cancel_tokens = {}
 class CancelToken:
     def __init__(self):
         self._cancel_event = threading.Event()
+        self.time = time.time()
 
     def set(self):
         self._cancel_event.set()
@@ -180,30 +181,6 @@ def prepare_response(send_queue, input_queue, output_queue, id):
     output_queue.put("[EoS]")
     combined.export("tmp/answer.wav", format="wav")
 
-@app.route('/tts', methods=['POST'])
-def tts():
-    start = time.time()
-    data = request.json
-    prompt = data['prompt']
-    language = data['language']
-
-    prompts = cut_prompt(prompt, language)
-
-    combined = AudioSegment.empty()
-    try:
-        for p in prompts:
-            print("TTS: " + p[0])
-            audio = tts_caller.call(p[0], p[1])
-            if get_text(p[0]) != "" and audio != "error":
-                combined += audio
-            print("Time: ", time.time() - start)
-        combined.export("tmp/answer.wav", format="wav")
-        audio_base64 = audio_to_base64(combined)
-        return jsonify({'audio': audio_base64, 'text': prompt})
-    except Exception as e:
-        print(e)
-        return jsonify({'error': "tts error"})
-
 def get_asr(filename, id):
     with open(filename, 'rb') as audio_file:
         text = asr_caller.call(audio_file)
@@ -247,7 +224,6 @@ def get_rag(send_quene, prompt, id):
 def process_llm_tts_queue(send_quene, prompt, id):
     try:
         print("start process_llm_tts_queue")
-        start = time.time()
         ##############################
         # RAG part start
         ##############################
@@ -271,7 +247,7 @@ def process_llm_tts_queue(send_quene, prompt, id):
         response_thread = threading.Thread(target=prepare_response, args=(send_quene, tts_output_queue, response_output_queue, id))
         response_thread.start()
 
-        print("Time: ", time.time() - start)
+        print("Process Start Time: ", time.time() - cancel_tokens[id].time)
         index = 0
         while True:
             if cancel_tokens[id].is_set():  # 检查取消信号
@@ -284,7 +260,7 @@ def process_llm_tts_queue(send_quene, prompt, id):
             response = response_output_queue.get()
             if response == "[EoS]":
                 break
-            print("Time: ", time.time() - start, 'index: ', index)
+            print("Time: ", time.time() - cancel_tokens[id].time, 'index: ', index)
             send_quene.put(response)
             index += 1
         send_quene.put("[EoS]")
@@ -301,14 +277,19 @@ def process_llm_tts_queue(send_quene, prompt, id):
 
 @app.route('/asr_llm_tts', methods=['POST'])
 def asr_llm_tts():
-    start = time.time()
     audio_file = request.files['file']
     id = request.form.get('id')
+    
+    if id not in cancel_tokens:
+        cancel_tokens[id] = CancelToken()
+    cancel_tokens[id].clear()
+
+    cancel_tokens[id].time = time.time()
     try:
         filename = f'tmp/received_file_{id}.wav'
         audio_file.save(filename)
         text = get_asr(filename, id)
-        print("ASR Time: ", time.time() - start)
+        print("ASR Time: ", time.time() - cancel_tokens[id].time)
     except Exception as e:
         print(e)
         return jsonify({'error': "asr error"})
@@ -316,11 +297,8 @@ def asr_llm_tts():
     prompt = text
     print("Prompt: ", prompt)
 
-    if id not in cancel_tokens:
-        cancel_tokens[id] = CancelToken()
-    cancel_tokens[id].clear()
-
     def generate(prompt, id):
+
         try:
             send_quene = queue.Queue()
             process_thread = threading.Thread(target=process_llm_tts_queue, args=(send_quene, prompt, id))
