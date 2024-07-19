@@ -52,11 +52,11 @@ class BertVitsCaller:
     def change_model(self, model_path, config_path, speaker_name):
         try:
             response = requests.post(addr_BertVitsCaller + "/change_model", json={
-                "model": model_path,
-                "config": config_path,
-                "speaker": speaker_name
+                "model_path": model_path,
+                "config_path": config_path,
+                "speaker_name": speaker_name
             })
-            return response.json()
+            return response
         except Exception as e:
             print(e)
             return "error"

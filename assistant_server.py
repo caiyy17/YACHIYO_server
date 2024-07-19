@@ -89,6 +89,7 @@ def set_system_prompt():
 @app.route('/set_model', methods=['POST'])
 def set_model():
     data = request.json
+    print(data)
     if 'model' not in data:
         print("Model not changed")
         return jsonify({'status': "model not changed"})

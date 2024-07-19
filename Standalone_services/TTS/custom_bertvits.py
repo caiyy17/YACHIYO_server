@@ -535,20 +535,25 @@ def change_model():
     
     data = request.json
     if 'model_path' in data:
-        model_path = data['model']
+        new_model_path = data['model_path']
         print("Model: ", model_path)
     if 'config_path' in data:
-        config_path = data['config']
+        new_config_path = data['config_path']
         print("Config: ", config_path)
     if 'speaker_name' in data:
-        speaker_name = data['speaker']
+        new_speaker_name = data['speaker_name']
         print("Speaker: ", speaker_name)
     
-    if model_path == config.webui_config.model:
+    if new_model_path == model_path:
         print("Model not changed")
+        return "Model not changed"
     else:
+        model_path = new_model_path
+        config_path = new_config_path
+        speaker_name = new_speaker_name
         tts_init()
 
+    return "Model Setup Success"
 
 if __name__ == "__main__":
     
