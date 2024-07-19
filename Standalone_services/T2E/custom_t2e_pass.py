@@ -8,9 +8,9 @@ def t2e():
     data = request.json
     text = data['text']
     print("Original text:", text)
-    emotion = 'neutral'
+    emotion = 'none'
     print("Time:", time.time() - start)
     return jsonify({'emotion': emotion})
 
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5010)
+    app.run(debug=True, host='0.0.0.0', port=5051)

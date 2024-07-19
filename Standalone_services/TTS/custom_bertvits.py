@@ -394,65 +394,33 @@ import time
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-@app.route("/bertvits",methods=['POST'])
-def main():
-    print("Request received")
-    start = time.time()
-    data = request.json
-    text = data['text']
-    text_language = data['text_language']
-    language = "auto"
-    try:
-        speaker = speaker_name
-        sdp_ratio = 0.5
-        noise_scale = 0.6
-        noise_scale_w = 0.9
-        length_scale = 1
-        prompt_mode = "Text prompt"
-        text_prompt = "Happy"
-        emotion = text_prompt
-        reference_audio = ""
-    except:
-        return "Invalid Parameter"
+model_path = None
+config_path = None
+speaker_name = None
+hps = None
 
-    try:
-        result, audio = tts_fn(
-            text,
-            speaker,
-            sdp_ratio,
-            noise_scale,
-            noise_scale_w,
-            length_scale,
-            language,
-            reference_audio,
-            emotion,
-            prompt_mode,
-            style_text=None,
-            style_weight=0,
-        )
-        with BytesIO() as wav:
-            wavfile.write(wav, audio[0], audio[1])
-            torch.cuda.empty_cache()
-            print("Time:", time.time() - start)
-            return Response(wav.getvalue(), mimetype="audio/wav")
-    except:
-        return "TTS Error"
+def tts_init():
+    global net_g
+    global hps
 
-if __name__ == "__main__":
-    speaker_name = "坏女人星瞳"
-    if config.webui_config.debug:
-        logger.info("Enable DEBUG-LEVEL log")
-        logging.basicConfig(level=logging.DEBUG)
-    hps = utils.get_hparams_from_file(config.webui_config.config_path)
+    global model_path
+    global config_path
+    global speaker_name
+
+    hps = utils.get_hparams_from_file(config_path)
     # 若config.json中未指定版本则默认为最新版本
     version = hps.version if hasattr(hps, "version") else latest_version
-    print(config.webui_config.model)
+    print(model_path)
     net_g = get_net_g(
-        model_path=config.webui_config.model, version=version, device=device, hps=hps
+        model_path=model_path, version=version, device=device, hps=hps
     )
     speaker_ids = hps.data.spk2id
     speakers = list(speaker_ids.keys())
     languages = ["ZH", "JP", "EN", "auto", "mix"]
+
+    if speaker_name is None:
+        speaker_name = speakers[0]
+        print("Speaker: ", speaker_name)
 
     try:
         speaker = speaker_name
@@ -512,5 +480,86 @@ if __name__ == "__main__":
         )
     except:
         print("TTS Error")
+        return "TTS Error"
+    return "Success"
+
+@app.route("/tts", methods=['POST'])
+def main():
+    print("Request received")
+    start = time.time()
+    data = request.json
+    text = data['text']
+    text_language = data['text_language']
+    language = "auto"
+    try:
+        speaker = speaker_name
+        sdp_ratio = 0.5
+        noise_scale = 0.6
+        noise_scale_w = 0.9
+        length_scale = 1
+        prompt_mode = "Text prompt"
+        text_prompt = "Happy"
+        emotion = text_prompt
+        reference_audio = ""
+    except:
+        return "Invalid Parameter"
+
+    try:
+        result, audio = tts_fn(
+            text,
+            speaker,
+            sdp_ratio,
+            noise_scale,
+            noise_scale_w,
+            length_scale,
+            language,
+            reference_audio,
+            emotion,
+            prompt_mode,
+            style_text=None,
+            style_weight=0,
+        )
+        with BytesIO() as wav:
+            wavfile.write(wav, audio[0], audio[1])
+            torch.cuda.empty_cache()
+            print("Time:", time.time() - start)
+            return Response(wav.getvalue(), mimetype="audio/wav")
+    except:
+        return "TTS Error"
+
+@app.route("/change_model", methods=['POST'])
+def change_model():
+    global model_path
+    global config_path
+    global speaker_name
+    
+    data = request.json
+    if 'model_path' in data:
+        model_path = data['model']
+        print("Model: ", model_path)
+    if 'config_path' in data:
+        config_path = data['config']
+        print("Config: ", config_path)
+    if 'speaker_name' in data:
+        speaker_name = data['speaker']
+        print("Speaker: ", speaker_name)
+    
+    if model_path == config.webui_config.model:
+        print("Model not changed")
+    else:
+        tts_init()
+
+
+if __name__ == "__main__":
+    
+    if config.webui_config.debug:
+        logger.info("Enable DEBUG-LEVEL log")
+        logging.basicConfig(level=logging.DEBUG)
+
+    model_path = config.webui_config.model
+    config_path = config.webui_config.config_path
+    speaker_name = None
+    
+    tts_init()
 
     app.run(debug=True, host='0.0.0.0', port=9880)

@@ -16,7 +16,7 @@ model = AutoModel(model=model_dir,
 
 
 
-@app.route('/whisper', methods=['POST'])
+@app.route('/asr', methods=['POST'])
 def sense_voice_custom():
     start = time.time()
     if 'file' in request.files:

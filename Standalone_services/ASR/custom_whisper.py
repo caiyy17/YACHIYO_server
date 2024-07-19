@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 model = whisper.load_model("small")
 
-@app.route('/whisper', methods=['POST'])
+@app.route('/asr', methods=['POST'])
 def whisper_custom():
     start = time.time()
     if 'file' in request.files:

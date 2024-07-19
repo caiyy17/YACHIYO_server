@@ -85,6 +85,18 @@ def set_system_prompt():
     llm_caller.set_system_prompt(system_prompt, id)
     return jsonify({'status': 'system prompt set'})
 
+@app.route('/set_model', methods=['POST'])
+def set_model():
+    data = request.json
+    if 'model' not in data:
+        print("Model not changed")
+        return jsonify({'status': "model not changed"})
+    model = data['model']
+    config = data['config']
+    speaker = data['speaker']
+    tts_caller.change_model(model, config, speaker)
+    return jsonify({'status': "model changed"})
+
 def call_llm_queue(send_queue, prompt, output_queue, id):
     answer = ""
     for response in llm_caller.call_stream(prompt, id):

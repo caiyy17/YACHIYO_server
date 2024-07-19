@@ -10,12 +10,13 @@ class TTSOpenaiCaller:
         from .secrets_chatgpt import API_KEY
         self.client = OpenAI(api_key=API_KEY)
         self.model = "tts-1"
+        self.voice = "alloy"
 
     def call(self, prompt, language):
         try:
             audio = self.client.audio.speech.create(
                 model=self.model,
-                voice="alloy",
+                voice=self.voice,
                 input=prompt
             )
             audio_data = AudioSegment.from_file(BytesIO(audio.content), format="mp3")
@@ -24,13 +25,17 @@ class TTSOpenaiCaller:
             print(e)
             return "error"
         
+    def change_model(self, model_path, config_path, speaker_name):
+        self.model = model_path
+        self.voice = speaker_name
+        
 class BertVitsCaller:
     def __init__(self):
         pass
 
     def call(self, prompt, language):
         try:
-            audio = requests.post(addr_BertVitsCaller + "/bertvits", json={
+            audio = requests.post(addr_BertVitsCaller + "/tts", json={
                 "text": prompt,
                 "text_language": language
             })
@@ -40,6 +45,18 @@ class BertVitsCaller:
                     audio_data.append(chunk)
             audio_data = AudioSegment.from_file(BytesIO(b''.join(audio_data)), format="wav")
             return audio_data
+        except Exception as e:
+            print(e)
+            return "error"
+        
+    def change_model(self, model_path, config_path, speaker_name):
+        try:
+            response = requests.post(addr_BertVitsCaller + "/change_model", json={
+                "model": model_path,
+                "config": config_path,
+                "speaker": speaker_name
+            })
+            return response.json()
         except Exception as e:
             print(e)
             return "error"

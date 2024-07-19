@@ -26,7 +26,7 @@ class WhisperCaller:
         pass
     def call(self, audio_file):
         try:
-            response = requests.post(addr_WhisperCaller + "/whisper", files={'file': audio_file})
+            response = requests.post(addr_WhisperCaller + "/asr", files={'file': audio_file})
             text = response.json()["text"]
             print(text)
             return text
