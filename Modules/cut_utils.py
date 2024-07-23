@@ -53,8 +53,8 @@ def cut_prompt_motion(prompt, preferred_language="en", length_threshold = 8, lim
 
     for i, char in enumerate(prompt):
         if char == mark_start:
+            has_motion = True
             if i > last_cut:
-                has_motion = True
                 prompts.append(prompt[last_cut:i])
                 last_cut = i
     if last_cut < len(prompt):
@@ -68,15 +68,18 @@ def cut_prompt_motion(prompt, preferred_language="en", length_threshold = 8, lim
                 motion = prompts[i].split(mark_end)[0] + mark_end
                 prompts[i] = prompts[i].split(mark_end)[1]
                 out_prompts.append([motion, "motion"])
-                out_prompts.append(prompt in cut_prompt(prompts[i], preferred_language, length_threshold, limit))
+                for prompt in cut_prompt(prompts[i], preferred_language, length_threshold, limit):
+                    out_prompts.append(prompt)
             else:
                 if i == len(prompts) - 1:
-                    out_prompts.append(prompts[i])
+                    out_prompts.append([prompts[i], "temp"])
                 else:
-                    out_prompts.append(prompt in cut_prompt(prompts[i], preferred_language, length_threshold, limit))
+                    for prompt in cut_prompt(prompts[i], preferred_language, length_threshold, limit):
+                        out_prompts.append(prompt)
     else:
-        out_prompts.append(prompt in cut_prompt(prompt, preferred_language, length_threshold, limit))
-        
+        for prompt in cut_prompt(prompt, preferred_language, length_threshold, limit):
+            out_prompts.append(prompt)
+    # print("out_prompts: ", out_prompts)
     return out_prompts
 
 def get_text(prompt):

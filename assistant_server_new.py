@@ -142,6 +142,11 @@ def llm_text_process(send_queue, input_queue, output_queue, id):
 
 def call_tts_queue(send_queue, input_queue, output_queue, id):
     index = 0
+    emotion = ""
+    motion = ""
+
+    interrupt = False
+
     while True:
         if cancel_tokens[id].is_set():
             break
@@ -149,12 +154,23 @@ def call_tts_queue(send_queue, input_queue, output_queue, id):
         if prompt == "[EoS]":
             output_queue.put("[EoS]")
             break
-        print("TTS: " + prompt[0])
-        emotion = t2e_caller.call(prompt[0], prompt[1])
-        interrupt = False
+        if prompt[1] == "motion":
+            motion = prompt[0]
+            print("Motion: ", motion)
+            emotion = t2e_caller.call(prompt[0], "zh")
+            interrupt = True
+            continue
 
-        audio = tts_caller.call(prompt[0], prompt[1])
-        output_queue.put([prompt[0], audio, emotion, interrupt])
+        print("TTS: " + prompt[0])
+        if get_text(prompt[0]) == "":
+            audio = ""
+        else:
+            audio = tts_caller.call(prompt[0], prompt[1])
+        output_queue.put([motion + prompt[0], audio, emotion, interrupt])
+
+        motion = ""
+        emotion = ""
+        interrupt = False
         index += 1
 
 def prepare_response(send_queue, input_queue, output_queue, id):
@@ -169,7 +185,7 @@ def prepare_response(send_queue, input_queue, output_queue, id):
         p = response[0]
         try:
             print("Response: ", p)
-            if get_text(p) != "" and response[1] != "error":
+            if response[1] != "" and response[1] != "error":
                 audio = AudioSegment.empty()
                 audio += response[1]
                 emotion = response[2]
@@ -335,4 +351,4 @@ if __name__ == '__main__':
     if os.path.exists('tmp'):
         os.system('rm -rf tmp')
     os.makedirs('tmp')
-    app.run(debug=True, host='0.0.0.0', port=5003)
+    app.run(debug=True, host='0.0.0.0', port=5005)
