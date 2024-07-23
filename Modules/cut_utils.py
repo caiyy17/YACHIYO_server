@@ -74,7 +74,9 @@ def cut_prompt_motion(prompt, preferred_language="en", length_threshold = 8, lim
                     out_prompts.append(prompts[i])
                 else:
                     out_prompts.append(prompt in cut_prompt(prompts[i], preferred_language, length_threshold, limit))
-
+    else:
+        out_prompts.append(prompt in cut_prompt(prompt, preferred_language, length_threshold, limit))
+        
     return out_prompts
 
 def get_text(prompt):
