@@ -26,7 +26,7 @@ def image_to_base64(image):
     image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
     return image_base64
 
-from Modules.cut_utils import detect_language, cut_prompt, get_text
+from Modules.cut_utils import detect_language, cut_prompt_motion, get_text
 from Modules.llm import ChatgptCaller as LLMCaller
 from Modules.image import Dalle3Caller as ImageGenerator
 from Modules.asr import WhisperCaller as ASRCaller
@@ -43,10 +43,10 @@ import threading
 cancel_tokens = {}
 
 class CancelToken:
-    def __init__(self):
+    def __init__(self, **kwargs):
         self._cancel_event = threading.Event()
         self.time = time.time()
-
+        self.kwargs = kwargs
     def set(self):
         self._cancel_event.set()
 
@@ -56,8 +56,18 @@ class CancelToken:
     def clear(self):
         self._cancel_event.clear()
 
+@app.route('/healthcheck', methods=['POST'])
+def healthcheck():
+    return jsonify({'status': 'alive'})
+
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
+    data = request.json
+    id = data['id']
+    if id not in cancel_tokens:
+        cancel_tokens[id] = CancelToken()
+        print("New id: ", id)
+    print("Heartbeat: ", id)
     return jsonify({'status': 'alive'})
 
 @app.route('/cancel', methods=['POST'])
@@ -119,13 +129,13 @@ def llm_text_process(send_queue, input_queue, output_queue, id):
         prompt = input_queue.get()
         if prompt == "[EoS]":
             if accumulated_text != "":
-                prompts = cut_prompt(accumulated_text, language, length_threshold)
+                prompts = cut_prompt_motion(accumulated_text, language, length_threshold)
                 for p in prompts:
                     output_queue.put(p)
             output_queue.put("[EoS]")
             break
         accumulated_text += prompt
-        prompts = cut_prompt(accumulated_text, language, length_threshold)
+        prompts = cut_prompt_motion(accumulated_text, language, length_threshold)
         accumulated_text = prompts[-1][0]
         for p in prompts[:-1]:
             output_queue.put(p)
@@ -140,12 +150,8 @@ def call_tts_queue(send_queue, input_queue, output_queue, id):
             output_queue.put("[EoS]")
             break
         print("TTS: " + prompt[0])
-        if index == 0:
-            emotion = t2e_caller.call(prompt[0], prompt[1])
-            interrupt = False
-        else:
-            emotion = t2e_caller.call(prompt[0], prompt[1])
-            interrupt = False
+        emotion = t2e_caller.call(prompt[0], prompt[1])
+        interrupt = False
 
         audio = tts_caller.call(prompt[0], prompt[1])
         output_queue.put([prompt[0], audio, emotion, interrupt])
@@ -162,18 +168,20 @@ def prepare_response(send_queue, input_queue, output_queue, id):
             break
         p = response[0]
         try:
+            print("Response: ", p)
             if get_text(p) != "" and response[1] != "error":
                 audio = AudioSegment.empty()
                 audio += response[1]
                 emotion = response[2]
                 interrupt = response[3]
+                combined += audio
+                audio_base64 = audio_to_base64(audio)
             else:
                 audio = AudioSegment.empty()
-                emotion = "none"
+                emotion = ""
                 interrupt = False
-            combined += audio
-            audio_base64 = audio_to_base64(audio)
-            print("Response: ", p)
+                audio_base64 = ""
+            
             result = json.dumps({'text': p, 'emotion': emotion, 'index': index, 'audio': audio_base64, 'type': '[audio]', 'interrupt': interrupt}) + '\n'
             output_queue.put(result)
             index += 1
