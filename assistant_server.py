@@ -235,6 +235,12 @@ def get_rag(send_quene, prompt, id):
     prompt, image = rag_call(prompt)
     image_response = json.dumps({'image': image, 'type': "[im]"}) + '\n'
     send_quene.put(image_response)
+    if prompt == "":
+        audio = AudioSegment.empty()
+        audio_base64 = audio_to_base64(audio)
+        send_quene.put(json.dumps({'text': prompt, 'emotion': 'sadness', 'index': 0, 'audio': audio_base64, 'type': '[audio]'}) + '\n')
+        send_quene.put("[EoS]")
+        return
     if prompt.startswith("[NOT FOUND]"):
         prompt = prompt[11:]
         response = tts_caller.call(prompt, 'zh')
