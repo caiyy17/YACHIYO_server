@@ -1,0 +1,12 @@
+2024-10-10 17:08:30,170 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:09:10,966 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:18:41,890 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:19:43,382 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:20:37,886 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:20:42,747 - INFO - Client test-client registered
+2024-10-10 17:20:42,766 - INFO - Client test-client connected
+2024-10-10 17:23:54,604 - INFO - Client test-client disconnected
+2024-10-10 17:23:56,181 - INFO - ---------- Global logger initialized ----------
+2024-10-10 17:24:03,664 - INFO - Client test-client registered
+2024-10-10 17:24:03,699 - INFO - Client test-client connected
+2024-10-10 17:24:06,712 - INFO - Client test-client disconnected
