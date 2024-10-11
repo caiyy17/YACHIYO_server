@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import websockets
 from typing import Dict
 from pydantic import BaseModel
 
@@ -12,6 +13,7 @@ from queue import Queue
 from processing_functions import get_function_by_name
 
 app = FastAPI()
+TIME_INTERVAL = 0.05
 
 # 设置全局日志处理器
 def setup_global_logger():
@@ -39,7 +41,6 @@ def setup_global_logger():
     logger.addHandler(console_handler)
 
     logger.info("---------- Global logger initialized ----------")
-
     return logger
 
 # 初始化全局 logger
@@ -52,6 +53,20 @@ class ClientConnection:
         self.logger = logger
         self.initialized = False
         self.connected = False
+        self.closing = False
+        
+        self.send_queue = Queue()
+        self.send_cancel_event = threading.Event()
+        self.send_task = None
+        self.receive_task = None
+        self.kill_event = threading.Event()
+
+        self.queues = [self.send_queue]
+        self.cancel_event = [self.send_cancel_event]
+        self.threads = []
+        self.websocket = None
+
+        self.logger.info(f"Client {self.client_id} created")
 
     async def init_pipeline(self, function_names, force=False):
         if self.initialized:
@@ -59,22 +74,18 @@ class ClientConnection:
             if force:
                 self.logger.info(f"Force reinitializing client {self.client_id}")
                 await self.dispose()
+                self.logger.info(f"Client {self.client_id} reinitialized")
             else:
                 return
         
         self.function_names = function_names
-        # 队列
-        self.send_queue = Queue()
+        self.logger.info(f"Initializing client {self.client_id} with functions: {self.function_names}")
         self.queues = []
         self.cancel_event = []
-        self.kill_event = threading.Event()
-        # 线程
         self.threads = []
         self.setup_processing_pipeline()
         self.initialized = True
-
-        self.send_task = None
-        self.receive_task = None
+        self.logger.info(f"Client {self.client_id} initialized")
 
     def setup_processing_pipeline(self):
         num_functions = len(self.function_names)
@@ -84,7 +95,7 @@ class ClientConnection:
             self.cancel_event.append(threading.Event())
         # 将 send_queue 作为最后一个队列
         self.queues.append(self.send_queue)
-        self.cancel_event.append(threading.Event())
+        self.cancel_event.append(self.send_cancel_event)
 
         # 为每个函数创建线程
         for i, func_name in enumerate(self.function_names):
@@ -104,14 +115,20 @@ class ClientConnection:
             self.threads.append(t)
 
     async def start_pipeline(self, websocket: WebSocket):
-        if self.connected:
-            await self.close()
+        if not self.initialized:
+            self.logger.info(f"No start: Client {self.client_id} not initialized")
+            return
+        await self.close()
         self.websocket = websocket
         self.connected = True
+        while not self.send_queue.empty():
+            self.send_queue.get()
+        self.send_cancel_event.clear()
         # 启动线程监听 send_queue，并将数据发送到 Unity
         self.send_task = asyncio.create_task(self.send_data_to_unity(), name="send_data_to_unity")
         # 启动线程接收 Unity 的数据
         self.receive_task = asyncio.create_task(self.receive_data_from_unity(), name="receive_data_from_unity")
+        self.logger.info(f"Client {self.client_id} pipeline started")
 
     async def send_data_to_unity(self):
         try:
@@ -119,27 +136,46 @@ class ClientConnection:
                 if self.kill_event.is_set():
                     break
                 if self.cancel_event[-1].is_set():
+                    self.logger.info(f"send_data_to_unity cancel_event")
                     while not self.send_queue.empty():
                         self.send_queue.get()
                     self.cancel_event[-1].clear()
                     continue
                 try:
-                    data = self.send_queue.get(timeout=0.01)
+                    data = self.send_queue.get(timeout=0)
                     # 将数据发送到 Unity，确保数据序列化为字符串
-                    await self.websocket.send_text(json.dumps(data))
-                    self.logger.info(f"Sent message to {self.client_id}: {data}")
+                    await self.websocket.send_text(data)
+                    # 计算data的大小
+                    data_size = len(data.encode('utf-8'))
+                    self.logger.info(f"Sent message to {self.client_id}: {data_size} bytes")
+
+                    # 如果太长，只打印前 100 个字符
+                    if len(data) > 100:
+                        self.logger.info(f"Sent message to {self.client_id}: {data[:100]}...")
+                    else:
+                        self.logger.info(f"Sent message to {self.client_id}: {data}")
                 except queue.Empty:
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(TIME_INTERVAL)
                     pass
                 except asyncio.TimeoutError:
                     pass
                 except WebSocketDisconnect:
-                    self.logger.info(f"Send: Client {self.client_id} disconnected")
-                    break
+                    pass
                 except Exception as e:
                     self.logger.error(f"Error in receive_data_from_unity: {e}")
         except Exception as e:
             self.logger.error(f"Error in send_data_to_unity: {e}")
+        
+        if self.closing:
+            self.logger.info(f"send_data_to_unity closing")
+            while not self.send_cancel_event.is_set():
+                await asyncio.sleep(TIME_INTERVAL)
+            self.logger.info(f"send_data_to_unity cancel_event")
+            while not self.send_queue.empty():
+                self.send_queue.get()
+            self.send_cancel_event.clear()
+            self.closing = False
+            self.logger.info(f"Send: Client {self.client_id} disconnected")
 
     async def receive_data_from_unity(self):
         try:
@@ -154,11 +190,14 @@ class ClientConnection:
                         self.cancel_event[0].set()
                         continue
                     # 将数据放入第一个输入队列
+                    data["id"] = self.client_id
+                    data = json.dumps(data)
                     self.queues[0].put(data)
                 except WebSocketDisconnect:
                     self.connected = False
-                    self.logger.info(f"Client {self.client_id} disconnected")
+                    self.logger.info(f"Received: Client {self.client_id} disconnected")
                     self.cancel_event[0].set()
+                    self.closing = True
                     break
                 except Exception as e:
                     self.logger.error(f"Error in receive_data_from_unity: {e}")
@@ -174,30 +213,45 @@ class ClientConnection:
             await self.close()
         self.kill_event.set()
         await self.wait_for_threads()
-        self.logger.info(f"Client {self.client_id} disposed")
-        self.initialized = False
-        
-
-    async def wait_for_threads(self):
-        while True:
-            if not any(t.is_alive() for t in self.threads):
-                break
-            await asyncio.sleep(0.5)
-    
-    async def close(self):
-        self.logger.info(f"Closing connection for client {self.client_id}")
-        if self.connected:
-            await self.websocket.close()
-            self.connected = False
-        else:
-            self.logger.info(f"No close: Client {self.client_id} not connected")
-
         if self.send_task:
             self.send_task.cancel()
             self.send_task = None
         if self.receive_task:
             self.receive_task.cancel()
             self.receive_task = None
+        self.kill_event.clear()
+        self.queues = [self.send_queue]
+        self.cancel_event = [self.send_cancel_event]
+        self.threads = []
+        self.initialized = False
+        self.logger.info(f"Client {self.client_id} disposed")
+
+    async def wait_for_threads(self):
+        while True:
+            if not any(t.is_alive() for t in self.threads):
+                break
+            await asyncio.sleep(TIME_INTERVAL)
+
+    async def close(self):
+        if self.connected:
+            self.logger.info(f"Closing connection for client {self.client_id}")
+            await self.websocket.close()
+            self.closing = True
+        else:
+            self.logger.info(f"No close: Client {self.client_id} not connected")
+
+        if self.send_task:
+            self.logger.info(f"Waiting for send_task to finish for client {self.client_id}")
+            await self.send_task
+            self.send_task = None
+        if self.receive_task:
+            self.logger.info(f"Waiting for receive_task to finish for client {self.client_id}")
+            await self.receive_task
+            self.receive_task = None
+        self.websocket = None
+        self.connected = False
+        self.closing = False
+        self.logger.info(f"Connection reset for client {self.client_id}")
 
 # 管理器类，维护所有客户端连接的实例
 class ClientManager:
@@ -266,11 +320,10 @@ class ConfigData(BaseModel):
 async def register_client(data: ClientData):
     if manager.is_registered(data.client_id):
         global_logger.warning(f"Client {data.client_id} already registered")
-        return {"status": "registered", "client_id": data.client_id}
-        # raise HTTPException(status_code=400, detail="Client already registered")
+        return {"status": "already registered", "client_id": data.client_id}
     # 注册客户端
-    manager.create_client(data.client_id)
     manager.register_client(data.client_id)
+    manager.create_client(data.client_id)
     global_logger.info(f"Client {data.client_id} registered")
     return {"status": "registered", "client_id": data.client_id}
 
@@ -311,7 +364,7 @@ async def init_pipeline(client_id: str, data: ConfigData):
     config_message = data.config
     config = json.loads(config_message)
     function_names = config['function_names']
-    await client.init_pipeline()
+    await client.init_pipeline(function_names, force=True)
     return {"status": "initialized", "client_id": client_id}
 
 # WebSocket 处理：为每个连接创建一个独立的实例
@@ -329,20 +382,18 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     # 连接客户端
     client = manager.clients[client_id]
-    function_names = ["call_llm_queue", "llm_text_process_queue", "call_tts_queue", "prepare_response_queue"]
+    function_names = ["call_func_a", "call_func_b"]
     await client.init_pipeline(function_names)
     await client.start_pipeline(websocket)
     
     try:
         # 处理该客户端的 WebSocket 连接
         while 1:
-            if client.receive_task and not client.receive_task.done():
-                await asyncio.sleep(1)
+            if client.connected:
+                await asyncio.sleep(TIME_INTERVAL)
             else:
                 break
     finally:
         # 客户端断开时移除实例
+        # await manager.remove_client(client_id)
         global_logger.info(f"Client {client_id} disconnected")
-        await manager.remove_client(client_id)
-
-
