@@ -1,6 +1,10 @@
-openai
-flask
+websockets
+fastapi
+uvicorn
 requests
-pillow
-langdetect
+python-multipart
+
+numpy
 pydub
+
+openai

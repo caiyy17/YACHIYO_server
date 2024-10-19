@@ -3,60 +3,62 @@ from pydub import AudioSegment
 from io import BytesIO
 
 from .config import *
-    
-class TTSOpenaiCaller:
-    def __init__(self):
-        from openai import OpenAI
-        from .secrets_chatgpt import API_KEY
-        self.client = OpenAI(api_key=API_KEY)
-        self.model = "tts-1"
-        self.voice = "alloy"
 
+class TestTTSCaller:
+    def __init__(self):
+        self.repeat = 2
+        self.empty_audio = AudioSegment.silent(duration=10)
+        pass
     def call(self, prompt, language):
         try:
-            audio = self.client.audio.speech.create(
-                model=self.model,
-                voice=self.voice,
-                input=prompt
-            )
-            audio_data = AudioSegment.from_file(BytesIO(audio.content), format="mp3")
-            return audio_data
+            audio_data = self.empty_audio
+            if prompt != "":
+                for i in range(self.repeat):
+                    audio = AudioSegment.from_file(f"test/test_voice.wav", format="wav")
+                    audio_data += audio
+
+            # 创建 BytesIO 对象作为内存中的文件
+            audio_bytes_io = BytesIO()
+
+            # 将音频数据导出为 WAV 格式，并写入 BytesIO 对象
+            audio_data.export(audio_bytes_io, format="wav")
+
+            # 获取字节流
+            audio_bytes = audio_bytes_io.getvalue()
+            return audio_bytes
         except Exception as e:
             print(e)
-            return "error"
-        
-    def change_model(self, model_path, config_path, speaker_name):
-        self.model = model_path
-        self.voice = speaker_name
+            return self.empty_audio
         
 class BertVitsCaller:
     def __init__(self):
+        # silent 0.01s audio
+        self.empty_audio = AudioSegment.silent(duration=10)
         pass
-
     def call(self, prompt, language):
         try:
-            audio = requests.post(addr_BertVitsCaller + "/tts", json={
-                "text": prompt,
-                "text_language": language
-            })
-            audio_data = []
-            for chunk in audio.iter_content(chunk_size=8192): 
-                if chunk:
-                    audio_data.append(chunk)
-            audio_data = AudioSegment.from_file(BytesIO(b''.join(audio_data)), format="wav")
-            return audio_data
+            if prompt == "":
+                audio_data = self.empty_audio
+            else:
+                audio = requests.post(addr_TTSCaller + "/tts", json={
+                    "text": prompt,
+                    "text_language": language
+                })
+                audio_data = []
+                for chunk in audio.iter_content(chunk_size=8192): 
+                    if chunk:
+                        audio_data.append(chunk)
+                audio_data = AudioSegment.from_file(BytesIO(b''.join(audio_data)), format="wav") + self.empty_audio
+
+            # 创建 BytesIO 对象作为内存中的文件
+            audio_bytes_io = BytesIO()
+
+            # 将音频数据导出为 WAV 格式，并写入 BytesIO 对象
+            audio_data.export(audio_bytes_io, format="wav")
+
+            # 获取字节流
+            audio_bytes = audio_bytes_io.getvalue()
+            return audio_bytes
         except Exception as e:
             print(e)
-            return "error"
-        
-    def change_model(self, model_path, config_path, speaker_name):
-        try:
-            response = requests.post(addr_BertVitsCaller + "/change_model", json={
-                "model_path": model_path,
-                "config_path": config_path,
-                "speaker_name": speaker_name
-            })
-            return response
-        except Exception as e:
-            print(e)
-            return "error"
+            return self.empty_audio

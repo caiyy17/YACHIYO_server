@@ -1,0 +1,56 @@
+{
+    "pipeline": [
+        {
+            "node_id": 1,
+            "function": "call_func_a",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "input1",
+                        "sources": ["message"]
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "sources": ["message"],
+                        "targets": ["1_message"]
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "output1",
+                        "targets": ["1_result"]
+                    }
+                ],
+                "next_nodes": [2],
+                "sleep_time": 1
+            }
+        },
+        {
+            "node_id": 2,
+            "function": "call_func_b",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "input1",
+                        "sources": ["1_result"]
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "sources": ["1_message"],
+                        "targets": ["2_message"]
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "output1",
+                        "targets": ["2_result"]
+                    }
+                ],
+                "next_nodes": [],
+                "sleep_time": 0.5
+            }
+        }
+    ]
+}

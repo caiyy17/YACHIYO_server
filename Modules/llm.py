@@ -2,10 +2,92 @@ import os
 import json
 import requests
 
+import time
+
 from .config import *
 
+import random
+class TestLLMCaller:
+    def __init__(self, sleep_time=0):
+        self.sleep_time = sleep_time
+        pass
+
+    def load_history(self, id):
+        if os.path.exists(f"tmp/history_{id}.json"):
+            with open(f"tmp/history_{id}.json", 'r', encoding='utf-8') as file:
+                try:
+                    history = json.load(file)
+                except:
+                    history = []
+        else:
+            history = []
+        return history
+    
+    def save_history(self, history, id):
+        with open(f"tmp/history_{id}.json", 'w', encoding='utf-8') as file:
+            json.dump(history, file, ensure_ascii=False)
+
+    def clear_history(self, id):
+        if os.path.exists(f"tmp/history_{id}.json"):
+            os.remove(f"tmp/history_{id}.json")
+
+    def set_system_prompt(self, system_prompt, id):
+        # set system prompt will reset the history
+        history = self.load_history(id)
+        if len(history) > 0 and history[0]["role"] == "system":
+            history[0] = {"role": "system", "content": f"{system_prompt}"}
+        else:
+            history = []
+            history.append({"role": "system", "content": f"{system_prompt}"})
+        self.save_history(history, id)
+        return history
+    
+    def call_stream(self, prompt, id):
+        try:
+            history = self.load_history(id)
+            accumulated_text = ""
+            for response, new_history in self.call_model_stream(prompt, history):
+                accumulated_text += response
+                self.save_history(new_history, id)
+                yield response
+        except Exception as e:
+            print(e)
+            return "error"
+        
+    def call_model_stream(self, prompt, history):
+        try:
+            accumulated_text = ""
+            current_history = history.copy()
+            text_list = [
+                "[test motion 1] ", 
+                "This is your prompt: " + prompt + "Processed by LLM 2. \n", 
+                "这是你的请求：" + prompt + "经过语言模型处理3。\n\n", 
+                "\t\t[测试动作4]", 
+                "\nThis is your prompt: " + prompt + "经过语言模型处理5。", 
+                "这是你的请求：" + prompt + "Processed by LLM 6. ",
+                "[test motion part",
+            ]
+            # 连接所有文本
+            concatenated_text = "".join(text_list)
+            # 将文本随机切分成多个部分
+            while len(concatenated_text) > 0:
+                text = concatenated_text[:random.randint(1, min(10, len(concatenated_text)))]
+                concatenated_text = concatenated_text[len(text):]
+                time.sleep(self.sleep_time)
+                line = json.dumps({"response": text, "history": current_history})
+                if line:
+                    parsed_line = json.loads(line)
+                    response = parsed_line["response"]
+                    accumulated_text += text
+                    current_history = history.copy()
+                    current_history.append({"role": "assistant", "content": accumulated_text})
+                    yield response, current_history
+        except Exception as e:
+            print(e)
+            yield "error"
+
 class ChatgptCaller:
-    def __init__(self):
+    def __init__(self, sleep_time=0):
         from openai import OpenAI
         from .secrets_chatgpt import API_KEY
         self.client = OpenAI(api_key=API_KEY)
@@ -14,7 +96,10 @@ class ChatgptCaller:
     def load_history(self, id):
         if os.path.exists(f"tmp/history_{id}.json"):
             with open(f"tmp/history_{id}.json", 'r', encoding='utf-8') as file:
-                history = json.load(file)
+                try:
+                    history = json.load(file)
+                except:
+                    history = []
         else:
             history = []
         return history
@@ -44,13 +129,8 @@ class ChatgptCaller:
             accumulated_text = ""
             for response, new_history in self.call_model_stream(prompt, history):
                 accumulated_text += response
-                # print(response, end="", flush=True)
+                self.save_history(new_history, id)
                 yield response
-            response = accumulated_text
-            history = new_history
-            # print("")
-            print(response)
-            self.save_history(history, id)
         except Exception as e:
             print(e)
             return "error"
@@ -73,67 +153,6 @@ class ChatgptCaller:
                 current_history = history.copy()
                 current_history.append({"role": "assistant", "content": f"{accumulated_text}"})
                 yield response, current_history
-        except Exception as e:
-            print(e)
-            yield "error"
-
-class ChatglmCaller:
-    def __init__(self):
-        pass
-
-    def load_history(self, id):
-        if os.path.exists(f"tmp/history_{id}.json"):
-            with open(f"tmp/history_{id}.json", 'r', encoding='utf-8') as file:
-                history = json.load(file)
-        else:
-            history = []
-        return history
-    
-    def save_history(self, history, id):
-        with open(f"tmp/history_{id}.json", 'w', encoding='utf-8') as file:
-            json.dump(history, file, ensure_ascii=False)
-
-    def clear_history(self, id):
-        if os.path.exists(f"tmp/history_{id}.json"):
-            os.remove(f"tmp/history_{id}.json")
-    
-    def set_system_prompt(self, system_prompt, id):
-        # set system prompt will reset the history
-        history = self.load_history(id)
-        if len(history) > 0 and history[0]["role"] == "system":
-            history[0] = {"role": "system", "content": f"{system_prompt}"}
-        else:
-            history = []
-            history.append({"role": "system", "content": f"{system_prompt}"})
-        self.save_history(history, id)
-        return history
-        
-    def call_stream(self, prompt, id):
-        try:
-            history = self.load_history(id)
-            accumulated_text = ""
-            for response, new_history in self.call_model_stream(prompt, history):
-                accumulated_text += response
-                # print(response, end="", flush=True)
-                yield response
-            response = accumulated_text
-            history = new_history
-            # print("")
-            print(response)
-            self.save_history(history, id)
-        except Exception as e:
-            print(e)
-            return "error"
-
-    def call_model_stream(self, prompt, history):
-        try:
-            result = requests.post(addr_ChatglmCaller + "/chatglm_stream", json={'prompt': prompt, 'history': history}, stream=True)
-            for line in result.iter_lines():
-                if line:
-                    parsed_line = json.loads(line.decode('utf-8'))
-                    response = parsed_line["response"]
-                    history = parsed_line["history"]
-                    yield response, history
         except Exception as e:
             print(e)
             yield "error"
