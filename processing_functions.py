@@ -303,7 +303,11 @@ class TTSStep(BaseProcessingStep):
         text = data["text"]
         language = data["language"]
         tts_result = self.tts_caller.call(text, language)
-        tts_result = bytes_to_base64(tts_result)
+        try:
+            tts_result = bytes_to_base64(tts_result)
+        except Exception as e:
+            self.log_error(f"failed to convert tts_result to base64: {e}")
+            tts_result = ""
         # 将数据放入 output_queue
         output_data = {}
         output_data[self.output_name("audio_file")] = tts_result
