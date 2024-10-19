@@ -19,6 +19,9 @@ app = FastAPI()
 TIME_INTERVAL = 0.05
 MESSAGE_MAX_LENGTH = 200
 
+if not os.path.exists("tmp"):
+    os.makedirs("tmp")
+
 # 设置全局日志处理器
 def setup_global_logger():
     logger = logging.getLogger("global_logger")
