@@ -28,7 +28,7 @@ class TestTTSCaller:
             return audio_bytes
         except Exception as e:
             print(e)
-            return self.empty_audio
+            return ""
         
 class BertVitsCaller:
     def __init__(self):
@@ -61,4 +61,4 @@ class BertVitsCaller:
             return audio_bytes
         except Exception as e:
             print(e)
-            return self.empty_audio
+            return ""
