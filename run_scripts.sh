@@ -23,7 +23,7 @@ kill_screen_if_exists "motion"
 # 创建 screen 会话，切换到脚本所在目录，激活 conda 环境并运行脚本
 screen -dmS asr zsh -c "source ~/.zshrc; cd ../SenseVoice && mamba activate sensevoice && python custom_sensevoice.py; exec zsh"
 screen -dmS tts zsh -c "source ~/.zshrc; cd ../XzJosh-Bert-VITS2-2.3 && mamba activate bertvits && python custom_bertvits.py; exec zsh"
-screen -dmS motion zsh -c "source ~/.zshrc; cd ../MotionHint && mamba activate motionhint && python flask_server.py; exec zsh"
+screen -dmS motion zsh -c "source ~/.zshrc; cd ../MotionHint && mamba activate motion && python flask_server.py; exec zsh"
 
 screen -dmS yyassistant zsh -c "source ~/.zshrc; mamba activate yyassistant && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000; exec zsh"
 
