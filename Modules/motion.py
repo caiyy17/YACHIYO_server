@@ -11,16 +11,19 @@ class TestMotionCaller:
         return motion
     
 class BGEMotionCaller:
-    def __init__(self):
-        self.actions_set = {}
-        self.actions_semantics = {}
+    def __init__(self, dataset=""):
+        pass
+
+    def init_dataset(self, dataset):
         try:
-            init = requests.post(addr_MotionCaller + "/init", json={
-                "action_set": self.actions_set, "actions_semantics": self.actions_semantics
+            response_init = requests.post(addr_MotionCaller + "/init", json={
+                "dataset": dataset
             })
+            return response_init
         except Exception as e:
             print(e)
-
+            return "error"
+        
     def call(self, prompt):
         try:
             response = requests.post(addr_MotionCaller + "/get_action", json={

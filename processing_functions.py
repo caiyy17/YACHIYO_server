@@ -390,6 +390,8 @@ class BGEMotionStep(MotionStep):
     def custom_init(self):
         from Modules.motion import BGEMotionCaller
         self.motion_caller = BGEMotionCaller()
+        init_response = self.motion_caller.init_dataset(self.get_config("dataset", ""))
+        self.log_info(f"init_response: {init_response}")
     
 class LLMProcessMotionStep(BaseProcessingStep):
     def custom_init(self):
