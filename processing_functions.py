@@ -424,6 +424,7 @@ class GPT2MotionStep(LLMProcessMotionStep):
     def custom_init(self):
         from Modules.llm_process_motion import GPT2MotionCaller
         self.llm_process_motion_caller = GPT2MotionCaller()
+        self.catch_signal_set = {"EoS"}
 
 # 定义函数映射字典
 FUNCTION_MAP = {
