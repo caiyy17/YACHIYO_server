@@ -256,7 +256,8 @@ def base64_to_bytes(base64_data):
 
 class ASRStep(BaseProcessingStep):
     def custom_init(self):
-        self.asr_caller = ASRCaller()
+        from Modules.asr import TestASRCaller
+        self.asr_caller = TestASRCaller()
     def process(self, data, pass_data={}):
         self.log_info(f"processing data: {data}")
         audio_file = base64.b64decode(data["audio_file"])
@@ -266,10 +267,16 @@ class ASRStep(BaseProcessingStep):
         output_data[self.output_name("language")] = "en"
         self.output_to_queue(output_data, pass_data)
         return
+    
+class SenseVoiceStep(ASRStep):
+    def custom_init(self):
+        from Modules.asr import SenceVoiceCaller
+        self.asr_caller = SenceVoiceCaller()
 
 class LLMStep(BaseProcessingStep):
     def custom_init(self):
-        self.llm_caller = LLMCaller(self.get_config("sleep_time", 0))
+        from Modules.llm import TestLLMCaller
+        self.llm_caller = TestLLMCaller(self.get_config("sleep_time", 0))
         self.reset_history = self.get_config("reset_history", True)
         self.system_prompt = self.get_config("system_prompt", "")
         if self.reset_history:
@@ -279,23 +286,39 @@ class LLMStep(BaseProcessingStep):
 
     def process(self, data, pass_data={}):
         self.log_info(f"processing data: {data}")
-        for response in self.llm_caller.call_stream(data["prompt"], self.client_id):
-            self.check_cancel()
-            if data["timestamp"] < self.cancel_timestamp:
-                self.log_info(f"cancel inside loop")
-                break
-            current_data = {}
-            current_data[self.output_name("text")] = response
-            current_data[self.output_name("language")] = "en"
-            self.output_to_queue(current_data, pass_data)
+        prompt = data["prompt"]
+        if prompt == "":
+            self.log_info("empty prompt")
+        else:
+            for response in self.llm_caller.call_stream(prompt, self.client_id):
+                self.check_cancel()
+                if data["timestamp"] < self.cancel_timestamp:
+                    self.log_info(f"cancel inside loop")
+                    break
+                current_data = {}
+                current_data[self.output_name("text")] = response
+                current_data[self.output_name("language")] = "en"
+                self.output_to_queue(current_data, pass_data)
         eos_signal = {"signal": "EoS"}
         eos_signal[self.output_name("language")] = "en"
         self.output_to_queue(eos_signal, pass_data)
         return
+    
+class ChatgptStep(LLMStep):
+    def custom_init(self):
+        from Modules.llm import ChatgptCaller
+        self.llm_caller = ChatgptCaller(self.get_config("sleep_time", 0))
+        self.reset_history = self.get_config("reset_history", True)
+        self.system_prompt = self.get_config("system_prompt", "")
+        if self.reset_history:
+            self.llm_caller.clear_history(self.client_id)
+        if self.system_prompt != "":
+            self.llm_caller.set_system_prompt(self.system_prompt, self.client_id)
 
 class TTSStep(BaseProcessingStep):
     def custom_init(self):
-        self.tts_caller = TTSCaller()
+        from Modules.tts import TestTTSCaller
+        self.tts_caller = TestTTSCaller()
         test_result = self.tts_caller.call("test", "en")
         
     def process(self, data, pass_data={}):
@@ -314,29 +337,42 @@ class TTSStep(BaseProcessingStep):
         self.output_to_queue(output_data, pass_data)
         return
     
+class BertVitsStep(TTSStep):
+    def custom_init(self):
+        from Modules.tts import BertVitsCaller
+        self.tts_caller = BertVitsCaller()
+        test_result = self.tts_caller.call("test", "en")
+    
 class RAGStep(BaseProcessingStep):
     def custom_init(self):
-        self.rag_caller = RAGCaller(self.get_config("rag_info", ""))
+        from Modules.rag import TestRAGCaller
+        self.rag_caller = TestRAGCaller(self.get_config("rag_info", ""))
     def process(self, data, pass_data={}):
         self.log_info(f"processing data: {data}")
         prompt = data["prompt"]
         language = data["language"]
-        text, image = self.rag_caller.call(prompt, language)
-        self.log_info(f"output data: {text}, {image}")
-        # 将数据放入 output_queue
-        output_data = {}
-        output_data[self.output_name("text")] = text
-        self.output_to_queue(output_data, pass_data)
+        if prompt == "":
+            self.log_info("empty prompt")
+            output_data = {}
+            output_data[self.output_name("text")] = ""
+            self.output_to_queue(output_data, pass_data)
+        else:
+            text, image = self.rag_caller.call(prompt, language)
+            self.log_info(f"output data: {text}, {image}")
+            # 将数据放入 output_queue
+            output_data = {}
+            output_data[self.output_name("text")] = text
+            self.output_to_queue(output_data, pass_data)
 
-        send_data = {}
-        send_data[self.output_name("image_send")] = image
-        self.output_to_queue(send_data, pass_data, is_add_pass_data=False, is_add_destination=False, direct_send=True)
-
+            send_data = {}
+            send_data[self.output_name("image_send")] = image
+            self.output_to_queue(send_data, pass_data, is_add_pass_data=False, is_add_destination=False, direct_send=True)
         return
     
 class MotionStep(BaseProcessingStep):
     def custom_init(self):
-        self.motion_caller = MotionCaller()
+        from Modules.motion import TestMotionCaller
+        self.motion_caller = TestMotionCaller()
     def process(self, data, pass_data={}):
         self.log_info(f"processing data: {data}")
         prompt = data["prompt"]
@@ -350,9 +386,15 @@ class MotionStep(BaseProcessingStep):
         self.output_to_queue(output_data, pass_data)
         return
     
+class BGEMotionStep(MotionStep):
+    def custom_init(self):
+        from Modules.motion import BGEMotionCaller
+        self.motion_caller = BGEMotionCaller()
+    
 class LLMProcessMotionStep(BaseProcessingStep):
     def custom_init(self):
-        self.llm_process_motion_caller = LLMProcessMotionCaller()
+        from Modules.llm_process_motion import TestLLMProcessMotionCaller
+        self.llm_process_motion_caller = TestLLMProcessMotionCaller()
         self.catch_signal_set = {"EoS"}
     def custom_cancel(self):
         self.llm_process_motion_caller.reset()
@@ -375,6 +417,11 @@ class LLMProcessMotionStep(BaseProcessingStep):
             output_data[self.output_name("motion")] = result[1]
             self.output_to_queue(output_data, pass_data)
         return
+    
+class GPT2MotionStep(LLMProcessMotionStep):
+    def custom_init(self):
+        from Modules.llm_process_motion import GPT2MotionCaller
+        self.llm_process_motion_caller = GPT2MotionCaller()
 
 # 定义函数映射字典
 FUNCTION_MAP = {
@@ -382,11 +429,16 @@ FUNCTION_MAP = {
     'call_func_a': FuncA,
     'call_func_b': FuncB,
     'call_asr': ASRStep,
+    'call_sense_voice': SenseVoiceStep,
     'call_llm': LLMStep,
+    'call_chatgpt': ChatgptStep,
     'call_tts': TTSStep,
+    'call_bert_vits': BertVitsStep,
     'call_rag': RAGStep,
     'call_motion': MotionStep,
-    'call_llm_process_motion': LLMProcessMotionStep
+    'call_bge_motion': BGEMotionStep,
+    'call_llm_process_motion': LLMProcessMotionStep,
+    'call_gpt_2_motion': GPT2MotionStep
 }
 
 def get_function_class_by_name(func_name):

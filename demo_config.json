@@ -2,7 +2,7 @@
     "pipeline": [
         {
             "node_id": 1,
-            "function": "call_asr",
+            "function": "call_sense_voice",
             "config": {
                 "input_vars": [
                     {
@@ -55,7 +55,7 @@
         },
         {
             "node_id": 3,
-            "function": "call_llm",
+            "function": "call_chatgpt",
             "config": {
                 "input_vars": [
                     {
@@ -82,7 +82,7 @@
         },
         {
             "node_id": 4,
-            "function": "call_llm_process_motion",
+            "function": "call_gpt_2_motion",
             "config": {
                 "input_vars": [
                     {
@@ -111,7 +111,7 @@
         },
         {
             "node_id": 5,
-            "function": "call_motion",
+            "function": "call_bge_motion",
             "config": {
                 "input_vars": [
                     {
@@ -144,7 +144,7 @@
         },
         {
             "node_id": 6,
-            "function": "call_tts",
+            "function": "call_bert_vits",
             "config": {
                 "input_vars": [
                     {
