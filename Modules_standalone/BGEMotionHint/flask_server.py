@@ -51,6 +51,7 @@ def get_action():
         return jsonify({"error": "No query provided"}), 400
 
     # 检索相关动作
+    print("query:", query)
     relevant_actions = retriever.query_actions(query)
     if not relevant_actions:
         return jsonify({"error": "No relevant actions found"}), 404
