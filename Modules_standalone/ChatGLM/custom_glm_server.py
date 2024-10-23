@@ -1,0 +1,77 @@
+from flask import Flask, request, Response
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from flask import jsonify
+
+app = Flask(__name__)
+
+# 初始化设备和模型
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH = './glm-4-9b-chat'
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_PATH,
+    low_cpu_mem_usage=True,
+    trust_remote_code=True,
+    load_in_4bit=True
+).eval()
+
+gen_kwargs = {"max_length": 2500, "do_sample": True, "top_k": 1}
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.json
+    query = data.get("query")
+    if not query:
+        return jsonify({"error": "No query provided"}), 400
+    
+    def generate():
+        inputs = tokenizer.apply_chat_template([{"role": "user", "content": query}],
+                                                add_generation_prompt=True,
+                                                tokenize=True,
+                                                return_tensors="pt",
+                                                return_dict=True
+                                                )
+        with torch.no_grad():
+            index = len(inputs["input_ids"][0])
+            for outputs in model.stream_generate(**inputs, **gen_kwargs):
+                outputs = outputs.tolist()[0][index:-1]
+                text = tokenizer.decode(outputs, skip_special_tokens=True)
+                if text == "":
+                    continue
+                elif text[-1] == chr(65533):
+                    continue
+                else:
+                    index += len(outputs)
+                    yield jsonify({"response": text})
+    
+    return Response(generate(), mimetype='text/event-stream')
+
+if __name__ == '__main__':
+    hello_query = "Hello to me with only emoji"
+    hello_response = ""
+    inputs = tokenizer.apply_chat_template([{"role": "user", "content": hello_query}],
+                                            add_generation_prompt=True,
+                                            tokenize=True,
+                                            return_tensors="pt",
+                                            return_dict=True
+                                            )
+    inputs = inputs.to(device)
+    with torch.no_grad():
+        index = len(inputs["input_ids"][0])
+        for outputs in model.stream_generate(**inputs, **gen_kwargs):
+            outputs = outputs.tolist()[0][index:-1]
+            # print(outputs)
+            # if tokenizer.decode(outputs, skip_special_tokens=True) 
+            # index += len(outputs)
+            text = tokenizer.decode(outputs, skip_special_tokens=True)
+            if text == "":
+                continue
+            elif text[-1] == chr(65533):
+                continue
+            else:
+                index += len(outputs)
+                print(tokenizer.decode(outputs, skip_special_tokens=True), end="")
+    print()
+    app.run(host='0.0.0.0', port=5051)

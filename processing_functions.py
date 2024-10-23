@@ -315,6 +315,17 @@ class ChatgptStep(LLMStep):
         if self.system_prompt != "":
             self.llm_caller.set_system_prompt(self.system_prompt, self.client_id)
 
+class ChatGLMStep(LLMStep):
+    def custom_init(self):
+        from Modules.llm import ChatGLMCaller
+        self.llm_caller = ChatGLMCaller(self.get_config("sleep_time", 0))
+        self.reset_history = self.get_config("reset_history", True)
+        self.system_prompt = self.get_config("system_prompt", "")
+        if self.reset_history:
+            self.llm_caller.clear_history(self.client_id)
+        if self.system_prompt != "":
+            self.llm_caller.set_system_prompt(self.system_prompt, self.client_id)
+
 class TTSStep(BaseProcessingStep):
     def custom_init(self):
         from Modules.tts import TestTTSCaller
@@ -435,6 +446,7 @@ FUNCTION_MAP = {
     'call_sense_voice': SenseVoiceStep,
     'call_llm': LLMStep,
     'call_chatgpt': ChatgptStep,
+    'call_chatglm': ChatGLMStep,
     'call_tts': TTSStep,
     'call_bert_vits': BertVitsStep,
     'call_rag': RAGStep,

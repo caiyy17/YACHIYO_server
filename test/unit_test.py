@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
     # # 测试初始化流水线
     start = time.time()
-    json_file = "demo_config.json"
+    json_file = "test/test_config.json"
     with open(json_file, "r") as file:
         pipeline_config = json.load(file)
     test_init_pipeline(client_id, pipeline_config, force=True)
