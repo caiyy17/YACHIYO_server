@@ -19,7 +19,7 @@ model = AutoModelForCausalLM.from_pretrained(
     load_in_4bit=True
 ).eval()
 
-gen_kwargs = {"max_length": 8000, "do_sample": True, "top_k": 1}
+gen_kwargs = {"max_length": 100000, "do_sample": True, "top_k": 1}
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -53,6 +53,7 @@ def chat():
                     index += len(outputs)
                     print(text, end="")
                     yield json.dumps({"response": text}) + "\n"
+        torch.cuda.empty_cache()
         print()
     
     return Response(generate(), content_type='application/json')
