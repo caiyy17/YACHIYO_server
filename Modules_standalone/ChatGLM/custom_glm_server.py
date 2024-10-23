@@ -3,6 +3,8 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from flask import jsonify
 
+import json
+
 app = Flask(__name__)
 
 # 初始化设备和模型
@@ -23,11 +25,13 @@ gen_kwargs = {"max_length": 2500, "do_sample": True, "top_k": 1}
 def chat():
     data = request.json
     query = data.get("query")
+    history = data.get("history")
+    print(f"query: {query}")
     if not query:
         return jsonify({"error": "No query provided"}), 400
     
     def generate():
-        inputs = tokenizer.apply_chat_template([{"role": "user", "content": query}],
+        inputs = tokenizer.apply_chat_template( history,
                                                 add_generation_prompt=True,
                                                 tokenize=True,
                                                 return_tensors="pt",
@@ -40,13 +44,18 @@ def chat():
                 text = tokenizer.decode(outputs, skip_special_tokens=True)
                 if text == "":
                     continue
+                elif text[-1] == "\n" and index == len(inputs["input_ids"][0]):
+                    index += len(outputs)
+                    continue
                 elif text[-1] == chr(65533):
                     continue
                 else:
                     index += len(outputs)
-                    yield jsonify({"response": text})
+                    print(text, end="")
+                    yield json.dumps({"response": text}) + "\n"
+        print()
     
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(generate(), content_type='application/json')
 
 if __name__ == '__main__':
     hello_query = "Hello to me with only emoji"
