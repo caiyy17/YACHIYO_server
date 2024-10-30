@@ -14,7 +14,6 @@ class BaseProcessingStep:
                  input_queue, 
                  output_queue, 
                  cancel_queue, 
-                 next_cancel_queue, 
                  kill_event, 
                  config=None
                  ):
@@ -26,7 +25,6 @@ class BaseProcessingStep:
         self.input_queue = input_queue
         self.output_queue = output_queue
         self.cancel_queue = cancel_queue
-        self.next_cancel_queue = next_cancel_queue
         self.cancel_timestamp = 0
         self.kill_event = kill_event
         self.config = config or {}  # 可变的设置信息，默认是空字典
@@ -61,6 +59,7 @@ class BaseProcessingStep:
                 data = json.loads(data)
                 if data.get("timestamp", 0) < self.cancel_timestamp:
                     self.log_info(f"discarding old data: {data}")
+                    self.custom_cancel()
                     continue
                 if data.get("destination", self.index) == self.index:
                     # 如果这是一个signal，并且不在catch_signal_set中，就除掉destination，直接送到output_queue
@@ -89,7 +88,6 @@ class BaseProcessingStep:
 
     def custom_cancel(self):
         """子类可以重写此方法进行自定义取消操作"""
-
         pass
 
     def extract_input_data(self, data):
@@ -280,18 +278,15 @@ class LLMStep(BaseProcessingStep):
     def process(self, data, pass_data={}):
         self.log_info(f"processing data: {data}")
         prompt = data["prompt"]
-        if prompt == "":
-            self.log_info("empty prompt")
-        else:
-            for response in self.llm_caller.call_stream(prompt, self.client_id):
-                self.check_cancel()
-                if data["timestamp"] < self.cancel_timestamp:
-                    self.log_info(f"cancel inside loop")
-                    break
-                current_data = {}
-                current_data[self.output_name("text")] = response
-                current_data[self.output_name("language")] = "en"
-                self.output_to_queue(current_data, pass_data)
+        for response in self.llm_caller.call_stream(prompt, self.client_id):
+            self.check_cancel()
+            if data["timestamp"] < self.cancel_timestamp:
+                self.log_info(f"cancel inside loop")
+                break
+            current_data = {}
+            current_data[self.output_name("text")] = response
+            current_data[self.output_name("language")] = "en"
+            self.output_to_queue(current_data, pass_data)
         eos_signal = {"signal": "EoS"}
         eos_signal[self.output_name("language")] = "en"
         self.output_to_queue(eos_signal, pass_data)

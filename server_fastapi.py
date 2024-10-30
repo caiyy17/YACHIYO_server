@@ -127,7 +127,6 @@ class ClientConnection:
                 self.queues[i],
                 self.queues[i + 1],
                 self.cancel_queues[i],
-                self.cancel_queues[i + 1],
                 self.kill_event,
                 config
             )
