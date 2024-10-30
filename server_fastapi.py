@@ -1,7 +1,6 @@
 import os
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
-import websockets
 from typing import Dict
 from pydantic import BaseModel
 
@@ -365,7 +364,7 @@ async def register_client(data: ClientData):
 async def unregister_client(data: ClientData):
     if not manager.is_registered(data.client_id):
         global_logger.warning(f"Client {data.client_id} not registered")
-        raise HTTPException(status_code=400, detail="Client not registered")
+        return {"status": "not registered", "client_id": data.client_id}
     # 移除客户端
     await manager.remove_client(data.client_id)
     global_logger.info(f"Client {data.client_id} unregistered")
@@ -378,14 +377,14 @@ async def get_clients():
 @app.get("/clients/{client_id}")
 async def get_client(client_id: str):
     if client_id not in manager.clients:
-        raise HTTPException(status_code=404, detail="Client not found")
-    return {"client_id": client_id}
+        return {"status": "not connected", "client_id": client_id}
+    return {"status": "connected", "client_id": client_id}
 
 @app.get("/logs/{client_id}")
 async def get_client_log(client_id: str):
     log_filename = f"logs/client_{client_id}.log"
     if not os.path.exists(log_filename):
-        raise HTTPException(status_code=404, detail="Log file not found")
+        return {"log_content": ""}
     with open(log_filename, 'r') as f:
         log_content = f.read()
     return {"log_content": log_content}
@@ -439,6 +438,4 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             else:
                 break
     finally:
-        # 客户端断开时移除实例
-        # await manager.remove_client(client_id)
         global_logger.info(f"Client {client_id} disconnected")

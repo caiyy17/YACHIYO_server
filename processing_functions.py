@@ -241,13 +241,6 @@ class FuncB(BaseProcessingStep):
 import json
 import base64
 
-from Modules.asr import SenceVoiceCaller as ASRCaller
-from Modules.llm import ChatgptCaller as LLMCaller
-from Modules.tts import BertVitsCaller as TTSCaller
-from Modules.rag import TestRAGCaller as RAGCaller
-from Modules.motion import BGEMotionCaller as MotionCaller
-from Modules.llm_process_motion import GPT2MotionCaller as LLMProcessMotionCaller
-
 def bytes_to_base64(bytes_data):
     return base64.b64encode(bytes_data).decode('utf-8')
 
@@ -453,7 +446,8 @@ FUNCTION_MAP = {
     'call_motion': MotionStep,
     'call_bge_motion': BGEMotionStep,
     'call_llm_process_motion': LLMProcessMotionStep,
-    'call_gpt_2_motion': GPT2MotionStep
+    'call_gpt_2_motion': GPT2MotionStep,
+    # 'call_async_sender': AsyncSender,
 }
 
 def get_function_class_by_name(func_name):
