@@ -360,13 +360,12 @@ class RAGStep(BaseProcessingStep):
             text, image = self.rag_caller.call(prompt, language)
             self.log_info(f"output data: {text}, {image}")
             # 将数据放入 output_queue
+            send_data = {}
+            send_data[self.output_name("image_send")] = image
+            self.output_to_queue(send_data, pass_data, is_add_pass_data=False, destination_index=-1)
             output_data = {}
             output_data[self.output_name("text")] = text
             self.output_to_queue(output_data, pass_data)
-
-            send_data = {}
-            send_data[self.output_name("image_send")] = image
-            self.output_to_queue(send_data, pass_data, is_add_pass_data=False, is_add_destination=False, direct_send=True)
         return
     
 class MotionStep(BaseProcessingStep):
