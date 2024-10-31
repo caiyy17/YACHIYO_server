@@ -31,9 +31,10 @@ class TestTTSCaller:
             return ""
         
 class BertVitsCaller:
-    def __init__(self):
+    def __init__(self, voice=""):
         # silent 0.01s audio
         self.empty_audio = AudioSegment.silent(duration=10)
+        self.voice_setup = requests.post(addr_TTSCaller + "/change_model", json={"config": voice}).text
         pass
     def call(self, prompt, language):
         try:

@@ -339,7 +339,8 @@ class TTSStep(BaseProcessingStep):
 class BertVitsStep(TTSStep):
     def custom_init(self):
         from Modules.tts import BertVitsCaller
-        self.tts_caller = BertVitsCaller()
+        self.tts_caller = BertVitsCaller(self.get_config("voice", ""))
+        self.log_info(self.tts_caller.voice_setup)
         test_result = self.tts_caller.call("test", "en")
     
 class RAGStep(BaseProcessingStep):

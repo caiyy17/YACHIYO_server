@@ -27,12 +27,14 @@ from infer import infer, latest_version, get_net_g, infer_multilang
 import gradio as gr
 import webbrowser
 import numpy as np
-from config import config
+from config import Config
 from tools.translate import translate
 import librosa
 
 net_g = None
 
+DEFAULT_CONFIG = "config.yml"
+config = Config(DEFAULT_CONFIG)
 device = config.webui_config.device
 if device == "mps":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -399,18 +401,22 @@ import time
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-model_path = None
-config_path = None
-speaker_name = None
+current_config = DEFAULT_CONFIG
 hps = None
 
 def tts_init():
+    global config
     global net_g
     global hps
 
     global model_path
     global config_path
     global speaker_name
+
+    config = Config(current_config)
+    model_path = config.webui_config.model
+    config_path = config.webui_config.config_path
+    speaker_name = None
 
     hps = utils.get_hparams_from_file(config_path)
     # 若config.json中未指定版本则默认为最新版本
@@ -536,31 +542,24 @@ def main():
 
 @app.route("/change_model", methods=['POST'])
 def change_model():
-    global model_path
-    global config_path
-    global speaker_name
-    
+    global current_config
+
     data = request.json
-    if 'model_path' in data:
-        new_model_path = data['model_path']
-        print("Model: ", model_path)
-    if 'config_path' in data:
-        new_config_path = data['config_path']
-        print("Config: ", config_path)
-    if 'speaker_name' in data:
-        new_speaker_name = data['speaker_name']
-        print("Speaker: ", speaker_name)
+    new_config = DEFAULT_CONFIG
+    if 'config' in data and data['config'] != "":
+        new_config = "config_" + data['config'] + ".yml"
     
-    if new_model_path == model_path:
+    if new_config == current_config:
         print("Model not changed")
-        return "Model not changed"
+        return f"Model not changed {current_config}"
     else:
-        model_path = new_model_path
-        config_path = new_config_path
-        speaker_name = new_speaker_name
+        if not os.path.isfile(new_config):
+            print("Model not found")
+            return f"Model not found {current_config}"
+        current_config = new_config
         tts_init()
 
-    return "Model Setup Success"
+    return f"Model Setup Success {current_config}"
 
 if __name__ == "__main__":
     
