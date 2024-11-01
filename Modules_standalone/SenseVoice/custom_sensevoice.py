@@ -59,4 +59,4 @@ if __name__ == '__main__':
     )
     print(res[0]["text"])
         
-    app.run(debug=False, port=5052)
+    app.run(debug=False, host='0.0.0.0', port=5052)

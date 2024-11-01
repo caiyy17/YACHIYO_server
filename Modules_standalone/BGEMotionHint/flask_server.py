@@ -70,4 +70,4 @@ def get_action():
         return jsonify({"error": "Action index not found in actions_set"}), 404
 
 if __name__ == '__main__':
-    app.run(debug=False, port=5054, host="0.0.0.0")
+    app.run(debug=False, host="0.0.0.0", port=5054)

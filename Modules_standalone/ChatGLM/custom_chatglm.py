@@ -84,4 +84,4 @@ if __name__ == '__main__':
                 index += len(outputs)
                 print(tokenizer.decode(outputs, skip_special_tokens=True), end="")
     print()
-    app.run(host='0.0.0.0', port=5051)
+    app.run(debug=False, host='0.0.0.0', port=5051)
