@@ -204,6 +204,8 @@ class ChatGLMCaller:
             return "error"
 
     def call_model_stream(self, prompt, history):
+        if prompt == "":
+            prompt = " "
         history.append({"role": "user", "content": f"{prompt}"})
         try:
             url = addr_LLMCaller + "/chat"
