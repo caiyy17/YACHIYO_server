@@ -4,7 +4,7 @@ import random
 
 import json
 import time
-datasets_path = "datasets/"
+datasets_path = "custom_datasets/"
 retriever = None
 actions_set = None
 

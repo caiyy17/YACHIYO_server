@@ -324,6 +324,7 @@ class TTSStep(BaseProcessingStep):
         self.log_info(f"processing data: {data}")
         text = data["text"]
         language = data["language"]
+        text = text.strip("\n")
         tts_result = self.tts_caller.call(text, language)
         try:
             tts_result = bytes_to_base64(tts_result)
