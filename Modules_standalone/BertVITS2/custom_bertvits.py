@@ -38,6 +38,7 @@ config = Config(DEFAULT_CONFIG)
 device = config.webui_config.device
 if device == "mps":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+print(f"Using device: {device}")
 
 
 def free_up_memory():

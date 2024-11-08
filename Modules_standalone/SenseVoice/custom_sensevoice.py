@@ -1,3 +1,4 @@
+import torch
 from funasr import AutoModel
 # from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
@@ -9,10 +10,12 @@ import re
 app = Flask(__name__)
 
 model_dir = "iic/SenseVoiceSmall"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 model = AutoModel(model=model_dir,
                   vad_model="fsmn-vad",
                   vad_kwargs={"max_single_segment_time": 30000},
-                  trust_remote_code=True, device="cuda:0",
+                  trust_remote_code=True, device=device,
                   disable_update=True)
 
 

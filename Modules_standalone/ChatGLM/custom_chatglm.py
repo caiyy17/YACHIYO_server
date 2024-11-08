@@ -1,6 +1,6 @@
 from flask import Flask, request, Response
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from flask import jsonify
 
 import json
@@ -9,6 +9,11 @@ app = Flask(__name__)
 
 # 初始化设备和模型
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 如果多卡，用最后一张卡
+if str(device) == "cuda":
+    torch.cuda.set_device(torch.cuda.device_count() - 1)
+    device = torch.device("cuda")
+print(f"Using device: {device}")
 MODEL_PATH = './glm-4-9b-chat'
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)

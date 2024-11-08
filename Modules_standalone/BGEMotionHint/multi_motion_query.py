@@ -1,8 +1,11 @@
 import faiss
+import torch
 from sentence_transformers import SentenceTransformer
 
 EMBEDDING_PATH = "./bge-large-zh-v1.5"
-embedding_model = SentenceTransformer(EMBEDDING_PATH)
+device='cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {device}")
+embedding_model = SentenceTransformer(EMBEDDING_PATH, device=device)
 
 class ActionSemanticRetriever:
     def __init__(self, actions_semantics):
