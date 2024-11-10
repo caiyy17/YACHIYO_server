@@ -52,11 +52,6 @@ def setup_global_logger():
 # 初始化全局 logger
 global_logger = setup_global_logger()
 
-def log_info(self, message):
-    if len(message) > MESSAGE_MAX_LENGTH:
-        message = message[:MESSAGE_MAX_LENGTH] + "..."
-    global_logger.info(message)
-
 # 客户端的类，用于管理每个连接
 class ClientConnection:
     def __init__(self, client_id: str, logger: logging.Logger):
