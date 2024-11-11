@@ -193,7 +193,7 @@ if __name__ == "__main__":
     # messages.append(json.dumps({"type": "cancel"}))
     # messages.append(json.dumps({"audio_file": audio_data}))
 
-    asyncio.run(test_websocket(client_id, process_func, messages, repeat=1, interval=0, timeout=30))
+    asyncio.run(test_websocket(client_id, process_func, messages, repeat=1, interval=0, timeout=5))
 
     # # 测试客户端注销
     # test_post_unregister(client_id)
