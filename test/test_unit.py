@@ -154,7 +154,9 @@ if __name__ == "__main__":
         os.system("rm -rf test/tmp")
     os.mkdir("test/tmp")
 
-    client_id = "test-id-1"
+    client_id = "amiya_glm"
+    json_file = "configs/demo_config.json"
+    force = False
 
     # # 测试 POST 注册接口
     test_post_register(client_id)
@@ -167,10 +169,9 @@ if __name__ == "__main__":
 
     # # 测试初始化流水线
     start = time.time()
-    json_file = "test/test_config.json"
     with open(json_file, "r") as file:
         pipeline_config = json.load(file)
-    test_init_pipeline(client_id, pipeline_config, force=True)
+    test_init_pipeline(client_id, pipeline_config, force=force)
     print(f"init time: {time.time() - start}")
 
     # # 测试获取客户端日志

@@ -23,7 +23,7 @@ class GPT2MotionCaller:
     def __init__(self):
         self.start_mark = "["
         self.end_mark = "]"
-        self.punctuations = set("：，。？！:,.?!\n\t")
+        self.punctuations = set("、：，。？！:,.?!\n\t")
         self.length_threshold = 3
 
         self.accumulated_text = ""

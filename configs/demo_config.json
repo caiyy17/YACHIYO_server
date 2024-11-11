@@ -55,7 +55,7 @@
         },
         {
             "node_id": 3,
-            "function": "call_chatgpt",
+            "function": "call_chatglm",
             "config": {
                 "input_vars": [
                     {

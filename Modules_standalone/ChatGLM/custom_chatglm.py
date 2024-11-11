@@ -2,6 +2,7 @@ from flask import Flask, request, Response
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from flask import jsonify
+import time
 
 import json
 
@@ -36,6 +37,7 @@ def chat():
         return jsonify({"error": "No query provided"}), 400
     
     def generate():
+        start = time.time()
         inputs = tokenizer.apply_chat_template( history,
                                                 add_generation_prompt=True,
                                                 tokenize=True,
@@ -60,10 +62,12 @@ def chat():
                     yield json.dumps({"response": text}) + "\n"
         torch.cuda.empty_cache()
         print()
+        print(f"Time: {time.time() - start}")
     
     return Response(generate(), content_type='application/json')
 
 if __name__ == '__main__':
+    start = time.time()
     hello_query = "Hello to me with only emoji"
     hello_response = ""
     inputs = tokenizer.apply_chat_template([{"role": "user", "content": hello_query}],
@@ -89,4 +93,5 @@ if __name__ == '__main__':
                 index += len(outputs)
                 print(tokenizer.decode(outputs, skip_special_tokens=True), end="")
     print()
+    print(f"Time: {time.time() - start}")
     app.run(debug=False, host='0.0.0.0', port=5051)

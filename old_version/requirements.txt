@@ -1,6 +1,0 @@
-openai
-flask
-requests
-pillow
-langdetect
-pydub

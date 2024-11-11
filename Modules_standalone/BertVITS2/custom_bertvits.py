@@ -556,7 +556,7 @@ def change_model():
     else:
         if not os.path.isfile(new_config):
             print("Model not found")
-            return f"Model not found {current_config}"
+            return f"Model not found {new_config}"
         current_config = new_config
         tts_init()
 

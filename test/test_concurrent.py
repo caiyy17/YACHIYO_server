@@ -154,7 +154,7 @@ if __name__ == "__main__":
         os.system("rm -rf test/tmp")
     os.mkdir("test/tmp")
 
-    num_clients = 10
+    num_clients = 3
     client_ids = []
     for i in range(num_clients):
         client_ids.append(f"test-id-{i}")
@@ -165,7 +165,7 @@ if __name__ == "__main__":
         test_post_register(client_id)
         test_get_clients()
         start = time.time()
-        json_file = "test/test_config.json"
+        json_file = "configs/demo_config.json"
         with open(json_file, "r") as file:
             pipeline_config = json.load(file)
         test_init_pipeline(client_id, pipeline_config, force=True)

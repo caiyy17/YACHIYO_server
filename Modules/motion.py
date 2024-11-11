@@ -19,7 +19,7 @@ class BGEMotionCaller:
             response_init = requests.post(addr_MotionCaller + "/init", json={
                 "dataset": dataset
             })
-            return response_init
+            return response_init.text.strip("\n")
         except Exception as e:
             print(e)
             return "error"

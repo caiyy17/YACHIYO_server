@@ -88,6 +88,12 @@ class ClientConnection:
             else:
                 return
         
+        # 如果self.client_id有指定config在configs/{client_id}.json，且不为force，则使用指定config
+        if os.path.exists(f"configs/{self.client_id}.json") and not force:
+            json_file = f"configs/{self.client_id}.json"
+            with open(json_file, "r") as file:
+                pipeline_config = json.load(file)
+        
         self.pipeline_config = pipeline_config
         self.log_info(f"Init: Initializing client {self.client_id} with pipeline: {self.pipeline_config}", cut=False)
         self.queues = []
@@ -418,7 +424,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     # 连接客户端
     client = manager.clients[client_id]
-    json_file = "default_config.json"
+    json_file = "configs/default_config.json"
     with open(json_file, 'r') as f:
         pipeline_config = json.load(f)
     await client.init_pipeline(pipeline_config)
