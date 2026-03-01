@@ -1,36 +1,107 @@
-# YYAssistant server
+# YACHIO Server
 
+A modular, streaming pipeline server for real-time AI assistant applications. Supports voice input, LLM conversation, motion generation, and voice output, with WebRTC and WebSocket interfaces. For detailed technical analysis including formal proofs, latency models, and benchmarks, see the [technical report](technical_report/main.pdf).
+
+## Quick Start
+
+```bash
+conda activate yachio  # see requirements.txt for dependencies
+
+# Main server (pipeline)
 uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000
 
-# 工作流
+# WebRTC server (bridges WebRTC clients to pipeline)
+python server_webrtc.py --port 18082 --main-server http://localhost:8000
+```
 
-我们限定输入的工作流符合以下条件：
+## Standalone Model Services
 
-1. 是一张有向无环图（DAG）
-2. 有且仅有一个入口，一个出口
-3. 与深度优先调度顺序一致
-4. 每个节点的输出仅和这个节点已经接收到的消息有关
+The pipeline server itself is lightweight — it only orchestrates message routing and calls external model services via HTTP. All compute-heavy models run as **standalone services** in their own environments:
 
-我们可以证明，这样的工作流可以被写成一个线性流程，即若干个节点从入口开始首尾相接直至出口，证明如下：
+| Service               | Directory                            | Description                                      | License                                                               |
+| --------------------- | ------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------- |
+| ASR (SenseVoice)      | `Modules_standalone/SenseVoice/`     | OpenAI Whisper-compatible wrapper for SenseVoice | [Apache 2.0](https://github.com/FunAudioLLM/SenseVoice)               |
+| LLM (vLLM)            | `Modules_standalone/VLLM/`           | Config files for vLLM's native OpenAI API        | [Apache 2.0](https://github.com/vllm-project/vllm)                    |
+| TTS (BertVITS2)       | `Modules_standalone/BertVITS2/`      | OpenAI TTS-compatible wrapper for Bert-VITS2     | [AGPL-3.0](https://github.com/fishaudio/Bert-VITS2)                   |
+| MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation   | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) |
+| Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server          | MIT / Apache 2.0                                                      |
 
-1. 我们必定可以找到一种拓扑排序，使得每一个节点必定连向比他编号更大的节点，我们将其按照拓扑排序排成一排
-2. 每个节点输出的时候，我们可以给请求打上标记，表明这个节点要输出至的节点编号
-3. 这个消息传到下一个节点时，只需检测是否为目标节点，如果不是就跳过
+Each service has its own conda environment, setup instructions, and README. The pipeline server connects to them only through HTTP addresses configured in `configs/settings/settings.json` — no code or import dependency.
 
-这样做的一个弊端是：每个消息会被阻塞在上一个消息处理的最末尾（比如说上一消息的最末尾在被 A 处理，那么这个消息的任何部分都不会被先与 A 的节点处理，哪怕有些节点可以是和 A 并列的）。原因是两个节点即使是并列的，我们也给他强行规定了拓扑顺序。这个在正常情况下不会有太多问题，因为速度瓶颈节点往往是确定的，我们只要对于所有并列节点，将速度慢的节点排在靠后的位置即可。最优的做法是给 DAG 划分层次组，每组之间有严格拓扑顺序，而每组内部互相等价，每个消息都会被阻塞在下一个层次组的位置。
+**You can replace any service** with any implementation that exposes the same OpenAI-compatible API (e.g., swap vLLM for Ollama, or swap BertVITS2 for OpenAI's TTS API) by changing the config file.
 
-为了流程的便利性，我们允许控制通道的信号直接发送给 client 而独立于数据通道，实质上就是超车通道，只不过这个超车只能直接送到最终输出，一般只用作信号监控使用。
+## Architecture
 
-# 配置文件
+```
+Client (WebRTC / WebSocket)
+  |
+  v
+server_webrtc.py (port 18082)     <-- WebRTC bridge (optional)
+  |  WebSocket
+  v
+server_fastapi.py (port 8000)     <-- Pipeline server
+  |
+  v
+Pipeline: [Node 1] -> [Node 3] -> [Node 5] -> [Node 7] -> Client  (example)
+           ASR        LLM         RAG/Query    TTS
+```
 
-通常情况下，我们可以人为地仅保留会对之后节点处理有用的信息，以节省传输带宽。在完整流程图已知的情况下，每个节点可以知道需要保留哪些信息，所以我们让每个节点来选择需要保留哪些历史信息，丢弃哪些。为此，我们设计了如下的流程图配置方案
+- **server_fastapi.py**: Pipeline server. Manages client registration, pipeline initialization, and message routing via WebSocket.
+- **server_webrtc.py**: Pure WebRTC bridge. Converts between WebRTC tracks and pipeline WebSocket messages.
 
-1. 按照排序，每个节点使用的处理函数
-2. 输入变量对应的所有之前节点的输出变量（带有节点编号）
-3. 可以输出至的节点编号
-4. 其他节点相关配置
+## Pipeline Configurations
 
-例如，某个 5 号节点的配置可能如下：
+| Config              | Pipeline                                                     | Description                                  |
+| ------------------- | ------------------------------------------------------------ | -------------------------------------------- |
+| `default`           | Dispatch → FuncA ∥ FuncB → Receive                           | Parallel test pipeline                       |
+| `demo`              | ASR → LLM → TTS                                              | Minimal conversation (OpenAI API)            |
+| `unity_chan`        | ASR → LLM → DataQuery → TTS                                  | Conversation with RAG action matching        |
+| `unity_chan_openai` | ASR → LLM → DataQuery → TTS (all cloud)                      | Same as above, using OpenAI API              |
+| `unity_chan_webrtc` | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter | WebRTC frame-level streaming                 |
+| `unity_chan_smpl`   | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive             | Free-form SMPLH motion generation (parallel) |
+
+### Node Types
+
+| Module              | Function Name                       | Description                                                          |
+| ------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `asr_openai`        | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                             |
+| `llm_openai`        | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction |
+| `data_query_link`   | `call_data_query_link`              | RAG-based action matching via BGE embedding                          |
+| `motion_generation` | `call_motion_generation`            | Text-to-motion via HY-Motion API, returns SMPLH params               |
+| `tts_openai`        | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                             |
+| `parallel`          | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                 |
+
+## Workflow
+
+We restrict the input workflow to satisfy the following conditions:
+
+1. It is a directed acyclic graph (DAG)
+2. It has exactly one entry and one exit
+3. It is consistent with depth-first scheduling order
+4. Each node's output depends only on messages it has already received
+
+We can prove that such a workflow can be written as a linear pipeline, i.e., nodes connected sequentially from entry to exit. The proof is as follows:
+
+1. We can always find a topological ordering where every node connects to a node with a larger index; we arrange them in this order
+2. When a node produces output, it tags the message with the destination node's index
+3. When the message reaches the next node, it simply checks whether it is the target node; if not, it forwards the message
+
+The downside of this approach is: each message is blocked behind the previous message's processing tail (e.g., if the previous message is still being processed by node A, the current message cannot be processed by any node, even those parallel to A). This is because even parallel nodes are forced into a topological order. For independent nodes that both need to process the same message, swapping their order does not reduce the combined latency — the total is always the sum of all processing times regardless of ordering.
+
+This serialization overhead can be eliminated using the **dispatcher-receiver bracket**: the dispatcher emits branch messages in reverse topological order so that later nodes' messages are forwarded through earlier nodes before those nodes begin processing, enabling concurrent execution. See `Modules/parallel/` for the implementation.
+
+For convenience, we allow control signals to be sent directly to the client independently of the data channel — effectively an express lane, though it can only deliver to the final output and is generally used only for status monitoring.
+
+## Configuration
+
+In general, we can manually retain only the information useful for downstream node processing, to save transmission bandwidth. When the full pipeline graph is known, each node can determine which information to keep and which to discard. We therefore let each node choose which historical information to retain. The pipeline configuration scheme is as follows:
+
+1. The processing function for each node, in topological order
+2. Input variables mapped to all preceding nodes' output variables (with node index prefixes)
+3. Possible output destination node indices
+4. Other node-specific configuration
+
+For example, the configuration for node 5 might look like:
 
 ```json
 {
@@ -45,7 +116,7 @@ uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000
             {
                 "input_name": "input2",
                 "sources": ["2_bbb", "4_bbb"]
-            },
+            }
         ],
         "pass_vars": [
             {
@@ -62,31 +133,89 @@ uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000
                 "output_name": "output2",
                 "targets": ["5_output_yyy"]
             }
-            ],
+        ],
         "next_nodes": [7, 11],
-        "other_seetings": "func_xxx_example_settings"
+        "other_settings": "func_xxx_example_settings"
     }
-},
+}
 ```
 
-这个节点在输出的时候会在请求中标明自己的节点标号和目标节点，例如：
+When this node produces output, it includes its own node index and the destination in the message, for example:
 
 ```json
 { "destination": "11", "5_output_xxx": "example_xxx", "5_output_yyy": "example_yyy" }
 ```
 
-注意因为系统的原始输入算是 0 号，所以编号从 1 开始，同时最终节点的输出不加节点编号，1 号节点的输入也是与客户端传入的变量有关。这套 pipeline 也支持非连续编号，只要编号是单调递增的即可。实现中，我们认为没有 destination 的信息默认被紧邻的一个节点处理，destination 为 -1 的节点被最终节点处理
+Note that the system's original input is considered node 0, so numbering starts from 1. The final node's output omits the node index prefix, and node 1's input corresponds to client-provided variables. The pipeline supports non-contiguous numbering as long as indices are monotonically increasing. In the implementation, messages without a destination or with destination -2 are processed by the immediately next node; destination -1 is processed by the final node.
 
-# Signal 信号
+## Signals
 
-同时为了增加灵活性，也为了配置更加简洁，我们定义了一个 signal 的默认参数，这个参数如果存在于前序信息中，它会自动被提取。而每个节点可以可以写入需要 catch 的 signal 参数，比如语言模型节点 A 接入了处理语言模型输出的节点 B, A 会抛出 EoS 的 signal，B 会 catch 这个信号，因为这是内置的逻辑，不需要在配置文件中写出。（也因此所有节点需要注意 signal 信号的命名统一性和区分性，让需要被处理的信号被接受，不需要被处理的信号能被放行）
+For flexibility and cleaner configuration, we define a `signal` as a reserved parameter that is automatically extracted from preceding messages. Each node can declare which signals it catches. For example, if LLM node A is connected to downstream node B, A emits an EoS signal and B catches it — this is built-in logic that does not need to be specified in the configuration. (Therefore, all nodes must ensure signal naming is consistent and distinct, so that signals intended for processing are caught and others are forwarded.)
 
-如果一个 signal 信息到达某个节点，但是这个节点并不 catch 这个信号，那么这个信号会被**删除 destination 信息后直接被传往下一个节点**，请注意 signal 信号的路由，必要的时候可以专门写一个节点来处理或者遗弃 signal 信号。这么做的原因是：如果我有一个信号希望它能直接被 client 接收，那么直接抛出即可，只要后续没有节点特定要 catch 这个信号，那么就可以一直传到 client。
+If a signal reaches a node that does not catch it, the signal's **destination is removed and it is forwarded directly to the next node**. Note the routing behavior of signals — if necessary, a dedicated node can be created to handle or discard specific signals. The rationale is: if you want a signal to reach the client directly, simply emit it; as long as no downstream node explicitly catches it, it will propagate all the way to the client.
 
-# 时间戳
+## Timestamps
 
-为了处理打断，我们给每个信息都加上了时间戳，时间戳为服务器接收到该信息的时间，并且保持不变地一直被传递下去（timestamp 信息也是默认参数，不需要手动处理，但是每个节点也保留对时间戳信息进行加工地权利）。接收到打断信号时，每个节点都会从旁路（跳过队列）直接收到打断信号和相应的时间戳，节点在后续处理时会抛弃所有早于当前接收到的最新打断时间戳的信息。
+To handle interruptions (barge-in), every message carries a timestamp, set when the server receives the message. The timestamp is propagated unchanged through all pipeline stages (timestamp is a reserved parameter that does not need manual handling, though each node retains the right to modify it). When an interruption signal is received, every node receives the cancel signal and its timestamp via a side channel (bypassing the queue). Nodes subsequently discard all messages with timestamps earlier than the latest cancel timestamp.
 
-处理节点会在开始处理信息时检查时间戳，而最终的发送节点（至 client）会在发送前检查，保证服务端不会发送已经被取消的信息。
+Processing nodes check the timestamp when they begin processing a message, and the final send node checks before transmission, ensuring the server never sends a cancelled message.
 
-同时，client 也会传入时间戳 timestamp_remote 来维护客户端的时间信息（因为 server 和 client 的时间戳往往不统一），tiemstamp_remote 也是默认参数，无需手动处理。
+The timestamp preferentially uses the client-provided value; if the client does not provide a timestamp, the server uses `time.time()` as a fallback.
+
+## LLM Module
+
+For the LLM, we use a modular rather than pipeline-based approach, with a HistoryManager responsible for:
+
+1. Loading conversation history
+2. Modifying history based on settings
+3. Saving history in the specified format
+
+StreamCutter segments the LLM's streaming output into individual sentences and attaches specified formatting (e.g., extracting actions and tags).
+
+The LLM module handles interaction with the language model.
+
+## LoreBooks
+
+We use LoreBooks to configure character information, with the following format:
+
+```json
+{
+    "data": [
+        {
+            "name": "test_name",
+            "strategy": "constant",
+            "position": "0",
+            "role": "system",
+            "order": 0,
+            "probability": 1,
+            "keywords": ["xxx"],
+            "vectorization_keywords": ["yyy"],
+            "context_length": 2,
+            "threshold": 0.5,
+            "logic": "and_any",
+            "case_sensitive": true,
+            "content": "This is the content"
+        }
+    ]
+}
+```
+
+Supported activation strategies: `constant` (always active), `keywords` (keyword matching), `vectorized` (vector similarity), `both`. Entries are injected at their specified positions in the conversation history.
+
+## Client Flow
+
+```
+1. POST /register/                          -> Register client
+2. POST /init_pipeline/{client_id}          -> Load pipeline config
+3. WS   /ws/{client_id}                     -> Connect WebSocket
+4. Send: {"text": "...", "audio_file": "base64...", "timestamp": 123.45}
+5. Recv: {"text": "...", "audio_data": "base64...", "action": "...", "action_hint": "..."}
+6. POST /unregister/                        -> Cleanup
+```
+
+### WebRTC Client Flow
+
+1. Register + init pipeline on main server (same as above)
+2. `POST /offer/{client_id}` on WebRTC server for SDP exchange
+3. Send/receive data via audio/video tracks and DataChannel
+4. Audio (48kHz, 50fps) and video (30fps) are grouped into 100ms synchronized frame groups by FrameSplitter/GroupDispatcher

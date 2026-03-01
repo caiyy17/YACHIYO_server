@@ -1,0 +1,27 @@
+{
+    "data": [
+        {
+            "name": "system prompt",
+            "strategy": "constant",
+            "position": 0,
+            "role": "system",
+            "order": 0,
+            "probability": 1,
+            "content": "This is a system prompt"
+        },
+        {
+            "name": "key1",
+            "strategy": "both",
+            "position": -1,
+            "role": "system",
+            "order": 0,
+            "probability": 1,
+            "keywords": ["keyword1", "keyword2"],
+            "vectorization_keywords": ["keyword3", "keyword4"],
+            "context_length": 2,
+            "logic": "and_all",
+            "case_sensitive": false,
+            "content": "This is a test response for key1"
+        }
+    ]
+}

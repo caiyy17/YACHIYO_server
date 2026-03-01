@@ -1,0 +1,7 @@
+{
+    "model": "bertvits",
+    "api_base": "bertvits_api",
+    "api_key": "",
+    "voice": "",
+    "extra": {}
+}

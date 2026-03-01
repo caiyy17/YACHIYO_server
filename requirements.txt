@@ -1,10 +1,17 @@
-websockets
+# Core
 fastapi
 uvicorn
+websockets
 requests
 python-multipart
+openai
 
+# Audio/Data
 numpy
 pydub
 
-openai
+# WebRTC (optional, for frame-level streaming mode)
+aiortc
+aiohttp
+Pillow
+av

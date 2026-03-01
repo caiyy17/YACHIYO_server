@@ -7,17 +7,22 @@ import base64
 
 import os
 
-# FastAPI 服务器的地址
+# FastAPI server address
 server_url = "http://localhost:8000"
 websocket_url = "ws://localhost:8000/ws"
 
-# 测试 POST 请求进行客户端注册
+
+# Test POST request for client registration
 def test_post_register(client_id):
     url = f"{server_url}/register/"
     data = {"client_id": client_id}
-    headers = {"Content-Type": "application/json"}  # 发送 JSON 数据时，必须指定 Content-Type 头为 application/json
+    headers = {
+        "Content-Type": "application/json"
+    }  # Content-Type header must be set to application/json when sending JSON data
     try:
-        response = requests.post(url, json=data, headers=headers)  # 使用 json 参数来发送 JSON 数据
+        response = requests.post(
+            url, json=data, headers=headers
+        )  # Use json parameter to send JSON data
         if response.status_code == 200:
             print(f"POST /register/: {response.json()}")
         else:
@@ -25,7 +30,8 @@ def test_post_register(client_id):
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试注销客户端
+
+# Test client unregistration
 def test_post_unregister(client_id):
     url = f"{server_url}/unregister/"
     data = {"client_id": client_id}
@@ -39,7 +45,8 @@ def test_post_unregister(client_id):
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试未注册客户端注销
+
+# Test unregistering an unregistered client
 def test_post_unregister_unregistered(client_id):
     url = f"{server_url}/unregister/"
     data = {"client_id": client_id}
@@ -53,7 +60,8 @@ def test_post_unregister_unregistered(client_id):
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试获取所有客户端列表
+
+# Test getting all clients list
 def test_get_clients():
     url = f"{server_url}/clients/"
     try:
@@ -65,7 +73,8 @@ def test_get_clients():
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试获取单个客户端信息
+
+# Test getting single client info
 def test_get_client(client_id):
     url = f"{server_url}/clients/{client_id}"
     try:
@@ -73,25 +82,31 @@ def test_get_client(client_id):
         if response.status_code == 200:
             print(f"GET /clients/{client_id}: {response.json()}")
         else:
-            print(f"GET /clients/{client_id} failed: {response.status_code}, {response.text}")
+            print(
+                f"GET /clients/{client_id} failed: {response.status_code}, {response.text}"
+            )
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试初始化流水线
+
+# Test pipeline initialization
 def test_init_pipeline(client_id, pipeline_config, force=False):
     url = f"{server_url}/init_pipeline/{client_id}"
-    config_data = {"config": json.dumps(pipeline_config), "force": force}
+    config_data = {"config": pipeline_config, "force": force}
     headers = {"Content-Type": "application/json"}
     try:
         response = requests.post(url, json=config_data, headers=headers)
         if response.status_code == 200:
             print(f"POST /init_pipeline/: {response.json()}")
         else:
-            print(f"POST /init_pipeline/ failed: {response.status_code}, {response.text}")
+            print(
+                f"POST /init_pipeline/ failed: {response.status_code}, {response.text}"
+            )
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试获取客户端日志
+
+# Test getting client logs
 def test_get_client_log(client_id):
     url = f"{server_url}/logs/{client_id}"
     try:
@@ -99,28 +114,35 @@ def test_get_client_log(client_id):
         if response.status_code == 200:
             print(f"GET /logs/{client_id}: {response.json()}")
         else:
-            print(f"GET /logs/{client_id} failed: {response.status_code}, {response.text}")
+            print(
+                f"GET /logs/{client_id} failed: {response.status_code}, {response.text}"
+            )
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
 
-# 测试 WebSocket 连接
-async def test_websocket(client_id, process_func, messages=[], repeat=1, interval=0, timeout=10):
+
+# Test WebSocket connection
+async def test_websocket(
+    client_id, process_func, messages=[], repeat=1, interval=0, timeout=10
+):
     start = time.time()
     try:
-        async with websockets.connect(f"{websocket_url}/{client_id}", max_size=1024*1024*16) as websocket:
-            # 发送消息给服务器
+        async with websockets.connect(
+            f"{websocket_url}/{client_id}", max_size=1024 * 1024 * 16
+        ) as websocket:
+            # Send messages to server
             print(f"start time: {time.time() - start}")
             for i in range(repeat):
                 for message in messages:
                     await websocket.send(message)
                     print(f"send time {i}: {time.time() - start}")
-                    # 如果太长，只显示前 100 个字符
+                    # Truncate to first 100 characters if too long
                     if len(message) > 100:
                         message = message[:100] + "..."
                     print(f"Sent: {message}")
                     await asyncio.sleep(interval)
 
-            # 接收服务器的响应
+            # Receive server responses
             index = 0
             while True:
                 response = await asyncio.wait_for(websocket.recv(), timeout=timeout)
@@ -130,7 +152,7 @@ async def test_websocket(client_id, process_func, messages=[], repeat=1, interva
                     process_func(response)
                 except Exception as e:
                     print(f"Error processing response: {e}")
-                # 如果太长，只显示前 100 个字符
+                # Truncate to first 100 characters if too long
                 if len(response) > 100:
                     response = response[:100] + "..."
                 print(f"Received: {response}")
@@ -146,56 +168,107 @@ async def test_websocket(client_id, process_func, messages=[], repeat=1, interva
     finally:
         print(f"WebSocket connection closed for client {client_id}.")
 
-# 运行测试
-if __name__ == "__main__":
 
-    # 如果存在test/tmp文件夹，删除
+# Run tests
+if __name__ == "__main__":
+    # Remove test/tmp directory if it exists
     if os.path.exists("test/tmp"):
         os.system("rm -rf test/tmp")
     os.mkdir("test/tmp")
 
-    num_clients = 3
-    client_ids = []
-    for i in range(num_clients):
-        client_ids.append(f"test-id-{i}")
+    pipeline_config = "unity_chan"
+    messages = []
 
-    # # 测试 POST 注册接口
-    for i in range(num_clients):
-        client_id = client_ids[i]
-        test_post_register(client_id)
-        test_get_clients()
-        start = time.time()
-        json_file = "configs/demo_config.json"
-        with open(json_file, "r") as file:
-            pipeline_config = json.load(file)
-        test_init_pipeline(client_id, pipeline_config, force=True)
-        print(f"init time: {time.time() - start}")
+    # Add messages
+    audio_data = base64.b64encode(open("test/test_voice.wav", "rb").read()).decode(
+        "utf-8"
+    )
+    messages.append(json.dumps({"text": "你好，世界！", "audio_file": audio_data, "timestamp": time.time()}))
 
-    # # 测试 WebSocket 连接
+    # messages.append(json.dumps({"signal": "cancel", "timestamp": time.time()}))
+    # messages.append(json.dumps({"audio_file": audio_data, "timestamp": time.time()}))
+
+    client_id = "test-id-0"
+    force = True
+
+    # Test POST register endpoint
+    test_post_register(client_id)
+
+    # Test getting clients list
+    test_get_clients()
+
+    # Test getting single client
+    test_get_client(client_id)
+
+    # Test pipeline initialization
+    start = time.time()
+    test_init_pipeline(client_id, pipeline_config, force=force)
+    print(f"init time: {time.time() - start}")
+
+    # Test getting client logs
+    # test_get_client_log(client_id)
+
+    # Test WebSocket connection
     def process_func(response):
         response = json.loads(response)
-        audio_data = response["audio_data"]
-        audio_data = base64.b64decode(audio_data)
         timestamp = time.time()
-        # 保留4位小数
-        with open(f"test/tmp/output_{timestamp:.4f}.wav", "wb") as file:
-            file.write(audio_data)
+        # Keep 4 decimal places
 
-    messages = []
-    audio_data = base64.b64encode(open("test/test_voice.wav", "rb").read()).decode("utf-8")
-    messages.append(json.dumps({"audio_file": audio_data}))
-    # messages.append(json.dumps({"type": "cancel"}))
-    # messages.append(json.dumps({"audio_file": audio_data}))
+        # Save audio data to file
+        try:
+            audio_data = response["audio_data"]
+            audio_data = base64.b64decode(audio_data)
+            with open(f"test/tmp/output_{timestamp:.4f}.wav", "wb") as file:
+                file.write(audio_data)
+        except Exception as e:
+            print(f"Error saving audio file: {e}")
 
-    async def main():
-        tasks = []
-        for client_id in client_ids:
-            print(f"Start testing WebSocket for client {client_id}.")
-            task = asyncio.create_task(
-                test_websocket(client_id, process_func, messages, repeat=1, interval=0, timeout=5)
-            )
-            await asyncio.sleep(5)
-            tasks.append(task)
-        await asyncio.gather(*tasks)
+        # Save response to file
+        try:
+            with open(f"test/tmp/response_{timestamp:.4f}.json", "w") as file:
+                json.dump(response, file, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"Error saving response file: {e}")
 
-    asyncio.run(main())
+        
+
+    asyncio.run(
+        test_websocket(
+            client_id, process_func, messages, repeat=1, interval=0, timeout=10
+        )
+    )
+
+    # # Test client unregistration
+    # test_post_unregister(client_id)
+
+    # # Test unregistering an unregistered client
+    # test_post_unregister_unregistered("unregistered-client")
+
+    # num_clients = 10
+    # client_ids = []
+    # for i in range(num_clients):
+    #     client_ids.append(f"test-id-{i + 1}")
+
+    # # Test POST register for multiple clients
+    # for i in range(num_clients):
+    #     client_id = client_ids[i]
+    #     test_post_register(client_id)
+    #     test_get_clients()
+    #     start = time.time()
+    #     test_init_pipeline(client_id, pipeline_config, force=True)
+    #     print(f"init time: {time.time() - start}")
+
+    # async def main():
+    #     tasks = []
+    #     for client_id in client_ids:
+    #         print(f"Start testing WebSocket for client {client_id}.")
+    #         task = asyncio.create_task(
+    #             test_websocket(
+    #                 client_id, process_func, messages, repeat=1, interval=0, timeout=5
+    #             )
+    #         )
+    #         await asyncio.sleep(0.1)
+    #         tasks.append(task)
+    #     await asyncio.gather(*tasks)
+
+    # asyncio.run(main())

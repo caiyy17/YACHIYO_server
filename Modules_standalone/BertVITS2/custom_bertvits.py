@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 import torch
 import ssl
+
 ssl._create_default_https_context = ssl._create_unverified_context
 import nltk
-nltk.download('cmudict')
-nltk.download('averaged_perceptron_tagger_eng')
+
+nltk.download("cmudict")
+nltk.download("averaged_perceptron_tagger_eng")
 import utils
 from infer import infer, latest_version, get_net_g, infer_multilang
 import gradio as gr
@@ -33,6 +35,9 @@ import librosa
 
 net_g = None
 
+COMFIG_DIR = "yml_configs"
+if not os.path.exists(COMFIG_DIR):
+    os.makedirs(COMFIG_DIR)
 DEFAULT_CONFIG = "config.yml"
 config = Config(DEFAULT_CONFIG)
 device = config.webui_config.device
@@ -205,7 +210,7 @@ def tts_split(
                 audio_list_sent.append(silence)
             audio16bit = gr.processing_utils.convert_to_16_bit_wav(
                 np.concatenate(audio_list_sent)
-            )  # 对完整句子做音量归一
+            )  # Normalize volume for the complete sentence
             audio_list.append(audio16bit)
     audio_concat = np.concatenate(audio_list)
     return ("Success", (hps.data.sampling_rate, audio_concat))
@@ -394,16 +399,18 @@ def gr_util(item):
             "__type__": "update",
         }
 
-from flask import Flask, request, Response
+
+from flask import Flask, request, Response, jsonify
 from scipy.io import wavfile
 from io import BytesIO
 import time
 
 app = Flask(__name__)
-app.config['JSON_AS_ASCII'] = False
+app.config["JSON_AS_ASCII"] = False
 
 current_config = DEFAULT_CONFIG
 hps = None
+
 
 def tts_init():
     global config
@@ -412,30 +419,23 @@ def tts_init():
 
     global model_path
     global config_path
-    global speaker_name
+    global speakers
 
     config = Config(current_config)
     model_path = config.webui_config.model
     config_path = config.webui_config.config_path
-    speaker_name = None
 
     hps = utils.get_hparams_from_file(config_path)
-    # 若config.json中未指定版本则默认为最新版本
+    # Default to latest version if not specified in config.json
     version = hps.version if hasattr(hps, "version") else latest_version
     print(model_path)
-    net_g = get_net_g(
-        model_path=model_path, version=version, device=device, hps=hps
-    )
+    net_g = get_net_g(model_path=model_path, version=version, device=device, hps=hps)
     speaker_ids = hps.data.spk2id
     speakers = list(speaker_ids.keys())
     languages = ["ZH", "JP", "EN", "auto", "mix"]
 
-    if speaker_name is None:
-        speaker_name = speakers[0]
-        print("Speaker: ", speaker_name)
-
     try:
-        speaker = speaker_name
+        speaker = speakers[0]
         sdp_ratio = 0.5
         noise_scale = 0.6
         noise_scale_w = 0.9
@@ -455,7 +455,7 @@ def tts_init():
             noise_scale,
             noise_scale_w,
             length_scale,
-            'EN',
+            "EN",
             reference_audio,
             emotion,
             prompt_mode,
@@ -469,7 +469,7 @@ def tts_init():
             noise_scale,
             noise_scale_w,
             length_scale,
-            'JP',
+            "JP",
             reference_audio,
             emotion,
             prompt_mode,
@@ -483,7 +483,7 @@ def tts_init():
             noise_scale,
             noise_scale_w,
             length_scale,
-            'ZH',
+            "ZH",
             reference_audio,
             emotion,
             prompt_mode,
@@ -495,43 +495,68 @@ def tts_init():
         return "TTS Error"
     return "Success"
 
-@app.route("/tts", methods=['POST'])
-def main():
-    print("Request received")
+
+
+def try_load_voice_model(voice):
+    """Auto-load voice model if voice is not in current speakers but has a config."""
+    global current_config
+    if voice in speakers:
+        return
+    # Check if a model config exists for this voice name
+    candidate = COMFIG_DIR + "/" + "config_" + voice + ".yml"
+    if not os.path.isfile(candidate):
+        return
+    if candidate == current_config:
+        return
+    print(f"Auto-loading voice model: {voice} ({candidate})")
+    current_config = candidate
+    tts_init()
+    print(f"Voice model loaded: {voice}, speakers: {speakers}")
+
+
+@app.route("/v1/audio/speech", methods=["POST"])
+def openai_speech():
+    """OpenAI-compatible TTS API endpoint."""
+    print("OpenAI TTS Request received")
     start = time.time()
     data = request.json
-    text = data['text']
-    text_language = data['text_language']
-    language = "auto"
+
+    text = data.get("input", "")
+    voice = data.get("voice", "")
+    response_format = data.get("response_format", "wav")
+    speed = data.get("speed", 1.0)
+
+    # Auto-load voice model if needed
+    if voice and voice not in speakers:
+        try_load_voice_model(voice)
+
+    if (voice == "" or voice not in speakers) and speakers:
+        voice = speakers[0]
+
     try:
-        speaker = speaker_name
         sdp_ratio = 0.5
         noise_scale = 0.6
         noise_scale_w = 0.9
-        length_scale = 1
+        length_scale = 1.0 / speed if speed > 0 else 1.0
         prompt_mode = "Text prompt"
-        text_prompt = "Happy"
-        emotion = text_prompt
+        emotion = "Happy"
         reference_audio = ""
-    except:
-        return "Invalid Parameter"
 
-    try:
         result, audio = tts_fn(
             text,
-            speaker,
+            voice,
             sdp_ratio,
             noise_scale,
             noise_scale_w,
             length_scale,
-            language,
+            "auto",
             reference_audio,
             emotion,
             prompt_mode,
             style_text=None,
             style_weight=0,
         )
-        print("finished")
+
         with BytesIO() as wav:
             wavfile.write(wav, audio[0], audio[1])
             torch.cuda.empty_cache()
@@ -539,39 +564,18 @@ def main():
             return Response(wav.getvalue(), mimetype="audio/wav")
     except Exception as e:
         print(e)
-        return "TTS Error"
+        return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
 
-@app.route("/change_model", methods=['POST'])
-def change_model():
-    global current_config
 
-    data = request.json
-    new_config = DEFAULT_CONFIG
-    if 'config' in data and data['config'] != "":
-        new_config = "config_" + data['config'] + ".yml"
-    
-    if new_config == current_config:
-        print("Model not changed")
-        return f"Model not changed {current_config}"
-    else:
-        if not os.path.isfile(new_config):
-            print("Model not found")
-            return f"Model not found {new_config}"
-        current_config = new_config
-        tts_init()
-
-    return f"Model Setup Success {current_config}"
 
 if __name__ == "__main__":
-    
     if config.webui_config.debug:
         logger.info("Enable DEBUG-LEVEL log")
         logging.basicConfig(level=logging.DEBUG)
 
     model_path = config.webui_config.model
     config_path = config.webui_config.config_path
-    speaker_name = None
-    
+
     tts_init()
 
-    app.run(debug=False, host='0.0.0.0', port=9880)
+    app.run(debug=False, host="0.0.0.0", port=9880)

@@ -1,0 +1,84 @@
+{
+    "pipeline": [
+        {
+            "node_id": 1,
+            "function": "call_dispatcher",
+            "config": {
+                "input_vars": [],
+                "pass_vars": [
+                    {
+                        "sources": ["message"],
+                        "targets": ["message"]
+                    }
+                ],
+                "output_vars": [],
+                "next_nodes": [3, 5, 7],
+                "dispatch_vars": [
+                    ["message"],
+                    ["message"]
+                ]
+            }
+        },
+        {
+            "node_id": 3,
+            "function": "call_func_a",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "input1",
+                        "sources": ["message"]
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "output_name": "output1",
+                        "targets": ["3_result"]
+                    }
+                ],
+                "next_nodes": [7],
+                "sleep_time": 1
+            }
+        },
+        {
+            "node_id": 5,
+            "function": "call_func_b",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "input1",
+                        "sources": ["message"]
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "output_name": "output1",
+                        "targets": ["5_result"]
+                    }
+                ],
+                "next_nodes": [7],
+                "sleep_time": 0.5
+            }
+        },
+        {
+            "node_id": 7,
+            "function": "call_receiver",
+            "config": {
+                "input_vars": [],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "output_name": "3_result",
+                        "targets": ["result_a"]
+                    },
+                    {
+                        "output_name": "5_result",
+                        "targets": ["result_b"]
+                    }
+                ],
+                "next_nodes": []
+            }
+        }
+    ]
+}

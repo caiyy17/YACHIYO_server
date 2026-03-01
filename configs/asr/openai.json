@@ -1,0 +1,6 @@
+{
+    "model": "whisper-1",
+    "api_base": "",
+    "api_key": "OPENAI_KEY",
+    "extra": {}
+}

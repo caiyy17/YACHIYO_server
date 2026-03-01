@@ -1,5 +1,0 @@
-addr_LLMCaller = "http://127.0.0.1:5051"
-addr_ASRCaller = "http://127.0.0.1:5052"
-addr_RAGCaller = "http://127.0.0.1:5053"
-addr_MotionCaller = "http://127.0.0.1:5054"
-addr_TTSCaller = "http://127.0.0.1:9880"

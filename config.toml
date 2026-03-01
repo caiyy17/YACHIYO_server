@@ -1,2 +1,0 @@
-websocket_max_message_size = 52428800
-bind = "0.0.0.0:8000"

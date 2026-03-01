@@ -1,5 +1,14 @@
 __pycache__
 tmp/
 logs/
+history/
 
-secrets_chatgpt.py
+secrets.json
+run_scripts.sh
+stop_scripts.sh
+*_tmp.json
+*_tmp.yaml
+*_tmp.yml
+*.backup
+.DS_Store
+.omc
