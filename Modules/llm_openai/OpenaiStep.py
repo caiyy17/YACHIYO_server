@@ -26,9 +26,8 @@ class OpenaiCaller(BaseLLMCaller):
         self.cutter.reset()
 
     def create_client(self):
-        # Load server configurations in "configs/llm/{model_name}.json"
-        model_name = self.config.get("model", "gpt")
-        with open(f"configs/llm/{model_name}.json", "r") as f:
+        config_name = self.config.get("model", "gpt")
+        with open(f"configs/llm/{config_name}.json", "r") as f:
             self.model_config = json.load(f)
         self.logger.info(f"Model Config: {self.model_config}")
 
@@ -48,18 +47,17 @@ class OpenaiCaller(BaseLLMCaller):
             api_key = get_secret(api_key)
 
         client = OpenAI(api_key=api_key, base_url=api_base)
-        self.model = self.config.get("model", "gpt-4o")
         self._init_call(client)
         return client
 
     def _init_call(self, client):
         """Init call with full system prompt to warm up KV cache."""
         try:
+            model_name = self.model_config.get("model_name", "gpt")
             extra = self.model_config.get("extra", {})
-            model = self.model_config.get("model", self.model)
             messages = self.history_manager.modify_history("hi")
             client.chat.completions.create(
-                model=model,
+                model=model_name,
                 messages=messages,
                 **extra,
             )
@@ -68,10 +66,10 @@ class OpenaiCaller(BaseLLMCaller):
             self.logger.error(f"LLM init call failed: {e}")
 
     def create_stream(self, history):
+        model_name = self.model_config.get("model_name", "gpt")
         extra = self.model_config.get("extra", {})
-        model = self.model_config.get("model", self.model)
         result = self.client.chat.completions.create(
-            model=model,
+            model=model_name,
             messages=history,
             tools=self.toolsCaller.tools,
             stream=True,

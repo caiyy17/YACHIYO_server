@@ -307,7 +307,7 @@ async def main():
 
     # 1. Local pipeline
     avg_local = await benchmark_ws(
-        "unity_chan", "Test 1: Full Local (SenseVoice + Qwen + BertVITS)"
+        "unity_chan", "Test 1: Full Local (Qwen3-ASR + Qwen + Qwen3-TTS)"
     )
 
     # 2. OpenAI API pipeline

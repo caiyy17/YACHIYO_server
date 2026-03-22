@@ -20,15 +20,15 @@ The pipeline server itself is lightweight — it only orchestrates message routi
 
 | Service               | Directory                            | Description                                      | License                                                               |
 | --------------------- | ------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------- |
-| ASR (SenseVoice)      | `Modules_standalone/SenseVoice/`     | OpenAI Whisper-compatible wrapper for SenseVoice | [Apache 2.0](https://github.com/FunAudioLLM/SenseVoice)               |
+| ASR (Qwen3-ASR)      | `Modules_standalone/QwenASR/`        | OpenAI Whisper-compatible wrapper for Qwen3-ASR   |
 | LLM (vLLM)            | `Modules_standalone/VLLM/`           | Config files for vLLM's native OpenAI API        | [Apache 2.0](https://github.com/vllm-project/vllm)                    |
-| TTS (BertVITS2)       | `Modules_standalone/BertVITS2/`      | OpenAI TTS-compatible wrapper for Bert-VITS2     | [AGPL-3.0](https://github.com/fishaudio/Bert-VITS2)                   |
+| TTS (Qwen3-TTS)      | `Modules_standalone/QwenTTS/`        | OpenAI TTS-compatible wrapper for Qwen3-TTS       |
 | MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation   | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) |
 | Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server          | MIT / Apache 2.0                                                      |
 
 Each service has its own conda environment, setup instructions, and README. The pipeline server connects to them only through HTTP addresses configured in `configs/settings/settings.json` — no code or import dependency.
 
-**You can replace any service** with any implementation that exposes the same OpenAI-compatible API (e.g., swap vLLM for Ollama, or swap BertVITS2 for OpenAI's TTS API) by changing the config file.
+**You can replace any service** with any implementation that exposes the same OpenAI-compatible API (e.g., swap any service with any implementation that exposes the same OpenAI-compatible API.
 
 ## Architecture
 

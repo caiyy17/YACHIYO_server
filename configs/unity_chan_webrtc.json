@@ -43,7 +43,7 @@
                     }
                 ],
                 "next_nodes": [3],
-                "model": "sensevoice"
+                "model": "qwen_asr"
             }
         },
         {
@@ -73,14 +73,24 @@
                 ],
                 "next_nodes": [5],
                 "history_mode": "tavern",
-                "lorebooks": [{ "name": "unity_chan", "offset": 0 }],
+                "lorebooks": [
+                    {
+                        "name": "unity_chan",
+                        "offset": 0
+                    }
+                ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
                 "model": "qwen",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
-                "extra_info": { "action": { "start_mark": "[", "end_mark": "]" } }
+                "extra_info": {
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    }
+                }
             }
         },
         {
@@ -159,7 +169,7 @@
                     }
                 ],
                 "next_nodes": [7],
-                "model": "bertvits"
+                "model": "qwen_tts"
             }
         },
         {

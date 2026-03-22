@@ -1,4 +1,5 @@
 import json
+import struct
 from io import BytesIO
 
 from ..asr_base.ASRStep import ASRStep
@@ -12,8 +13,8 @@ class OpenaiASRCaller:
         self._init_call()
 
     def _create_client(self):
-        model_name = self.config.get("model", "openai")
-        with open(f"configs/asr/{model_name}.json", "r") as f:
+        config_name = self.config.get("model", "openai")
+        with open(f"configs/asr/{config_name}.json", "r") as f:
             self.model_config = json.load(f)
         self.logger.info(f"ASR Model Config: {self.model_config}")
 
@@ -33,16 +34,13 @@ class OpenaiASRCaller:
         else:
             api_key = get_secret(api_key)
 
-        client = OpenAI(api_key=api_key, base_url=api_base)
-        return client
+        return OpenAI(api_key=api_key, base_url=api_base)
 
     def _init_call(self):
         """Init call to verify ASR service is available."""
         try:
+            model_name = self.model_config.get("model_name", "whisper-1")
             extra = self.model_config.get("extra", {})
-            model = self.model_config.get("model", "whisper-1")
-            import struct
-            # 0.5s silence at 16kHz mono 16bit
             num_samples = 8000
             wav_data = struct.pack(
                 "<4sI4s4sIHHIIHH4sI",
@@ -52,26 +50,26 @@ class OpenaiASRCaller:
             ) + b"\x00" * (num_samples * 2)
             audio_io = BytesIO(wav_data)
             audio_io.name = "init.wav"
-            transcription = self.client.audio.transcriptions.create(
-                model=model,
+            self.client.audio.transcriptions.create(
+                model=model_name,
                 file=audio_io,
                 response_format="verbose_json",
                 **extra,
             )
-            self.logger.info(f"ASR init call OK")
+            self.logger.info("ASR init call OK")
         except Exception as e:
             self.logger.error(f"ASR init call failed: {e}")
 
     def call(self, audio_file):
         try:
+            model_name = self.model_config.get("model_name", "whisper-1")
             extra = self.model_config.get("extra", {})
-            model = self.model_config.get("model", "whisper-1")
 
             audio_io = BytesIO(audio_file)
             audio_io.name = "audio.wav"
 
             transcription = self.client.audio.transcriptions.create(
-                model=model,
+                model=model_name,
                 file=audio_io,
                 response_format="verbose_json",
                 **extra,

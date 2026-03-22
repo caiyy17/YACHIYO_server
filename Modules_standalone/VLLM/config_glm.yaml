@@ -1,6 +1,0 @@
-port: 5051
-gpu_memory_utilization: 0.5
-max_model_len: 8192
-chat-template: "{% for message in messages %}{% if loop.first %}[gMASK]sop<|{{ message['role'] }}|>\n {{ message['content'] }}{% else %}<|{{ message['role'] }}|>\n {{ message['content'] }}{% endif %}{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}"
-served-model-name: glm
-# vllm serve model-scope/glm-4-9b-chat --config config.yaml --trust-remote-code

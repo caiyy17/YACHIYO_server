@@ -1,0 +1,7 @@
+{
+    "api_base": "qwen_tts_api",
+    "api_key": "",
+    "voice": "default",
+    "extra": {},
+    "model_name": "tts"
+}

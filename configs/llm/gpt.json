@@ -1,6 +1,6 @@
 {
-    "model": "gpt-4.1",
     "api_base": "",
     "api_key": "OPENAI_KEY",
-    "extra": {}
+    "extra": {},
+    "model_name": "gpt-5.4"
 }

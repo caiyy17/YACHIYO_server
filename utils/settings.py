@@ -27,7 +27,7 @@ def get_secrets():
 
 
 def get_setting(*keys):
-    """Get a nested setting value. e.g. get_setting("asr", "addr_sensevoice")"""
+    """Get a nested setting value by keys."""
     val = get_settings()
     for k in keys:
         val = val[k]
