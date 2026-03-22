@@ -7,17 +7,19 @@ OpenAI-compatible ASR server wrapping [qwen-asr-serve](https://github.com/QwenLM
 ## Setup
 
 ```bash
-conda create -n qwen-asr python=3.11 -y
+conda create -n qwen-asr python=3.12 -y
 conda activate qwen-asr
-pip install -U "qwen-asr[vllm]" httpx fastapi uvicorn python-multipart
+conda install -c conda-forge gcc gxx -y            # required for triton compilation
+conda install -c nvidia cuda-nvcc -y                # required for torch.compile
+pip install -r requirements.txt
+pip install -U flash-attn --no-build-isolation      # optional, reduces VRAM
 ```
 
 ## Run
 
 ```bash
 conda activate qwen-asr
-python qwen_asr_server.py
-# Listens on port 8010
+python qwen_asr_server.py  # default: Qwen/Qwen3-ASR-1.7B, port 8010
 ```
 
 Use 0.6b model for lower VRAM:

@@ -588,6 +588,48 @@ Since MotionGen and TTS are independent (both consume LLM output), they can be p
 
 The improvement ($839$\,ms) matches the theoretical prediction: $\sum L_i - \max(L_i) = (884 + 829) - 884 = 829$\,ms, with $\sim$10\,ms dispatcher/receiver overhead.
 
+\subsection{Consumer GPU Deployment (RTX 4090)}
+
+To evaluate deployment on consumer hardware, we replicate the conversation pipeline on a single NVIDIA GeForce RTX 4090 (24\,GB VRAM) using smaller, quantized open-source models: Qwen3-ASR-0.6B (ASR via vLLM), Qwen3.5-4B-AWQ-4bit (LLM via vLLM, with vision encoder enabled), Qwen3-TTS-0.6B via faster-qwen3-tts (TTS), and BGE-M3 (vector database). All four services run concurrently on the single GPU, occupying $\sim$16.5\,GB VRAM total.
+
+\begin{table}[h]
+    \centering
+    \caption{Per-service VRAM usage on RTX 4090 (24\,GB).}
+    \label{tab:vram_4090}
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Service} & \textbf{VRAM (GB)} \\
+        \midrule
+        VLLM LLM (Qwen3.5-4B-AWQ-4bit, vision) & 7.0 \\
+        ASR (Qwen3-ASR-0.6B, vLLM backend) & 4.6 \\
+        TTS (Qwen3-TTS-0.6B, CUDA Graph) & 3.1 \\
+        VectorDB (BGE-M3) & 1.7 \\
+        \midrule
+        Total & 16.5 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \caption{Per-stage latency on RTX 4090 with smaller models (single run). The test input is the same 1.6-second Chinese speech clip used in Table~\ref{tab:latency}.}
+    \label{tab:latency_4090}
+    \begin{tabular}{lrr}
+        \toprule
+        \textbf{Stage} & \textbf{RTX 4090 (4B)} & \textbf{RTX 5090 (9B)} \\
+        \midrule
+        ASR                     & 92   & $33 \pm 1$ \\
+        LLM (total generation)  & 503  & $339 \pm 17$ \\
+        TTS (first sentence)    & 1535 & $829 \pm 21$ \\
+        \midrule
+        Server first audio      & 2006 & $1060 \pm 22$ \\
+        E2E total               & 4093 & $3609 \pm 53$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The RTX 4090 configuration achieves $\sim$2.0\,s first-audio latency, roughly 2$\times$ that of the RTX 5090 setup. The increase is primarily due to the TTS stage: Qwen3-TTS-0.6B ($\sim$1.5\,s per sentence) is slower than BertVITS2 ($\sim$0.8\,s) on the 5090. ASR latency increases from 33\,ms to 92\,ms due to the smaller GPU's lower memory bandwidth, and LLM generation is slower with the 4B model (503\,ms vs.\ 339\,ms for 9B) partly because the 4B model produces comparable-length outputs with fewer parameters. Despite the increased latency, the pipeline remains within interactive bounds ($<$3\,s first audio) and demonstrates that the architecture scales down to consumer-grade hardware with 24\,GB VRAM.
+
 % ============================================================
 \section{Discussion}
 \label{sec:discussion}

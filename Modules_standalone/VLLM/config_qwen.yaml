@@ -1,7 +1,8 @@
 port: 5051
 tensor_parallel_size: 1
-gpu_memory_utilization: 0.5
+gpu_memory_utilization: 0.3
 max_model_len: 4096
+# language_model_only: true
 enable_auto_tool_choice: true
 tool_call_parser: qwen3_coder
 served-model-name: qwen

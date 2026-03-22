@@ -10,6 +10,8 @@
 conda create -n vllm python=3.12
 conda activate vllm
 pip install vllm
+conda install -c conda-forge gcc gxx -y        # C compiler for triton
+conda install -c nvidia cuda-nvcc -y            # nvcc for torch.compile
 ```
 
 ## Run
@@ -20,10 +22,10 @@ vllm serve <model_name> --config config_qwen.yaml
 # Listens on port 5051
 ```
 
-Example with Qwen3-8B-AWQ:
+Example with Qwen3.5-9B-AWQ-4bit:
 
 ```bash
-vllm serve Qwen/Qwen3-8B-AWQ --config config_qwen.yaml
+vllm serve cyankiwi/Qwen3.5-9B-AWQ-4bit --config config_qwen.yaml
 ```
 
 ## Config Files

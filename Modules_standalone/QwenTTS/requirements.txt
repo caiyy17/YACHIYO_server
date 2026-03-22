@@ -1,0 +1,4 @@
+faster-qwen3-tts
+soundfile
+fastapi
+uvicorn

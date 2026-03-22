@@ -7,9 +7,9 @@ OpenAI-compatible TTS server using [faster-qwen3-tts](https://github.com/andimar
 ## Setup
 
 ```bash
-# Uses the same conda env as QwenASR
-conda activate qwen-asr
-pip install -U faster-qwen3-tts soundfile fastapi uvicorn
+conda create -n qwen-tts python=3.10 -y
+conda activate qwen-tts
+pip install -r requirements.txt
 ```
 
 ## Reference Voices
@@ -25,7 +25,7 @@ voices/
 ## Run
 
 ```bash
-conda activate qwen-asr
+conda activate qwen-tts
 python qwen_tts_server.py --ref-dir ./voices
 # Listens on port 8011
 ```

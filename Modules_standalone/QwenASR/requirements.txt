@@ -1,0 +1,5 @@
+qwen-asr[vllm]
+httpx
+fastapi
+uvicorn
+python-multipart
