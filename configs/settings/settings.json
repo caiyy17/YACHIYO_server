@@ -10,10 +10,10 @@
         "qwen_tts_api": "http://127.0.0.1:8011/v1"
     },
     "data_query": {
-        "addr_data_query": "http://127.0.0.1:5054",
+        "addr_data_query": "http://127.0.0.1:8100",
         "datasets_path": "configs/datasets/"
     },
     "motion_generation": {
-        "addr_motion": "http://10.81.7.113:7861"
+        "addr_motion": "http://127.0.0.1:7861"
     }
 }
