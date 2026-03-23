@@ -8,10 +8,10 @@ A modular, streaming pipeline server for real-time AI assistant applications. Su
 conda activate yachio  # see requirements.txt for dependencies
 
 # Main server (pipeline)
-uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000
+uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910
 
 # WebRTC server (bridges WebRTC clients to pipeline)
-python server_webrtc.py --port 18082 --main-server http://localhost:8000
+python server_webrtc.py --port 15168 --main-server http://localhost:8910
 ```
 
 ## Standalone Model Services
@@ -36,10 +36,10 @@ Each service has its own conda environment, setup instructions, and README. The 
 Client (WebRTC / WebSocket)
   |
   v
-server_webrtc.py (port 18082)     <-- WebRTC bridge (optional)
+server_webrtc.py (port 15168)     <-- WebRTC bridge (optional)
   |  WebSocket
   v
-server_fastapi.py (port 8000)     <-- Pipeline server
+server_fastapi.py (port 8910)     <-- Pipeline server
   |
   v
 Pipeline: [Node 1] -> [Node 3] -> [Node 5] -> [Node 7] -> Client  (example)

@@ -3,8 +3,8 @@
         "qwen_asr_api": "http://127.0.0.1:8010/v1"
     },
     "llm": {
-        "qwen_api": "http://127.0.0.1:5051/v1",
-        "link_api": "http://127.0.0.1:5051"
+        "qwen_api": "http://127.0.0.1:8000/v1",
+        "link_api": "http://127.0.0.1:8000"
     },
     "tts": {
         "qwen_tts_api": "http://127.0.0.1:8011/v1"
@@ -14,6 +14,6 @@
         "datasets_path": "configs/datasets/"
     },
     "motion_generation": {
-        "addr_motion": "http://127.0.0.1:7861"
+        "addr_motion": "http://10.81.7.113:7861"
     }
 }

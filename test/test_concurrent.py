@@ -8,8 +8,8 @@ import base64
 import os
 
 # FastAPI server address
-server_url = "http://localhost:8000"
-websocket_url = "ws://localhost:8000/ws"
+server_url = "http://localhost:8910"
+websocket_url = "ws://localhost:8910/ws"
 
 
 # Test POST request for client registration

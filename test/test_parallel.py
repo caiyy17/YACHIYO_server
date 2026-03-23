@@ -17,8 +17,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SERVER = "http://localhost:8000"
-WS_URL = "ws://localhost:8000/ws"
+SERVER = "http://localhost:8910"
+WS_URL = "ws://localhost:8910/ws"
 
 
 async def run_pipeline(client_id, config_name, messages, timeout=5):

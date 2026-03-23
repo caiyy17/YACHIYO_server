@@ -140,7 +140,7 @@
                 ],
                 "next_nodes": [],
                 "model": "openai",
-                "voice": "coral"
+                "voice": "alloy"
             }
         }
     ]

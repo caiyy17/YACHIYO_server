@@ -54,9 +54,11 @@ def speech(req: SpeechRequest):
 
     language = req.language or "auto"
     voice = req.voice
-    # "default" uses the first loaded reference voice
-    if voice == "default" and ref_cache:
-        voice = list(ref_cache.keys())[0]
+    # Fallback to first loaded reference voice if requested voice not found
+    if voice not in ref_cache and ref_cache:
+        fallback = list(ref_cache.keys())[0]
+        print(f"Voice '{voice}' not found, falling back to '{fallback}'")
+        voice = fallback
 
     try:
         if voice in ref_cache:
@@ -68,7 +70,7 @@ def speech(req: SpeechRequest):
                 ref_text=ref["text"],
             )
         else:
-            raise HTTPException(400, f"Unknown voice: {voice}. Available: {get_available_voices()}")
+            raise HTTPException(500, "No reference voices loaded")
     except HTTPException:
         raise
     except Exception as e:

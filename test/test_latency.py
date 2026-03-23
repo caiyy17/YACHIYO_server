@@ -12,8 +12,8 @@ import base64
 import re
 import statistics
 
-SERVER = "http://localhost:8000"
-WS_URL = "ws://localhost:8000/ws"
+SERVER = "http://localhost:8910"
+WS_URL = "ws://localhost:8910/ws"
 ROUNDS = 3
 
 

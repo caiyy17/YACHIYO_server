@@ -16,7 +16,7 @@ import aiohttp
 
 WEBUI_PORT = 18083  # Use non-default port to avoid conflicts
 WEBUI_URL = f"http://localhost:{WEBUI_PORT}"
-MAIN_SERVER = "http://localhost:8000"
+MAIN_SERVER = "http://localhost:8910"
 TEST_CLIENT_ID = "webui_test_client"
 PIPELINE_CONFIG = "unity_chan"
 

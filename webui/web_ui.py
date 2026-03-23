@@ -14,7 +14,7 @@ app = FastAPI(title="YACHIO Web UI", description="Web UI for client and configur
 
 templates = Jinja2Templates(directory="templates")
 
-SERVER_URL = "http://localhost:8000"
+SERVER_URL = "http://localhost:8910"
 
 
 class TestResult(BaseModel):

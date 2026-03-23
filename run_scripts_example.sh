@@ -43,15 +43,15 @@ kill_screen_if_exists "webrtc"
 
 echo "Starting pipeline server..."
 
-# 1. Main server - port 8000
+# 1. Main server - port 8910
 echo "[1/2] Starting YACHIO server..."
-screen -dmS yachio zsh -c "source ~/.zshrc; conda activate yachio && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8000; exec zsh"
-wait_for_port 8000 "YACHIO"
+screen -dmS yachio zsh -c "source ~/.zshrc; conda activate yachio && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910; exec zsh"
+wait_for_port 8910 "YACHIO"
 
-# 2. WebRTC server - port 18082
+# 2. WebRTC server - port 15168
 echo "[2/2] Starting WebRTC server..."
-screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachio && python server_webrtc.py --port 18082; exec zsh"
-wait_for_port 18082 "WebRTC"
+screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachio && python server_webrtc.py --port 15168; exec zsh"
+wait_for_port 15168 "WebRTC"
 
 echo ""
 echo "Pipeline server started. Make sure model services are running:"

@@ -149,7 +149,8 @@
                     }
                 ],
                 "next_nodes": [],
-                "model": "qwen_tts"
+                "model": "qwen_tts",
+                "voice": "unity_chan"
             }
         }
     ]

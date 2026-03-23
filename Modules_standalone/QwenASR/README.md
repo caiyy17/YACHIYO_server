@@ -28,6 +28,12 @@ Use 0.6b model for lower VRAM:
 python qwen_asr_server.py --size 0.6b
 ```
 
+Control VRAM usage (default 0.3, passed to vLLM backend):
+
+```bash
+python qwen_asr_server.py --size 0.6b --gpu-memory-utilization 0.15
+```
+
 ## API
 
 Standard OpenAI `/v1/audio/transcriptions`:

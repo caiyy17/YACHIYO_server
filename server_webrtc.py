@@ -42,7 +42,7 @@ Client is responsible for register/init_pipeline/unregister via server_fastapi's
 server_webrtc only handles WebRTC ↔ pipeline WebSocket bridging.
 
 Usage:
-  python server_webrtc.py [--port 18082] [--main-server http://localhost:8000]
+  python server_webrtc.py [--port 15168] [--main-server http://localhost:8910]
 """
 
 import argparse
@@ -700,8 +700,8 @@ def setup_logger():
 
 def main():
     parser = argparse.ArgumentParser(description="Generic WebRTC Server")
-    parser.add_argument("--port", type=int, default=18082)
-    parser.add_argument("--main-server", default="http://localhost:8000")
+    parser.add_argument("--port", type=int, default=15168)
+    parser.add_argument("--main-server", default="http://localhost:8910")
     args = parser.parse_args()
 
     setup_logger()

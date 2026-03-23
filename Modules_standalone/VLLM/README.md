@@ -19,7 +19,7 @@ conda install -c nvidia cuda-nvcc -y            # nvcc for torch.compile
 ```bash
 conda activate vllm
 vllm serve <model_name> --config config_qwen.yaml
-# Listens on port 5051
+# Listens on port 8000
 ```
 
 Example with Qwen3.5-9B-AWQ-4bit:
@@ -30,7 +30,7 @@ vllm serve cyankiwi/Qwen3.5-9B-AWQ-4bit --config config_qwen.yaml
 
 ## Config Files
 
-- `config_qwen.yaml` — Qwen model config (port 5051, tool calling enabled)
+- `config_qwen.yaml` — Qwen model config (port 8000, tool calling enabled)
 - `config_glm.yaml` — GLM model config
 
 ## Configuration
@@ -40,7 +40,7 @@ Service address is configured in `configs/settings/settings.json`:
 ```json
 {
     "llm": {
-        "qwen_api": "http://127.0.0.1:5051/v1"
+        "qwen_api": "http://127.0.0.1:8000/v1"
     }
 }
 ```

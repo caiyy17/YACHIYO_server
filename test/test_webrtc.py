@@ -13,8 +13,8 @@ Simulates a real WebRTC client:
      Subtitles = DataChannel messages (replacement, cleared on EoS)
 
 Requires:
-  - server_webrtc.py running (default: localhost:18082)
-  - server_fastapi running (default: localhost:8000)
+  - server_webrtc.py running (default: localhost:15168)
+  - server_fastapi running (default: localhost:8910)
   - All pipeline services (ASR, LLM, TTS, VectorDB)
 
 Output:
@@ -22,7 +22,7 @@ Output:
 
 Usage:
   conda activate yachio
-  python test/test_webrtc.py [--server http://localhost:18082]
+  python test/test_webrtc.py [--server http://localhost:15168]
 """
 
 import argparse
@@ -65,8 +65,8 @@ TEST_WAV = os.path.join(SCRIPT_DIR, "test_voice.wav")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "tmp")
 OUTPUT_MP4 = os.path.join(OUTPUT_DIR, "test_webrtc_output.mp4")
 
-MAIN_SERVER = "http://localhost:8000"
-WEBRTC_SERVER = "http://localhost:18082"
+MAIN_SERVER = "http://localhost:8910"
+WEBRTC_SERVER = "http://localhost:15168"
 CLIENT_ID = "test_webrtc_client"
 PIPELINE_CONFIG = "unity_chan_webrtc"
 

@@ -38,7 +38,7 @@ cd MotionServer
 
 # With prompt engineering (uses an LLM to rewrite prompts + estimate duration):
 python custom/web_server.py --model_path ckpts/tencent/HY-Motion-1.0 \
-    --prompt_engineering_host http://localhost:5051/v1 --port 7861
+    --prompt_engineering_host http://localhost:8000/v1 --port 7861
 
 # Without prompt engineering:
 python custom/web_server.py --model_path ckpts/tencent/HY-Motion-1.0 --port 7861
