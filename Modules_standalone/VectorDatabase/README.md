@@ -28,7 +28,7 @@ conda install -c conda-forge faiss-gpu
 ```bash
 conda activate database
 python database_server.py
-# Listens on port 5054
+# Listens on port 8100
 ```
 
 ## Configuration
@@ -38,7 +38,7 @@ Service address and dataset path are configured in `configs/settings/settings.js
 ```json
 {
     "data_query": {
-        "addr_data_query": "http://127.0.0.1:5054",
+        "addr_data_query": "http://127.0.0.1:8100",
         "datasets_path": "configs/datasets/"
     }
 }

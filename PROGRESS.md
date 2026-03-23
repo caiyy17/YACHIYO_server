@@ -9,7 +9,7 @@
 | WebRTC | 15168 |
 | ASR | 8010 |
 | TTS | 8011 |
-| Database | 5054 |
+| Database | 8100 |
 
 ## 环境配置
 
@@ -232,6 +232,37 @@ Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forw
 
 - torch 2.10.0+cu128 与 prebuilt wheels 不兼容，source build 会卡死
 - faster-qwen3-tts 使用 CUDA Graph 替代，不需要 flash-attn
+
+### Technical Report 实测数据（0.6B ASR + 9B LLM + 0.6B TTS，RTX 5090，vLLM 0.18.0）
+
+**Multi-User Scalability（test_multiuser_proper.py，unity_chan config，pipeline 预初始化）：**
+
+| Users | FA avg (ms) | FA max (ms) | Total avg (ms) |
+|-------|-------------|-------------|----------------|
+| 1 | 966 | 966 | 1372 |
+| 2 | 2070 | 2072 | — |
+| 3 | 2878 | 2883 | 5427 |
+| 5 | 12234 | 26680 | 26691 |
+
+1-3 用户性能与旧管线（SenseVoice+BertVITS2）持平。5 用户大幅退化（vLLM 0.18.0 KV cache 1.56 GiB，5 并发超出容量）。
+
+**WebRTC Streaming（test_webrtc.py，unity_chan_webrtc config）：**
+- Duration: 45.2s
+- Audio frames: 2262 sent, 2259 received
+- Video frames: 1357 sent, 1357 received
+- DataChannel messages: 901
+- ASR: "这是一段测试音频。" ✓
+
+**Motion Generation SMPL（5 rounds, first=warmup, MotionGen at 10.81.7.113:7861）：**
+
+| Config | First Audio |
+|--------|------------|
+| Standard (unity_chan, 无 MotionGen) | 1110 ± 41 ms |
+| Sequential (unity_chan_smpl_seq) | 1649 ± 199 ms |
+| Parallel (unity_chan_smpl) | 1536 ± 172 ms |
+| Improvement (seq → par) | 113ms (6.9%) |
+
+MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 
 ## ❌ TODO
 

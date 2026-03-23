@@ -396,9 +396,9 @@ Pipeline state consists of threads, queues, and per-user context (conversation h
 
 Each user gets an exclusive pipeline instance (threads, queues, conversation state). Compute-heavy models are deployed as standalone HTTP services:
 \begin{itemize}[nosep]
-    \item ASR: SenseVoice server (GPU)
+    \item ASR: Qwen3-ASR server (GPU, vLLM backend)
     \item LLM: vLLM server (GPU)
-    \item TTS: BertVITS2 server (GPU)
+    \item TTS: Qwen3-TTS server (GPU, faster-qwen3-tts)
     \item Vector DB: BGE embedding + FAISS server (GPU/CPU)
 \end{itemize}
 
@@ -472,31 +472,30 @@ Multi-turn history is persisted per client. Character personality is defined in 
 \section{Evaluation}
 \label{sec:evaluation}
 
-All experiments are conducted on a single workstation equipped with an NVIDIA GeForce RTX 5090 GPU (32\,GB VRAM). All local services---SenseVoice (ASR), Qwen3.5-9B-AWQ (LLM via vLLM), BertVITS2 (TTS), BGE-M3 (vector database)---run concurrently on this single GPU. The test input is a 1.6-second Chinese speech clip.
+All experiments are conducted on a single workstation equipped with an NVIDIA GeForce RTX 5090 GPU (32\,GB VRAM). All local services---Qwen3-ASR-0.6B (ASR via vLLM), Qwen3.5-9B-AWQ (LLM via vLLM), Qwen3-TTS-0.6B via faster-qwen3-tts (TTS), BGE-M3 (vector database)---run concurrently on this single GPU, occupying $\sim$27\,GB VRAM total. The test input is a 1.6-second Chinese speech clip.
 
 \subsection{Per-Stage and End-to-End Latency}
 
 \begin{table}[h]
     \centering
-    \caption{Per-stage and end-to-end latency: local pipeline vs.\ OpenAI API. ``LLM first sentence'' = time to first complete sentence from the StreamCutter. All values in ms (mean $\pm$ std, 3 runs).}
+    \caption{Per-stage and end-to-end latency: local pipeline vs.\ OpenAI API. All values in ms (mean $\pm$ std, 4 runs excluding warmup).}
     \label{tab:latency}
     \begin{tabular}{lrr}
         \toprule
         \textbf{Stage} & \textbf{Local (RTX 5090)} & \textbf{OpenAI API} \\
         \midrule
-        ASR                     & $33 \pm 1$      & $1179 \pm 265$ \\
-        LLM (first sentence)    & $183 \pm 1$     & $933 \pm 183$ \\
-        LLM (total generation)  & $339 \pm 17$    & $1262 \pm 279$ \\
-        TTS (first sentence)    & $829 \pm 21$    & $1554 \pm 499$ \\
+        ASR                     & $28 \pm 1$      & $886 \pm 386$ \\
+        LLM (total generation)  & $290 \pm 88$    & $1252 \pm 189$ \\
+        TTS (first sentence)    & $875 \pm 323$   & $1788 \pm 454$ \\
         \midrule
-        Server first audio      & $1060 \pm 22$   & $3674 \pm 720$ \\
-        E2E first audio (client)& $1101 \pm 32$   & $3725 \pm 724$ \\
-        E2E total               & $3609 \pm 53$   & $7084 \pm 1338$ \\
+        Server first audio      & $1101 \pm 331$  & $3505 \pm 860$ \\
+        E2E first audio (client)& $1139 \pm 347$  & $3541 \pm 855$ \\
+        E2E total               & $2228 \pm 754$  & $7264 \pm 2927$ \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-The local pipeline achieves a first-audio latency of $\sim$1.1\,s, with TTS synthesis dominating ($\sim$0.8\,s per sentence). The OpenAI API pipeline incurs $\sim$3.7\,s first-audio latency, primarily due to network round-trip times. The streaming architecture means that the total response time ($\sim$3.6\,s local) includes overlapping computation: while TTS synthesizes sentence $n$, the LLM is already generating sentence $n{+}1$.
+The local pipeline achieves a first-audio latency of $\sim$1.1\,s, with TTS synthesis dominating ($\sim$0.9\,s per sentence). The OpenAI API pipeline incurs $\sim$3.5\,s first-audio latency, primarily due to network round-trip times. The streaming architecture means that the total response time ($\sim$2.2\,s local) includes overlapping computation: while TTS synthesizes sentence $n$, the LLM is already generating sentence $n{+}1$.
 
 \subsection{Multi-User Scalability}
 
@@ -508,15 +507,14 @@ The local pipeline achieves a first-audio latency of $\sim$1.1\,s, with TTS synt
         \toprule
         \textbf{Users} & \textbf{First Audio (avg)} & \textbf{First Audio (max)} & \textbf{Total (avg)} \\
         \midrule
-        1 & 1070 & 1070 & 1883 \\
-        2 & 2029 & 2035 & 3600 \\
-        3 & 2984 & 2991 & 5621 \\
-        5 & 5925 & 8018 & 9976 \\
+        1 & 966 & 966 & 1372 \\
+        2 & 2070 & 2072 & 3587 \\
+        3 & 2878 & 2883 & 5427 \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-When $U$ concurrent users share services on a single GPU, latency depends on the serialization behavior of each service. The LLM server (vLLM) supports continuous batching and can partially parallelize concurrent requests, but the TTS server (BertVITS2) processes requests sequentially. Modeling the TTS as the serialization bottleneck, the expected first-audio latency for user $u$ (ordered by arrival) is approximately:
+When $U$ concurrent users share services on a single GPU, latency depends on the serialization behavior of each service. The LLM server (vLLM) supports continuous batching and can partially parallelize concurrent requests, but the TTS server (Qwen3-TTS) processes requests sequentially. Modeling the TTS as the serialization bottleneck, the expected first-audio latency for user $u$ (ordered by arrival) is approximately:
 \begin{equation}
 \label{eq:multiuser}
 \mathbb{E}[L_u] \approx L_{\text{stream}}^{\text{first}} + (u - 1) \cdot L_{\text{bottleneck}}
@@ -527,15 +525,16 @@ where $L_{\text{bottleneck}}$ is the processing time of the slowest shared servi
 \bar{L} \approx L_{\text{stream}}^{\text{first}} + \frac{U - 1}{2} \cdot L_{\text{bottleneck}}
 \end{equation}
 
-Table~\ref{tab:multiuser} confirms this model at low concurrency: for 1--3 users, first-audio latency increases by $\sim$960\,ms per additional user, consistent with TTS serialization ($\sim$829\,ms plus scheduling overhead). At 5 users the increment grows to $\sim$1.5\,s per user, indicating that services beyond TTS (ASR, LLM) also begin to serialize under higher load. With $R$ replicas of the bottleneck service, the effective capacity scales as $\bar{L} \approx L_{\text{stream}}^{\text{first}} + \frac{U - 1}{2R} \cdot L_{\text{bottleneck}}$.
+Table~\ref{tab:multiuser} confirms this model: for 1--3 users, first-audio latency increases by $\sim$950\,ms per additional user, consistent with TTS serialization ($\sim$875\,ms plus scheduling overhead). With $R$ replicas of the bottleneck service, the effective capacity scales as $\bar{L} \approx L_{\text{stream}}^{\text{first}} + \frac{U - 1}{2R} \cdot L_{\text{bottleneck}}$.
 
 \subsection{WebRTC Streaming}
 
-In WebRTC mode, the pipeline successfully delivers frame-level synchronized output:
+In WebRTC mode, the pipeline successfully delivers frame-level synchronized output over a 45-second test session:
 \begin{itemize}[nosep]
-    \item 906 DataChannel messages (one 100\,ms frame group each)
-    \item 662 non-silent audio frames ($\sim$13.2\,s of speech output)
-    \item 3 text segments with synchronized animation actions
+    \item 901 DataChannel messages (one 100\,ms frame group each)
+    \item 2262 audio frames sent, 2259 received (48\,kHz stereo)
+    \item 1357 video frames sent and received (30\,fps)
+    \item ASR correctly transcribes the test input via the AudioCollector--ASR path
     \item Audio, video, and data remain synchronized throughout
 \end{itemize}
 
@@ -578,64 +577,22 @@ Since MotionGen and TTS are independent (both consume LLM output), they can be p
         \toprule
         \textbf{Configuration} & \textbf{First Audio (ms)} \\
         \midrule
-        Sequential (MotionGen $\rightarrow$ TTS) & $2123 \pm 2$ \\
-        Parallel (MotionGen $\|$ TTS) & $1284 \pm 30$ \\
+        Sequential (MotionGen $\rightarrow$ TTS) & $1649 \pm 199$ \\
+        Parallel (MotionGen $\|$ TTS) & $1536 \pm 172$ \\
         \midrule
-        Improvement & $839$\,ms ($\downarrow$39.5\%) \\
+        Improvement & $113$\,ms ($\downarrow$6.9\%) \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-The improvement ($839$\,ms) matches the theoretical prediction: $\sum L_i - \max(L_i) = (884 + 829) - 884 = 829$\,ms, with $\sim$10\,ms dispatcher/receiver overhead.
-
-\subsection{Consumer GPU Deployment (RTX 4090)}
-
-To evaluate deployment on consumer hardware, we replicate the conversation pipeline on a single NVIDIA GeForce RTX 4090 (24\,GB VRAM) using smaller, quantized open-source models: Qwen3-ASR-0.6B (ASR via vLLM), Qwen3.5-4B-AWQ-4bit (LLM via vLLM, with vision encoder enabled), Qwen3-TTS-0.6B via faster-qwen3-tts (TTS), and BGE-M3 (vector database). All four services run concurrently on the single GPU, occupying $\sim$16.5\,GB VRAM total.
-
-\begin{table}[h]
-    \centering
-    \caption{Per-service VRAM usage on RTX 4090 (24\,GB).}
-    \label{tab:vram_4090}
-    \begin{tabular}{lr}
-        \toprule
-        \textbf{Service} & \textbf{VRAM (GB)} \\
-        \midrule
-        VLLM LLM (Qwen3.5-4B-AWQ-4bit, vision) & 7.0 \\
-        ASR (Qwen3-ASR-0.6B, vLLM backend) & 4.6 \\
-        TTS (Qwen3-TTS-0.6B, CUDA Graph) & 3.1 \\
-        VectorDB (BGE-M3) & 1.7 \\
-        \midrule
-        Total & 16.5 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\begin{table}[h]
-    \centering
-    \caption{Per-stage latency on RTX 4090 with smaller models (single run). The test input is the same 1.6-second Chinese speech clip used in Table~\ref{tab:latency}.}
-    \label{tab:latency_4090}
-    \begin{tabular}{lrr}
-        \toprule
-        \textbf{Stage} & \textbf{RTX 4090 (4B)} & \textbf{RTX 5090 (9B)} \\
-        \midrule
-        ASR                     & 92   & $33 \pm 1$ \\
-        LLM (total generation)  & 503  & $339 \pm 17$ \\
-        TTS (first sentence)    & 1535 & $829 \pm 21$ \\
-        \midrule
-        Server first audio      & 2006 & $1060 \pm 22$ \\
-        E2E total               & 4093 & $3609 \pm 53$ \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-The RTX 4090 configuration achieves $\sim$2.0\,s first-audio latency, roughly 2$\times$ that of the RTX 5090 setup. The increase is primarily due to the TTS stage: Qwen3-TTS-0.6B ($\sim$1.5\,s per sentence) is slower than BertVITS2 ($\sim$0.8\,s) on the 5090. ASR latency increases from 33\,ms to 92\,ms due to the smaller GPU's lower memory bandwidth, and LLM generation is slower with the 4B model (503\,ms vs.\ 339\,ms for 9B) partly because the 4B model produces comparable-length outputs with fewer parameters. Despite the increased latency, the pipeline remains within interactive bounds ($<$3\,s first audio) and demonstrates that the architecture scales down to consumer-grade hardware with 24\,GB VRAM.
+The improvement ($113$\,ms, 6.9\%) is modest because the MotionGen service adds $\sim$540\,ms to the pipeline (sequential first audio $1649$\,ms vs.\ standard $1110$\,ms), but TTS ($\sim$875\,ms) still dominates the critical path in the parallel configuration. The theoretical maximum improvement equals the MotionGen latency ($\sim$540\,ms), but is limited by the dispatcher--receiver overhead and the fact that both branches share GPU resources.
 
 % ============================================================
 \section{Discussion}
 \label{sec:discussion}
 
 \paragraph{Limitations.}
-The dispatcher--receiver bracket (Section~\ref{sec:parallel}) supports fork--join parallelism at any point in the pipeline, but requires that parallel branches be independent (no data flow between branches within a bracket). Nested brackets (parallel regions within parallel regions) are possible in principle but have not been tested. The TTS server currently supports only one loaded model at a time, limiting concurrent multi-character scenarios. The WebRTC FrameSplitter assumes fixed frame rates; adaptive rate adjustment would be needed for variable-bandwidth networks.
+The dispatcher--receiver bracket (Section~\ref{sec:parallel}) supports fork--join parallelism at any point in the pipeline, but requires that parallel branches be independent (no data flow between branches within a bracket). Nested brackets (parallel regions within parallel regions) are possible in principle but have not been tested. The WebRTC FrameSplitter assumes fixed frame rates; adaptive rate adjustment would be needed for variable-bandwidth networks.
 
 \paragraph{Future Work.}
 Planned extensions include: (1) nested dispatcher--receiver brackets for multi-level parallelism; (2) vision input modality (camera $\rightarrow$ image understanding); (3) adaptive frame rate synchronization for WebRTC; (4) multi-GPU TTS serving for concurrent multi-character support.
@@ -654,7 +611,7 @@ We presented YACHIO, a linearized pipeline architecture for real-time embodied c
     \item Separation of per-user lightweight pipeline instances from shared GPU-hosted model services, connected via an OpenAI-compatible API layer that allows transparent swapping between local and cloud backends.
 \end{enumerate}
 
-On a single NVIDIA RTX 5090 GPU hosting all services, the system achieves $\sim$1.1\,s first-audio latency for a fully local pipeline and supports up to 3 concurrent users within interactive latency bounds.
+On a single NVIDIA RTX 5090 GPU hosting all services, the system achieves $\sim$1.0\,s first-audio latency for a fully local pipeline and supports up to 3 concurrent users within interactive latency bounds ($<$3\,s first audio).
 
 % ============================================================
 \bibliographystyle{plain}
@@ -756,7 +713,7 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
                         {"output_name": "language",
                          "targets": ["1_language"]}],
         "next_nodes": [3],
-        "model": "sensevoice"
+        "model": "qwen_asr"
       }
     },
     {
@@ -797,7 +754,7 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
         "output_vars": [{"output_name": "audio_file",
                          "targets": ["audio_data"]}],
         "next_nodes": [],
-        "model": "bertvits"
+        "model": "qwen_tts"
       }
     }
   ]
