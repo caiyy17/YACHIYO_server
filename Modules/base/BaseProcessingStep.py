@@ -55,8 +55,29 @@ class BaseProcessingStep:
         self.output_dict = {}
         self.catch_signal_set = set()
         self.prepare_output_dict()
-        self.custom_init()
+        self._init_with_timeout()
         self.logger.info("initialized")
+
+    def _init_with_timeout(self, timeout=60):
+        """Run custom_init with a timeout to prevent hanging on unreachable services."""
+        import threading
+        init_done = threading.Event()
+        init_error = [None]
+
+        def _run_init():
+            try:
+                self.custom_init()
+            except Exception as e:
+                init_error[0] = e
+            finally:
+                init_done.set()
+
+        t = threading.Thread(target=_run_init, daemon=True)
+        t.start()
+        if not init_done.wait(timeout=timeout):
+            self.logger.error(f"custom_init timed out after {timeout}s")
+        elif init_error[0]:
+            self.logger.error(f"custom_init failed: {init_error[0]}")
 
     def custom_init(self):
         """Subclasses can override this method for custom initialization."""
