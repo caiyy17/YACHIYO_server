@@ -22,11 +22,14 @@ class Database:
         current_index = 0
         current_key_index = 0
         keys = []
+        # global_index → local_index within each item
+        self.global_to_local = {}
         for item in self.items:
             item["keys_index"] = []
-            for key in item["keys"]:
+            for local_idx, key in enumerate(item["keys"]):
                 keys.append(key)
                 item["keys_index"].append(current_key_index)
+                self.global_to_local[current_key_index] = local_idx
                 current_key_index += 1
             current_index += 1
         self.keys = keys
@@ -72,11 +75,12 @@ class Database:
             active_list = []
             for item in self.items:
                 scores = [0 for _ in range(len(item["keys_index"]))]
-                for index in item["keys_index"]:
+                for global_idx in item["keys_index"]:
+                    local_idx = self.global_to_local[global_idx]
                     for i in range(min(item["context_length"], len(prompts))):
-                        if score_table[i][index] > item["threshold"]:
-                            score_table[i][index] = 1
-                            scores[index] = 1
+                        if score_table[i][global_idx] > item["threshold"]:
+                            score_table[i][global_idx] = 1
+                            scores[local_idx] = 1
                             break
 
                 if item["logic"] == "and_any":
@@ -111,6 +115,8 @@ class TavernHistory(SimpleHistory):
         )  # 2 conversation turns
         if self.reset_history:
             self.clear_history()
+        self.load_history()
+        self.extra_info = {}
 
         self.lorebooks_list = self.config.get("lorebooks", [])
         self.threshold = self.config.get("similarity_threshold", 0.5)

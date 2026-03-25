@@ -156,7 +156,7 @@
                 ],
                 "next_nodes": [11],
                 "model": "qwen_tts",
-                "voice": "unity_chan"
+                "voice": "test_cn"
             }
         },
         {

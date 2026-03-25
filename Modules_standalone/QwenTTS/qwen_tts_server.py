@@ -5,6 +5,7 @@ Qwen3-TTS OpenAI-compatible server using faster-qwen3-tts (CUDA Graph accelerati
 import argparse
 import io
 import os
+import threading
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -14,6 +15,11 @@ from typing import Optional
 app = FastAPI()
 model = None
 ref_cache = {}  # voice_name -> {audio_path, text}
+# CUDA Graph is not thread-safe — concurrent generate() calls corrupt the
+# static KV cache and cause the decoder to miss EOS, producing abnormally
+# long audio.  Serialize all inference with a lock.
+# See: https://github.com/andimarafioti/faster-qwen3-tts/issues/85
+_model_lock = threading.Lock()
 LANGUAGES = ["auto", "chinese", "english", "french", "german", "italian", "japanese", "korean", "portuguese", "russian", "spanish"]
 
 
@@ -61,16 +67,17 @@ def speech(req: SpeechRequest):
         voice = fallback
 
     try:
-        if voice in ref_cache:
-            ref = ref_cache[voice]
-            wavs, sr = model.generate_voice_clone(
-                text=req.input,
-                language=language,
-                ref_audio=ref["audio_path"],
-                ref_text=ref["text"],
-            )
-        else:
-            raise HTTPException(500, "No reference voices loaded")
+        with _model_lock:
+            if voice in ref_cache:
+                ref = ref_cache[voice]
+                wavs, sr = model.generate_voice_clone(
+                    text=req.input,
+                    language=language,
+                    ref_audio=ref["audio_path"],
+                    ref_text=ref["text"],
+                )
+            else:
+                raise HTTPException(500, "No reference voices loaded")
     except HTTPException:
         raise
     except Exception as e:

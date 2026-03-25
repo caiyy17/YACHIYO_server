@@ -2,24 +2,24 @@
 
 ## 端口配置
 
-| 服务 | 端口 |
-|------|------|
-| vLLM (LLM) | 8000 |
-| YACHIO 主服务器 | 8910 |
-| WebRTC | 15168 |
-| ASR | 8010 |
-| TTS | 8011 |
-| Database | 8100 |
+| 服务            | 端口  |
+| --------------- | ----- |
+| vLLM (LLM)      | 8000  |
+| YACHIO 主服务器 | 8910  |
+| WebRTC          | 15168 |
+| ASR             | 8010  |
+| TTS             | 8011  |
+| Database        | 8100  |
 
 ## 环境配置
 
-| 服务 | Conda 环境 | Python | 包版本 |
-|------|-----------|--------|--------|
-| vLLM | vllm | 3.12 | vllm==0.18.0, torch==2.10.0+cu128 |
-| ASR | qwen-asr | 3.11 | qwen-asr (vLLM backend) |
-| TTS | qwen-tts | 3.10 | faster-qwen3-tts |
-| Database | database | 3.10 | sentence-transformers, faiss |
-| YACHIO | yachio | 3.12 | uvicorn, fastapi |
+| 服务     | Conda 环境 | Python | 包版本                            |
+| -------- | ---------- | ------ | --------------------------------- |
+| vLLM     | vllm       | 3.12   | vllm==0.18.0, torch==2.10.0+cu128 |
+| ASR      | qwen-asr   | 3.11   | qwen-asr (vLLM backend)           |
+| TTS      | qwen-tts   | 3.10   | faster-qwen3-tts                  |
+| Database | database   | 3.10   | sentence-transformers, faiss      |
+| YACHIO   | yachio     | 3.12   | uvicorn, fastapi                  |
 
 ## vLLM 版本问题调研
 
@@ -31,6 +31,7 @@
 ### 0.17.x 的失败：Mamba CUDA Graph Assertion
 
 **现象：**
+
 ```
 vllm/model_executor/layers/mamba/ops/causal_conv1d.py:1162
 assert num_cache_lines >= batch
@@ -38,11 +39,13 @@ AssertionError
 ```
 
 **日志数据（0.17.1 + 4B + 0.3）：**
+
 - Model loading: 3.85 GiB
 - Available KV cache memory: 3.74 GiB（充足）
 - 但 CUDA graph capture 时 assertion 失败
 
 **根因（[vllm#34094](https://github.com/vllm-project/vllm/issues/34094)）：**
+
 - CUDA graph capture size list 由 num_gpu_blocks 间接决定
 - 5090（0.3×32GB=9.8GB）比 4090（0.3×24GB=7.2GB）分配更多 KV blocks
 - 更多 blocks → capture list 延伸到更大的 batch size → 超过 Mamba conv_state cache lines
@@ -56,6 +59,7 @@ AssertionError
 **现象：** `num_gpu_blocks=0`，Available KV cache memory 极低
 
 **vLLM 0.18.0 + Python 3.10 的额外问题：**
+
 - `AttributeError: standalone_compile does not have FakeTensorMode`
 - 根因：Python 3.10 的 `mock.patch` 用 `getattr` 解析路径命中同名函数而非模块（[PR #37158](https://github.com/vllm-project/vllm/pull/37158)）
 - **解决方案：使用 Python 3.12**（`conda create -n vllm python=3.12 && pip install vllm`）
@@ -64,17 +68,18 @@ AssertionError
 
 所有测试在 5090 干净 GPU 上单独运行，无其他服务占用。
 
-| 配置 | vLLM | gpu_mem | Available KV | 推理 |
-|------|------|---------|-------------|------|
-| 4B + vision | 0.17.1 | 0.3 | **3.74 GiB** | Mamba assertion |
-| 4B + vision | 0.18.0 | 0.3 | **0.04 GiB** | 卡死 |
-| 4B + vision + mode=0（无torch.compile） | 0.18.0 | 0.3 | **0.04 GiB** | 卡死 |
-| 4B + image=0（跳过图片profiling） | 0.18.0 | 0.3 | **0.46 GiB** | ✓ |
-| 4B + language_model_only | 0.18.0 | 0.3 | **1.06 GiB** | ✓ |
-| 4B + vision | 0.18.0 | 0.35 | **1.61 GiB** | ✓ |
-| 4B + vision | 0.18.0 | 0.4 | 充足 | ✓（12960 MiB） |
+| 配置                                    | vLLM   | gpu_mem | Available KV | 推理            |
+| --------------------------------------- | ------ | ------- | ------------ | --------------- |
+| 4B + vision                             | 0.17.1 | 0.3     | **3.74 GiB** | Mamba assertion |
+| 4B + vision                             | 0.18.0 | 0.3     | **0.04 GiB** | 卡死            |
+| 4B + vision + mode=0（无torch.compile） | 0.18.0 | 0.3     | **0.04 GiB** | 卡死            |
+| 4B + image=0（跳过图片profiling）       | 0.18.0 | 0.3     | **0.46 GiB** | ✓               |
+| 4B + language_model_only                | 0.18.0 | 0.3     | **1.06 GiB** | ✓               |
+| 4B + vision                             | 0.18.0 | 0.35    | **1.61 GiB** | ✓               |
+| 4B + vision                             | 0.18.0 | 0.4     | 充足         | ✓（12960 MiB）  |
 
 **结论：**
+
 - torch.compile **不是**主因（mode=0 结果相同）
 - 视觉编码器 profiling 贡献 ~1.0 GiB 额外开销
 - 0.18.0 模型 profiling 本身比 0.17.1 多用 ~2.7 GiB（原因未查明，见 TODO）
@@ -83,6 +88,7 @@ AssertionError
 **3.7 GiB 差距分解（debug 日志确认）：**
 
 0.18.0 profiling 内存分解（`VLLM_LOGGING_LEVEL=DEBUG`）：
+
 ```
 Total non KV cache memory: 8.05 GiB
 ├── weights memory: 3.23 GiB
@@ -99,6 +105,7 @@ Total non KV cache memory: 8.05 GiB
 ### 0.18.0 Mamba Fix 确认生效
 
 当 gpu_mem 足够时，Mamba fix 正常工作：
+
 ```
 Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99 blocks available)
 ```
@@ -107,19 +114,19 @@ Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99
 
 **vLLM 0.18.0 + Python 3.12，单独运行（无其他服务）：**
 
-| 模型 | gpu_mem | VRAM |
-|------|---------|------|
-| 4B + language_model_only | 0.3 | 10044 MiB |
-| 4B + vision | 0.35 | 11250 MiB |
-| 4B + vision | 0.4 | 12960 MiB |
-| 9B + vision | 0.5 | 15880 MiB |
+| 模型                     | gpu_mem | VRAM      |
+| ------------------------ | ------- | --------- |
+| 4B + language_model_only | 0.3     | 10044 MiB |
+| 4B + vision              | 0.35    | 11250 MiB |
+| 4B + vision              | 0.4     | 12960 MiB |
+| 9B + vision              | 0.5     | 15880 MiB |
 
 **vLLM 0.18.0 + Python 3.12，所有服务同时运行（yachio env 服务器，vLLM 先启动）：**
 
-| Config | DB | ASR 0.6B (0.15) | TTS 0.6B | LLM | Total |
-|--------|-----|----------------|---------|-----|-------|
-| B: 9B (gpu_mem=0.5) | 2778 MiB | 5798 MiB | 3198 MiB | 15880 MiB | 27680 MiB |
-| A: 4B (gpu_mem=0.35) | 2806 MiB | 5798 MiB | 3398 MiB | 11512 MiB | 23540 MiB |
+| Config               | DB       | ASR 0.6B (0.15) | TTS 0.6B | LLM       | Total     |
+| -------------------- | -------- | --------------- | -------- | --------- | --------- |
+| B: 9B (gpu_mem=0.5)  | 2778 MiB | 5798 MiB        | 3198 MiB | 15880 MiB | 27680 MiB |
+| A: 4B (gpu_mem=0.35) | 2806 MiB | 5798 MiB        | 3398 MiB | 11512 MiB | 23540 MiB |
 
 注：9B 必须先启动 vLLM（profiling 峰值 ~19 GiB），再启动其他服务。4B 无此限制。
 
@@ -129,30 +136,31 @@ Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99
 
 **Config B: 9B + TTS 0.6B（gpu_mem=0.5，27680 MiB）**
 
-| Pipeline | ASR | LLM total | TTS 1st | Server FA | E2E FA | E2E Total |
-|----------|-----|-----------|---------|-----------|--------|-----------|
-| Standard | 28±1ms | 290±88ms | 875±323ms | 1101±331ms | **1139±347ms** | 2228±754ms |
-| SMPL | 28±0ms | 489±106ms | 841±181ms | 1128±191ms | **1276±65ms** | 3851±1150ms |
+| Pipeline | ASR    | LLM total | TTS 1st   | Server FA  | E2E FA         | E2E Total   |
+| -------- | ------ | --------- | --------- | ---------- | -------------- | ----------- |
+| Standard | 28±1ms | 290±88ms  | 875±323ms | 1101±331ms | **1139±347ms** | 2228±754ms  |
+| SMPL     | 28±0ms | 489±106ms | 841±181ms | 1128±191ms | **1276±65ms**  | 3851±1150ms |
 
 **Config A: 4B + TTS 0.6B（gpu_mem=0.35，23540 MiB）**
 
-| Pipeline | E2E First Audio | E2E Total |
-|----------|----------------|-----------|
-| Standard | **1495±779ms** | 2952±406ms |
-| SMPL | **1176±25ms** | 2470±909ms |
+| Pipeline | E2E First Audio | E2E Total  |
+| -------- | --------------- | ---------- |
+| Standard | **1495±779ms**  | 2952±406ms |
+| SMPL     | **1176±25ms**   | 2470±909ms |
 
 注：4B per-stage 日志解析间歇性失败，E2E 数据从 WebSocket 直接测量。
 
 **与 Technical Report 原始数据对比（SenseVoice + 9B + BertVITS2）：**
 
-| 指标 | TR 原始 | 0.18.0 9B Standard | 0.18.0 9B SMPL |
-|------|--------|-------------------|----------------|
-| Server first audio | **1060±22ms** | **1101±331ms** | **1128±191ms** |
-| E2E first audio | 1101±32ms | 1139±347ms | 1276±65ms |
+| 指标               | TR 原始       | 0.18.0 9B Standard | 0.18.0 9B SMPL |
+| ------------------ | ------------- | ------------------ | -------------- |
+| Server first audio | **1060±22ms** | **1101±331ms**     | **1128±191ms** |
+| E2E first audio    | 1101±32ms     | 1139±347ms         | 1276±65ms      |
 
 ### vLLM gpu_memory_utilization 机制
 
 基于源码（`vllm/worker/worker.py`）和实测：
+
 - `gpu_memory_utilization` 是**总显存**的比例
 - KV cache block 数量在启动时固定
 - CUDA graph 在 KV cache 预算之外额外分配 1-3GB（[vllm#14632](https://github.com/vllm-project/vllm/issues/14632)）
@@ -163,17 +171,18 @@ Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99
 
 Qwen3.5 的 GDN (Gated Delta Net) 层有三种 kernel 实现，按 GPU 架构和 vLLM 版本分配：
 
-| GPU | SM | vLLM 0.17.x | vLLM 0.18.0 | non-torch memory |
-|-----|-----|-------------|-------------|-----------------|
-| 4090 | 8.9 | 旧 C++ `gdn_attention_core` | Triton/FLA `forward_native` | 0.17: ~1.8 GiB / 0.18: 3.81 GiB |
-| H200 | 9.0 | 旧 C++ | FlashInfer `forward_cuda` | ~1.8 GiB |
-| 5090 | 12.0 | 旧 C++ | Triton/FLA `forward_native` | 0.17: ~1.8 GiB / 0.18: 3.81 GiB |
+| GPU  | SM   | vLLM 0.17.x                 | vLLM 0.18.0                 | non-torch memory                |
+| ---- | ---- | --------------------------- | --------------------------- | ------------------------------- |
+| 4090 | 8.9  | 旧 C++ `gdn_attention_core` | Triton/FLA `forward_native` | 0.17: ~1.8 GiB / 0.18: 3.81 GiB |
+| H200 | 9.0  | 旧 C++                      | FlashInfer `forward_cuda`   | ~1.8 GiB                        |
+| 5090 | 12.0 | 旧 C++                      | Triton/FLA `forward_native` | 0.17: ~1.8 GiB / 0.18: 3.81 GiB |
 
 **FlashInfer GDN kernel 仅支持 SM 9.0**——使用 Hopper 专有的 wgmma/TMA 指令（[flashinfer PR#2387](https://github.com/flashinfer-ai/flashinfer/pull/2387)）。SM 12.0 (Blackwell) 和 SM 8.9 (Ada) 都不支持这些指令，fallback 到 Triton/FLA。
 
 **Triton/FLA kernel 的 non-torch 内存显著更高**（3.81 vs ~1.8 GiB），因为 Triton 编译的 CUDA kernel 通过 CUDA malloc 直接分配（不经过 PyTorch allocator）。
 
 **对 gpu_memory_utilization 的影响：**
+
 - H200 + 0.18.0：FlashInfer → non-KV 约 6 GiB → gpu_mem=0.3 可行
 - 5090 + 0.18.0：Triton/FLA → non-KV 约 8-10 GiB → gpu_mem=0.3 不可行，最低 0.35
 - 4090 + 0.17.0：旧 C++ → non-KV 约 6 GiB → gpu_mem=0.3 可行
@@ -182,19 +191,21 @@ Qwen3.5 的 GDN (Gated Delta Net) 层有三种 kernel 实现，按 GPU 架构和
 **Blackwell 优化的 GDN kernel 正在开发中**（[flashinfer#2493](https://github.com/flashinfer-ai/flashinfer/issues/2493)，MLSys 2026 contest track），但未进入任何稳定版本。
 
 **vLLM 已知相关 issue：**
+
 - [vllm#36598](https://github.com/vllm-project/vllm/issues/36598)：Triton autotuner OOM on GDN layers (non-SM90 GPUs)，RTX 5090 明确列为受影响
 - [vllm#35138](https://github.com/vllm-project/vllm/issues/35138)：FlashInfer accuracy issues on Blackwell (Qwen3.5)
 
 ### LLM 版本对比（9B，单独跑，干净 GPU，gpu_mem=0.5）
 
-| 配置 | VRAM | Available KV | first_token | first_sentence | total (200 tokens) |
-|------|------|-------------|-------------|----------------|---------------------|
-| 0.17.1 无 prefix cache | 16236 MiB | 5.26 GiB | 20ms | 35ms | 1037ms |
-| 0.17.1 + prefix cache | 16238 MiB | 5.26 GiB | 20ms | 35ms | 1046ms |
-| 0.18.0 无 prefix cache | 15880 MiB | 1.56 GiB | 20ms | 35ms | 1027ms |
-| 0.18.0 + prefix cache | 15880 MiB | 1.56 GiB | 21ms | 36ms | 1036ms |
+| 配置                   | VRAM      | Available KV | first_token | first_sentence | total (200 tokens) |
+| ---------------------- | --------- | ------------ | ----------- | -------------- | ------------------ |
+| 0.17.1 无 prefix cache | 16236 MiB | 5.26 GiB     | 20ms        | 35ms           | 1037ms             |
+| 0.17.1 + prefix cache  | 16238 MiB | 5.26 GiB     | 20ms        | 35ms           | 1046ms             |
+| 0.18.0 无 prefix cache | 15880 MiB | 1.56 GiB     | 20ms        | 35ms           | 1027ms             |
+| 0.18.0 + prefix cache  | 15880 MiB | 1.56 GiB     | 21ms        | 36ms           | 1036ms             |
 
 结论：
+
 - 推理速度无差异（两版本、开关 prefix cache 均 ~1030-1046ms）
 - Prefix caching 对 Qwen3.5 无效：GDN 层强制 `mamba_cache_mode='align'`，~0% 命中率
 - 0.18.0 总 VRAM 更少（15880 vs 16236），但 Available KV 更少（1.56 vs 5.26 GiB），因为 Triton GDN kernel non-torch 内存更高
@@ -208,11 +219,11 @@ Qwen3.5 的 GDN (Gated Delta Net) 层有三种 kernel 实现，按 GPU 架构和
 
 Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forward memory 只有 0.2 GiB，不受 Triton GDN kernel 影响。
 
-| 指标 | 值 |
-|------|---|
-| non-KV total | 2.81 GiB（weights 1.53 + torch_peak 1.09 + non_torch 0.2） |
-| 最低 gpu_mem（max_model_len=4096） | 0.12（VRAM 4340 MiB） |
-| gpu_mem=0.15（max_model_len=4096） | 可行，约 4.7 GiB |
+| 指标                               | 值                                                         |
+| ---------------------------------- | ---------------------------------------------------------- |
+| non-KV total                       | 2.81 GiB（weights 1.53 + torch_peak 1.09 + non_torch 0.2） |
+| 最低 gpu_mem（max_model_len=4096） | 0.12（VRAM 4340 MiB）                                      |
+| gpu_mem=0.15（max_model_len=4096） | 可行，约 4.7 GiB                                           |
 
 注：`qwen_asr_server.py` 默认传 `--max-model-len 4096`，不指定则模型默认 65536 会 OOM。
 
@@ -238,15 +249,16 @@ Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forw
 **Multi-User Scalability（test_multiuser_proper.py，unity_chan config，pipeline 预初始化）：**
 
 | Users | FA avg (ms) | FA max (ms) | Total avg (ms) |
-|-------|-------------|-------------|----------------|
-| 1 | 966 | 966 | 1372 |
-| 2 | 2070 | 2072 | — |
-| 3 | 2878 | 2883 | 5427 |
-| 5 | 12234 | 26680 | 26691 |
+| ----- | ----------- | ----------- | -------------- |
+| 1     | 966         | 966         | 1372           |
+| 2     | 2070        | 2072        | —              |
+| 3     | 2878        | 2883        | 5427           |
+| 5     | 12234       | 26680       | 26691          |
 
 1-3 用户性能与旧管线（SenseVoice+BertVITS2）持平。5 用户大幅退化（vLLM 0.18.0 KV cache 1.56 GiB，5 并发超出容量）。
 
 **WebRTC Streaming（test_webrtc.py，unity_chan_webrtc config）：**
+
 - Duration: 45.2s
 - Audio frames: 2262 sent, 2259 received
 - Video frames: 1357 sent, 1357 received
@@ -255,12 +267,12 @@ Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forw
 
 **Motion Generation SMPL（5 rounds, first=warmup, MotionGen at 10.81.7.113:7861）：**
 
-| Config | First Audio |
-|--------|------------|
-| Standard (unity_chan, 无 MotionGen) | 1110 ± 41 ms |
-| Sequential (unity_chan_smpl_seq) | 1649 ± 199 ms |
-| Parallel (unity_chan_smpl) | 1536 ± 172 ms |
-| Improvement (seq → par) | 113ms (6.9%) |
+| Config                              | First Audio   |
+| ----------------------------------- | ------------- |
+| Standard (unity_chan, 无 MotionGen) | 1110 ± 41 ms  |
+| Sequential (unity_chan_smpl_seq)    | 1649 ± 199 ms |
+| Parallel (unity_chan_smpl)          | 1536 ± 172 ms |
+| Improvement (seq → par)             | 113ms (6.9%)  |
 
 MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 
@@ -268,7 +280,7 @@ MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 
 ### 当前进度
 
-- [x] **SillyTavern 对比分析**：完成完整功能对比报告（见 SillyTavern/YACHIO_COMPARISON_REPORT.md 和 YACHIO_流程对比报告.md）
+- [x] **SillyTavern 对比分析**：完成完整功能对比报告（见 SillyTavern/YACHIO*COMPARISON_REPORT.md 和 YACHIO*流程对比报告.md）
 - [x] **unity_chan_v2 lorebook 设计**：按 U 形注意力原则拆分为 10 个条目（5 constant + 5 keyword），使用 `configs/lorebooks/unity_chan_v2.json`
 - [x] **标签符号**：动作 `[]`，表情 `()`，测试后保留原始符号（LLM 最自然）
 - [x] **pipeline 配置更新**：所有 unity_chan 配置已更新 extra_info（action+expression 双 mode）、expression 输出和管线传递
@@ -276,112 +288,128 @@ MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 - [x] **Qwen3.5 chat template 限制**：只允许一条 system 消息在开头，多条会报错。lorebook 改为单条 system + 关键词条目用 user role
 - [x] **ASR 模型名修复**：0.6B → 1.7B
 - [x] **prompt 迭代优化**（4 轮）：
-  - Round 1: 修复身份泄露、亲密边界
-  - Round 2: 加强恋爱暗示拒绝、去除浪漫用词
-  - Round 3: 重写为自然聊天风格，去除游戏比喻泛滥、回复套路化
-  - Round 4: 增加动作多样性（unique 动作从少量到 181 种）
-  - 110 题 benchmark：108/110 自动通过（2 个误检），人工审核全部通过
-  - Round 5: 修复"突然凑近"频率、身份词回声问题
-  - 26 轮多轮对话测试：人格保持一致，跨 12 轮记忆回调，游戏比喻 0 次过度，动作 63% unique
-  - Round 6: 28 题边缘场景测试全通过——粗鲁用户、撒娇、重复追问、骚扰、人格压力、多语言
-  - 总计 164 题测试（110 基础 + 26 多轮 + 28 边缘），全部通过人工审核
-  - Round 7: 修复拐杖词过度使用（反正-67%、其实-68%、不过-51%、明明-80%）
-  - Round 8: 追加哎呀/真是的到避免列表，全部拐杖词降至合理水平
-  - Round 9: 实验验证 format_reminder 不可去除（去掉后表情缺失率和数字违规上升）
-  - 最终状态：10 个 lorebook 条目，109/110 自动通过，28/28 边缘通过，26 轮多轮对话稳定
-  - prompt 优化已收敛，后续改进需要换模型测试或实际用户反馈驱动
+    - Round 1: 修复身份泄露、亲密边界
+    - Round 2: 加强恋爱暗示拒绝、去除浪漫用词
+    - Round 3: 重写为自然聊天风格，去除游戏比喻泛滥、回复套路化
+    - Round 4: 增加动作多样性（unique 动作从少量到 181 种）
+    - 110 题 benchmark：108/110 自动通过（2 个误检），人工审核全部通过
+    - Round 5: 修复"突然凑近"频率、身份词回声问题
+    - 26 轮多轮对话测试：人格保持一致，跨 12 轮记忆回调，游戏比喻 0 次过度，动作 63% unique
+    - Round 6: 28 题边缘场景测试全通过——粗鲁用户、撒娇、重复追问、骚扰、人格压力、多语言
+    - 总计 164 题测试（110 基础 + 26 多轮 + 28 边缘），全部通过人工审核
+    - Round 7: 修复拐杖词过度使用（反正-67%、其实-68%、不过-51%、明明-80%）
+    - Round 8: 追加哎呀/真是的到避免列表，全部拐杖词降至合理水平
+    - Round 9: 实验验证 format_reminder 不可去除（去掉后表情缺失率和数字违规上升）
+    - 最终状态：10 个 lorebook 条目，109/110 自动通过，28/28 边缘通过，26 轮多轮对话稳定
+    - prompt 优化已收敛，后续改进需要换模型测试或实际用户反馈驱动
 
 ## VTuber 弹幕 Pipeline
 
 ### 架构
 
 ```
-[blivedm] → [DanmakuBufferVtuber] → [OpenaiStep/LLM] → [TTSEstimatorVtuber] → [MemoryManagerVtuber]
+[blivedm] → WebSocket → [DanmakuBufferVtuber] → [LLM] → [Dispatcher] → [MotionGen ∥ TTS] → [Receiver] → 客户端
+                                  ↑                                                                  │
+                                  └──────────── playback_complete 信号 ←─────────────────────────────┘
 ```
 
-### 新增模块（全部 vtuber 后缀）
+### 新增模块
 
-| 模块 | 文件 | 功能 |
-|------|------|------|
-| DanmakuBufferVtuber | `Modules/danmaku_buffer_vtuber/` | 弹幕缓冲 + 优先级排序 + 定时释放 batch |
-| (真实 TTS) | `Modules/tts_openai/` | 直接用项目已有的 TTS 模块，不另造 |
+| 模块                | 文件                             | 功能                                              |
+| ------------------- | -------------------------------- | ------------------------------------------------- |
+| DanmakuBufferVtuber | `Modules/danmaku_buffer_vtuber/` | 弹幕缓冲 + 优先级 + playback 背压 + idle 主动对话 |
+
+其余模块（LLM、TTS、MotionGen、Dispatcher、Receiver）全部复用项目已有的。
 
 ### 新增配置
 
-- `configs/vtuber_danmaku.json` — VTuber 弹幕 pipeline 配置
-- `configs/lorebooks/unity_chan_vtuber.json` — 直播人设 lorebook（基于 v2 优化）
+- `configs/vtuber_danmaku.json` — pipeline 配置（6 节点：Buffer → LLM → Dispatcher → MotionGen ∥ TTS → Receiver）
+- `configs/lorebooks/unity_chan_vtuber.json` — 直播人设 lorebook
 - `configs/llm/qwen_397b_vtuber.json` — VTuber 专用 LLM 配置（max_tokens=200）
 
-### 当前进度
+### BaseProcessingStep 改动
 
-- [x] **blivedm 集成**：v1.1.5（dev 分支），内置 wbi 签名，通过 Bilibili 风控
-- [x] **房间发现**：`/room/v1/area/getRoomList` API（area_id=371 虚拟主播），`buvid3` cookie 通过风控
-- [x] **Pipeline 全流程**：弹幕接收 → 缓冲 → LLM 回复 → TTS 估算 → 记忆管理，全部打通
-- [x] **真实弹幕测试**：连接真实 Bilibili 直播间，LLM 回复正常
-- [x] **回复长度优化**：max_tokens 从 4096 降到 200，TTS 估算从 36-42s 降到 8-18s
-- [x] **Buffer 淘汰机制**：max_buffer_size=50，超限淘汰低优先级消息
-- [x] **Lorebook 吸收 v2 改进**：说话习惯、动作多样性、凑近距离限制
-- [x] **架构简化**：去掉 TTSEstimator（改用真实 TTS）和 MemoryManager（LLM 自带 history），pipeline 只剩 3 节点
-- [x] **DanmakuBuffer 改用标准模式**：不再重写 run()，用 process() + custom_update()（BaseProcessingStep 新增钩子，对应客户端 CustomUpdate）
-- [x] **custom_update() 钩子**：BaseProcessingStep 新增，在 queue empty 时调用，用于定时器等非消息驱动逻辑
-- [x] **弹幕合并去重**：相同文本的弹幕合并为 `打call (x6)` 格式，节省 context
-- [x] **富元数据格式**：礼物标注用户名+礼物名+金额，SC 标注金额+内容，舰长标注等级，舰长发言标记身份
-- [x] **Lorebook 互动规则**：SC 必须读+回复，礼物必须谢+提名字，高价值热情但不夸张，识别钓鱼弹幕，留意弹幕风向
-- [x] **SESSDATA 登录**：配置在 secrets.json，登录后完整用户名可见
-- [x] **B 站互动风格**：cue 用户名、损友式吐槽、接梗、假装生气。每次回复至少提一个用户名
-- [x] **免费礼物降级**：¥0 礼物降到普通优先级，不触发即时释放
-- [x] **单表情/反应词降级**：`[表情包]`、`流汗`、`吃草`、`哈哈` 等降到最低优先级
+- 新增 `custom_update()` 钩子：在 `except queue.Empty` 时调用，对应客户端 `CustomUpdate()`。所有现有模块不受影响（默认空实现）
 
-### 测试数据（3 分钟真实弹幕）
+### DanmakuBuffer 设计
 
-| 指标 | Round 1（修复前） | Round 2（修复后） |
-|------|-------------------|-------------------|
-| LLM 响应时间 | 1.3-1.6s | 0.8-1.1s |
-| TTS 估算时长 | 36-42s | 8-18s |
-| 回复字数 | 130-161 字 | 33-70 字 |
-| 回复句数 | 4 句 | 1-3 句 |
-| 礼物感谢 | ✓ | ✓ |
-| 动作标签 | ✓ | ✓（更多样化） |
-| 记忆存储 | ✓ | ✓（35 条） |
+**消息处理**：
+
+- 标准 `process()` 接收弹幕存入 buffer，`custom_update()` 处理超时和 idle
+- 优先级：付费礼物/SC/上舰(≥8) > @角色名(7) > 问句(6) > 普通弹幕(3) > 免费礼物/表情/反应词(1)
+- buffer 上限淘汰低优先级消息
+- 相同文本弹幕合并去重：`(×6) 打call`
+
+**Batch 格式**（系统通知和弹幕物理分离）：
+
+```
+===系统通知===
+【礼物 ¥10】沈虎禪的禪 送了 小花花 x5
+【SC ¥50】白狼lie: 想听唱歌
+【上舰】椰子鸡最好吃 开通了舰长
+
+===观众弹幕===
+【舰长】Koorizz9: 优酱今天状态好好
+夜雨初晴: 你们在聊什么
+(×6) 唱歌！
+```
+
+**Playback 背压**：
+
+- 释放 batch 后锁住（`waiting_for_playback=True`）
+- 客户端播完发 `playback_complete` 信号（带 `last_batch_timestamp`）
+- `client_ts >= last_batch_timestamp` 才解锁，否则说明旧 batch 播完但最新的还没播完
+- SC/上舰/付费礼物可绕过锁立即释放（更新 last_batch_timestamp）
+- 超时墙 60s 兜底
+
+**Idle 主动对话**：
+
+- playback_complete 后开始 idle 计时
+- 超过 idle_talk_interval 无弹幕 → 发 `（当前没有新弹幕）` 让 LLM 自己找话题
+
+### TTS 并发修复
+
+faster-qwen3-tts 的 CUDA Graph 不支持并发推理（[Issue #85](https://github.com/andimarafioti/faster-qwen3-tts/issues/85)）：并发请求污染共享 KV cache → 解码器丢失 EOS → 生成超长异常音频（7.6MB）。在 `qwen_tts_server.py` 加 `threading.Lock()` 串行化推理解决。
+
+### 已完成
+
+- [x] blivedm v1.1.5 集成（wbi 签名、房间发现 API、SESSDATA 登录）
+- [x] Pipeline 全流程打通（Buffer → LLM → Dispatcher → MotionGen ∥ TTS → Receiver）
+- [x] 真实 Bilibili 直播间弹幕测试（栞栞Shiori 等多个直播间）
+- [x] Playback 背压机制 + idle 主动对话
+- [x] 弹幕合并去重 + 系统通知/弹幕分区格式
+- [x] 优先级系统 + 免费礼物/表情降级
+- [x] TTS 并发修复（threading.Lock）
+- [x] Lorebook 精简优化（从 40 行压缩到 15 行，去掉冗余禁令）
+- [x] custom_update() 钩子（BaseProcessingStep）
+- [x] Unity-chan 高难动作设定（打赏福利）
 
 ### 已知问题
 
-- [ ] **Database query error**：`list assignment index out of range` — TavernHistory 的 vectorized 数据库查询（database 服务 8100 在运行但数据格式不匹配）。非致命，不影响回复质量
-- [ ] **钓鱼弹幕防御**：标签格式（【普通用户】vs【上舰】）已区分清楚，但 397B 在高迷惑性钓鱼（如"我刚上了舰长怎么没显示"）时仍可能被骗。需要更多 prompt 迭代或模型能力提升
-- [ ] **SC 复述**：LLM 有时不先读 SC 原文就直接回复，需要继续调 prompt
-- [x] **弹幕少的房间**：已加 min_batch_size=2 和 max_wait_time=30s，频率从 5/min 降到 1/min
-- [ ] **TavernHistory current_history bug**：`reset_history=false` 时 `current_history` 未初始化。临时用 `reset_history=true` 规避
+- [x] ~~Database query error~~：`scores[index]` 越界，原因是 `query()` 用全局 index 写入局部 scores 数组。修复：`init_dataset()` 建 `global_to_local` 反向映射（与 motion 的 `key2index` 同模式），`query()` 通过映射转换。keyword 触发的 lorebook 条目恢复正常
+- [x] ~~caught signal 字段丢失~~：已在 input_vars 加 `last_batch_timestamp`。根本原因是 `extract_input_data()` 对 caught signal 也做字段过滤，后续可考虑改 BaseProcessingStep 让 caught signal 透传所有字段
+- [ ] **钓鱼弹幕防御**：系统通知/弹幕分区格式已区分真假，但 LLM 偶尔仍被高迷惑性钓鱼骗（约 1/3 概率）
+- [ ] **SC 复述**：LLM 有时不先读 SC 原文就直接回复
 
-### 待改进
+### 待做（按优先级）
 
-- [ ] 连续运行稳定性测试（1 小时+）
-- [ ] 自动切换房间（当前手动）
-- [ ] 回复多样性评估（同一类弹幕不同回复）
-- [ ] 小流量房间策略（等待更多弹幕再回复）
-- [ ] memory 摘要压缩（当前存原文，后续需 LLM 摘要）
+- [ ] **模型选型测试**：对比 RP 专用模型（Rocinante-X-12B、Qwen3.5-27B-Writer、Tifa-Deepsex-14b 等）vs 当前 397B
+- [ ] **Lorebook prompt 迭代**：SC 复述、钓鱼防御、动作格式需要更多轮测试
+- [ ] **记忆/摘要系统**：长对话 context rot，需要逐条摘要方案
+- [ ] **Token 计数截断**：history_length 改为按 token 总数
 
----
+### 关键经验
 
-### 待实现（按优先级）
-
-- [ ] **记忆/摘要系统**：长对话必须有（32K context rot），逐条摘要方案（参考 Qvink Memory），在 `prepare_saving` 阶段用轻量模型生成单条摘要
-- [ ] **Token 计数截断**：当前按消息条数（history_length=30）截断，应改为按 token 总数，建议上限 32K
-- [ ] **变量系统**：lorebook content 支持 `{{getvar::key}}` 宏替换，LLM 回复末尾输出状态块（单字符标记，StreamCutter 提取），实现角色状态追踪闭环
-- [ ] **Temperature 调优**：当前 qwen.json 设 0.7，RP 场景建议测试 0.8-1.0 范围
-- [ ] **lorebook YAML 格式支持**：JSON 长文本转义可读性差，支持 YAML `|` 块语法
-- [ ] **多模型路由**（未来）：管线架构天然支持，可按场景条件切换不同模型
-
-### 关键经验（来自酒馆社区）
-
-- 模型选择不如 prompt 基础设施重要（lorebook 结构、记忆系统、prompt 组织）
-- 32K 是 context 甜点，64K 以上各模型普遍存在 context rot
 - 角色卡越详细回复越僵硬，性格只给大方向让模型自由发挥
-- Temperature 对 RP 质量影响很大，需要根据模型实测调整
-- 标签符号越不常见误触发越少，但要 LLM 能学会（`【】`/`「」` 是好选择）
+- 弹幕格式设计很重要——系统通知和观众弹幕物理分离才能让 LLM 区分真假
+- TTS 模型（faster-qwen3-tts）的 CUDA Graph 不支持并发，必须串行化
+- playback_complete 背压是控制回复节奏的核心机制，比定时器更可靠
+- 12B-15B 是直播 RP 场景性价比甜点（社区共识）
 
 ## ❌ TODO
 
 ### 未解决
+
 - [x] ~~0.18.0 profiling 内存差异根因~~：FlashInfer GDN kernel 仅支持 SM 9.0（wgmma/TMA 指令），SM 12.0 fallback 到 Triton/FLA，non-torch 内存 3.81 GiB vs FlashInfer ~1.8 GiB。详见下方"GDN Kernel 架构限制"
 - [x] ~~4B + gpu_mem=0.3 + vision 在 5090 上的可行性~~：**当前不可行**。Triton/FLA fallback 的 non-torch 内存导致 0.3 预算不够。最低 0.35。需等 Blackwell 优化 GDN kernel（[flashinfer#2493](https://github.com/flashinfer-ai/flashinfer/issues/2493)）
 - [x] ~~所有配置的完整 benchmark~~：Config A（4B）和 Config B（9B）标准+SMPL 已完成
@@ -391,6 +419,7 @@ MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 - [ ] **SMPL pipeline MotionGen**：地址已更新，benchmark 中 SMPL 的 MotionGen 路径未产生数据（server 可达性待验证）
 
 ### 已完成
+
 - [x] vLLM 升级到 0.18.0（Python 3.12 环境）
 - [x] Mamba CUDA graph assertion 根因和 fix 确认
 - [x] Python 3.10 FakeTensorMode bug 确认和解决（升级 Python 3.12）
