@@ -1,0 +1,18 @@
+{
+    "api_base": "qwen_397b_api",
+    "api_key": "QWEN_KEY",
+    "extra": {
+        "temperature": 0.85,
+        "top_p": 0.8,
+        "max_tokens": 4096,
+        "extra_body": {
+            "repetition_penalty": 1.05,
+            "top_k": 20,
+            "min_p": 0,
+            "chat_template_kwargs": {
+                "enable_thinking": false
+            }
+        }
+    },
+    "model_name": "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
+}

@@ -83,6 +83,11 @@ class BaseProcessingStep:
         """Subclasses can override this method for custom initialization."""
         pass
 
+    def custom_update(self):
+        """Called every loop iteration when no message is available (queue empty).
+        Subclasses can override for timer-based logic, periodic checks, etc."""
+        pass
+
     def run(self):
         while True:
             if self.kill_event.is_set():
@@ -120,7 +125,7 @@ class BaseProcessingStep:
                     self.output_queue.put(json.dumps(data))
                     self.current_timestamp = None
             except queue.Empty:
-                pass
+                self.custom_update()
             except Exception as e:
                 self.logger.error(f"{e}")
 

@@ -39,14 +39,18 @@ class StreamCutter:
             else:
                 for mode in self.extra_info:
                     if char in self.extra_info[mode]["start_mark"]:
-                        if (
-                            self.current_sentence.get(mode, "").strip() != ""
-                            or self.current_sentence.get("text", "").strip() != ""
-                        ):
+                        # Split if current sentence has text content
+                        has_text = self.current_sentence.get("text", "").strip() != ""
+                        # Split if the SAME mode already has content (e.g. second action tag)
+                        has_same = self.current_sentence.get(mode, "").strip() != ""
+                        if has_text or has_same:
                             output.append(self.current_sentence)
+                            self.current_sentence = {}
+                        # Otherwise keep accumulating (e.g. action followed by expression)
                         self.stream_mode = mode
-                        self.current_sentence = {}
-                        self.current_sentence["raw_text"] = char
+                        self.current_sentence["raw_text"] = (
+                            self.current_sentence.get("raw_text", "") + char
+                        )
                         break
                 else:
                     self.current_sentence["text"] = (

@@ -48,26 +48,34 @@
                     {
                         "output_name": "action",
                         "targets": ["3_action"]
+                    },
+                    {
+                        "output_name": "expression",
+                        "targets": ["3_expression"]
                     }
                 ],
                 "next_nodes": [5],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
-                        "name": "unity_chan",
+                        "name": "unity_chan_v2",
                         "offset": 0
                     }
                 ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
-                "model": "qwen",
+                "model": "qwen_397b",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
                     "action": {
                         "start_mark": "[",
                         "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
                     }
                 },
                 "tool_names": ["get_temperature_current", "get_temperature_tomorrow"]
@@ -95,6 +103,10 @@
                     {
                         "sources": ["3_action"],
                         "targets": ["5_action_hint"]
+                    },
+                    {
+                        "sources": ["3_expression"],
+                        "targets": ["5_expression"]
                     }
                 ],
                 "output_vars": [
@@ -140,6 +152,10 @@
                     {
                         "sources": ["5_action_hint"],
                         "targets": ["action_hint"]
+                    },
+                    {
+                        "sources": ["5_expression"],
+                        "targets": ["expression"]
                     }
                 ],
                 "output_vars": [
@@ -150,7 +166,7 @@
                 ],
                 "next_nodes": [],
                 "model": "qwen_tts",
-                "voice": "unity_chan"
+                "voice": "test_cn"
             }
         }
     ]

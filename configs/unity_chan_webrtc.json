@@ -69,13 +69,17 @@
                     {
                         "output_name": "action",
                         "targets": ["3_action"]
+                    },
+                    {
+                        "output_name": "expression",
+                        "targets": ["3_expression"]
                     }
                 ],
                 "next_nodes": [5],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
-                        "name": "unity_chan",
+                        "name": "unity_chan_v2",
                         "offset": 0
                     }
                 ],
@@ -89,6 +93,10 @@
                     "action": {
                         "start_mark": "[",
                         "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
                     }
                 }
             }
@@ -115,6 +123,10 @@
                     {
                         "sources": ["3_action"],
                         "targets": ["5_action_hint"]
+                    },
+                    {
+                        "sources": ["3_expression"],
+                        "targets": ["5_expression"]
                     }
                 ],
                 "output_vars": [
@@ -160,6 +172,10 @@
                     {
                         "sources": ["5_action_hint"],
                         "targets": ["action_hint"]
+                    },
+                    {
+                        "sources": ["5_expression"],
+                        "targets": ["expression"]
                     }
                 ],
                 "output_vars": [
@@ -199,6 +215,10 @@
                     {
                         "sources": ["action_hint"],
                         "targets": ["action_hint"]
+                    },
+                    {
+                        "sources": ["expression"],
+                        "targets": ["expression"]
                     }
                 ],
                 "output_vars": [

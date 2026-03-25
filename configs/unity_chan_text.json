@@ -1,0 +1,49 @@
+{
+    "pipeline": [
+        {
+            "node_id": 3,
+            "function": "call_openai_llm",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "sources": ["text"]
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "output_name": "text",
+                        "targets": ["text"]
+                    },
+                    {
+                        "output_name": "action",
+                        "targets": ["action"]
+                    },
+                    {
+                        "output_name": "expression",
+                        "targets": ["expression"]
+                    }
+                ],
+                "next_nodes": [],
+                "history_mode": "tavern",
+                "lorebooks": [
+                    {
+                        "name": "unity_chan_v2",
+                        "offset": 0
+                    }
+                ],
+                "similarity_threshold": 0.8,
+                "reset_history": true,
+                "history_length": 30,
+                "model": "qwen_397b",
+                "punctuations": "、：，。？！:,.?!\n\t",
+                "sentence_length_threshold": 5,
+                "extra_info": {
+                    "action": { "start_mark": "[", "end_mark": "]" },
+                    "expression": { "start_mark": "(", "end_mark": ")" }
+                }
+            }
+        }
+    ]
+}

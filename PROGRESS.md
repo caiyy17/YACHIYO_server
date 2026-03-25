@@ -264,6 +264,121 @@ Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forw
 
 MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 
+## LLM 角色扮演模块优化
+
+### 当前进度
+
+- [x] **SillyTavern 对比分析**：完成完整功能对比报告（见 SillyTavern/YACHIO_COMPARISON_REPORT.md 和 YACHIO_流程对比报告.md）
+- [x] **unity_chan_v2 lorebook 设计**：按 U 形注意力原则拆分为 10 个条目（5 constant + 5 keyword），使用 `configs/lorebooks/unity_chan_v2.json`
+- [x] **标签符号**：动作 `[]`，表情 `()`，测试后保留原始符号（LLM 最自然）
+- [x] **pipeline 配置更新**：所有 unity_chan 配置已更新 extra_info（action+expression 双 mode）、expression 输出和管线传递
+- [x] **StreamCutter bug 修复**：修复多 mode 紧邻时前一个 mode 数据被丢弃的问题（原因：移植时 current_sentence 重置逻辑位置错误）
+- [x] **Qwen3.5 chat template 限制**：只允许一条 system 消息在开头，多条会报错。lorebook 改为单条 system + 关键词条目用 user role
+- [x] **ASR 模型名修复**：0.6B → 1.7B
+- [x] **prompt 迭代优化**（4 轮）：
+  - Round 1: 修复身份泄露、亲密边界
+  - Round 2: 加强恋爱暗示拒绝、去除浪漫用词
+  - Round 3: 重写为自然聊天风格，去除游戏比喻泛滥、回复套路化
+  - Round 4: 增加动作多样性（unique 动作从少量到 181 种）
+  - 110 题 benchmark：108/110 自动通过（2 个误检），人工审核全部通过
+  - Round 5: 修复"突然凑近"频率、身份词回声问题
+  - 26 轮多轮对话测试：人格保持一致，跨 12 轮记忆回调，游戏比喻 0 次过度，动作 63% unique
+  - Round 6: 28 题边缘场景测试全通过——粗鲁用户、撒娇、重复追问、骚扰、人格压力、多语言
+  - 总计 164 题测试（110 基础 + 26 多轮 + 28 边缘），全部通过人工审核
+  - Round 7: 修复拐杖词过度使用（反正-67%、其实-68%、不过-51%、明明-80%）
+  - Round 8: 追加哎呀/真是的到避免列表，全部拐杖词降至合理水平
+  - Round 9: 实验验证 format_reminder 不可去除（去掉后表情缺失率和数字违规上升）
+  - 最终状态：10 个 lorebook 条目，109/110 自动通过，28/28 边缘通过，26 轮多轮对话稳定
+  - prompt 优化已收敛，后续改进需要换模型测试或实际用户反馈驱动
+
+## VTuber 弹幕 Pipeline
+
+### 架构
+
+```
+[blivedm] → [DanmakuBufferVtuber] → [OpenaiStep/LLM] → [TTSEstimatorVtuber] → [MemoryManagerVtuber]
+```
+
+### 新增模块（全部 vtuber 后缀）
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| DanmakuBufferVtuber | `Modules/danmaku_buffer_vtuber/` | 弹幕缓冲 + 优先级排序 + 定时释放 batch |
+| (真实 TTS) | `Modules/tts_openai/` | 直接用项目已有的 TTS 模块，不另造 |
+
+### 新增配置
+
+- `configs/vtuber_danmaku.json` — VTuber 弹幕 pipeline 配置
+- `configs/lorebooks/unity_chan_vtuber.json` — 直播人设 lorebook（基于 v2 优化）
+- `configs/llm/qwen_397b_vtuber.json` — VTuber 专用 LLM 配置（max_tokens=200）
+
+### 当前进度
+
+- [x] **blivedm 集成**：v1.1.5（dev 分支），内置 wbi 签名，通过 Bilibili 风控
+- [x] **房间发现**：`/room/v1/area/getRoomList` API（area_id=371 虚拟主播），`buvid3` cookie 通过风控
+- [x] **Pipeline 全流程**：弹幕接收 → 缓冲 → LLM 回复 → TTS 估算 → 记忆管理，全部打通
+- [x] **真实弹幕测试**：连接真实 Bilibili 直播间，LLM 回复正常
+- [x] **回复长度优化**：max_tokens 从 4096 降到 200，TTS 估算从 36-42s 降到 8-18s
+- [x] **Buffer 淘汰机制**：max_buffer_size=50，超限淘汰低优先级消息
+- [x] **Lorebook 吸收 v2 改进**：说话习惯、动作多样性、凑近距离限制
+- [x] **架构简化**：去掉 TTSEstimator（改用真实 TTS）和 MemoryManager（LLM 自带 history），pipeline 只剩 3 节点
+- [x] **DanmakuBuffer 改用标准模式**：不再重写 run()，用 process() + custom_update()（BaseProcessingStep 新增钩子，对应客户端 CustomUpdate）
+- [x] **custom_update() 钩子**：BaseProcessingStep 新增，在 queue empty 时调用，用于定时器等非消息驱动逻辑
+- [x] **弹幕合并去重**：相同文本的弹幕合并为 `打call (x6)` 格式，节省 context
+- [x] **富元数据格式**：礼物标注用户名+礼物名+金额，SC 标注金额+内容，舰长标注等级，舰长发言标记身份
+- [x] **Lorebook 互动规则**：SC 必须读+回复，礼物必须谢+提名字，高价值热情但不夸张，识别钓鱼弹幕，留意弹幕风向
+- [x] **SESSDATA 登录**：配置在 secrets.json，登录后完整用户名可见
+- [x] **B 站互动风格**：cue 用户名、损友式吐槽、接梗、假装生气。每次回复至少提一个用户名
+- [x] **免费礼物降级**：¥0 礼物降到普通优先级，不触发即时释放
+- [x] **单表情/反应词降级**：`[表情包]`、`流汗`、`吃草`、`哈哈` 等降到最低优先级
+
+### 测试数据（3 分钟真实弹幕）
+
+| 指标 | Round 1（修复前） | Round 2（修复后） |
+|------|-------------------|-------------------|
+| LLM 响应时间 | 1.3-1.6s | 0.8-1.1s |
+| TTS 估算时长 | 36-42s | 8-18s |
+| 回复字数 | 130-161 字 | 33-70 字 |
+| 回复句数 | 4 句 | 1-3 句 |
+| 礼物感谢 | ✓ | ✓ |
+| 动作标签 | ✓ | ✓（更多样化） |
+| 记忆存储 | ✓ | ✓（35 条） |
+
+### 已知问题
+
+- [ ] **Database query error**：`list assignment index out of range` — TavernHistory 的 vectorized 数据库查询（database 服务 8100 在运行但数据格式不匹配）。非致命，不影响回复质量
+- [ ] **钓鱼弹幕防御**：标签格式（【普通用户】vs【上舰】）已区分清楚，但 397B 在高迷惑性钓鱼（如"我刚上了舰长怎么没显示"）时仍可能被骗。需要更多 prompt 迭代或模型能力提升
+- [ ] **SC 复述**：LLM 有时不先读 SC 原文就直接回复，需要继续调 prompt
+- [x] **弹幕少的房间**：已加 min_batch_size=2 和 max_wait_time=30s，频率从 5/min 降到 1/min
+- [ ] **TavernHistory current_history bug**：`reset_history=false` 时 `current_history` 未初始化。临时用 `reset_history=true` 规避
+
+### 待改进
+
+- [ ] 连续运行稳定性测试（1 小时+）
+- [ ] 自动切换房间（当前手动）
+- [ ] 回复多样性评估（同一类弹幕不同回复）
+- [ ] 小流量房间策略（等待更多弹幕再回复）
+- [ ] memory 摘要压缩（当前存原文，后续需 LLM 摘要）
+
+---
+
+### 待实现（按优先级）
+
+- [ ] **记忆/摘要系统**：长对话必须有（32K context rot），逐条摘要方案（参考 Qvink Memory），在 `prepare_saving` 阶段用轻量模型生成单条摘要
+- [ ] **Token 计数截断**：当前按消息条数（history_length=30）截断，应改为按 token 总数，建议上限 32K
+- [ ] **变量系统**：lorebook content 支持 `{{getvar::key}}` 宏替换，LLM 回复末尾输出状态块（单字符标记，StreamCutter 提取），实现角色状态追踪闭环
+- [ ] **Temperature 调优**：当前 qwen.json 设 0.7，RP 场景建议测试 0.8-1.0 范围
+- [ ] **lorebook YAML 格式支持**：JSON 长文本转义可读性差，支持 YAML `|` 块语法
+- [ ] **多模型路由**（未来）：管线架构天然支持，可按场景条件切换不同模型
+
+### 关键经验（来自酒馆社区）
+
+- 模型选择不如 prompt 基础设施重要（lorebook 结构、记忆系统、prompt 组织）
+- 32K 是 context 甜点，64K 以上各模型普遍存在 context rot
+- 角色卡越详细回复越僵硬，性格只给大方向让模型自由发挥
+- Temperature 对 RP 质量影响很大，需要根据模型实测调整
+- 标签符号越不常见误触发越少，但要 LLM 能学会（`【】`/`「」` 是好选择）
+
 ## ❌ TODO
 
 ### 未解决

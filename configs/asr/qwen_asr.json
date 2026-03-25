@@ -3,5 +3,5 @@
     "api_key": "",
     "hotwords": "",
     "extra": {},
-    "model_name": "Qwen/Qwen3-ASR-0.6B"
+    "model_name": "Qwen/Qwen3-ASR-1.7B"
 }
