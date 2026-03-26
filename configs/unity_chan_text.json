@@ -7,22 +7,22 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "sources": ["text"]
+                        "source": "text"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "text",
-                        "targets": ["text"]
+                        "target": "text"
                     },
                     {
                         "output_name": "action",
-                        "targets": ["action"]
+                        "target": "action"
                     },
                     {
                         "output_name": "expression",
-                        "targets": ["expression"]
+                        "target": "expression"
                     }
                 ],
                 "next_nodes": [],
@@ -36,12 +36,18 @@
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
-                "model": "qwen_397b",
+                "model": "custom",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
-                    "action": { "start_mark": "[", "end_mark": "]" },
-                    "expression": { "start_mark": "(", "end_mark": ")" }
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
+                    }
                 }
             }
         }

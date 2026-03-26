@@ -75,6 +75,10 @@ class DanmakuBufferStep(BaseProcessingStep):
         price_yuan = data.get("price_yuan", 0)
         priority = self._classify_priority(text, msg_type, price_yuan)
 
+        # Drop emote-only and single-reaction messages
+        if priority <= 1:
+            return
+
         self.buffer.append({
             "text": text,
             "user": user,
@@ -99,11 +103,8 @@ class DanmakuBufferStep(BaseProcessingStep):
             f"(priority={priority}, buf={len(self.buffer)})"
         )
 
-        # High-priority (SC/guard/paid gift): release immediately regardless of lock
-        if priority >= 8:
-            self._release_batch(pass_data)
-        # Normal release: only if not waiting for playback
-        elif not self.waiting_for_playback:
+        # Only release if not waiting for playback
+        if not self.waiting_for_playback:
             if len(self.buffer) >= self.min_batch_size and self._interval_elapsed():
                 self._release_batch(pass_data)
 
@@ -211,7 +212,7 @@ class DanmakuBufferStep(BaseProcessingStep):
 
     def _format_batch(self, batch):
         """Format batch with section separation and duplicate merging."""
-        special_lines = []
+        special = []  # (line, price) for sorting by price ascending (most expensive last)
         regular = []  # (text, user, identity_tag)
 
         for msg in batch:
@@ -219,23 +220,27 @@ class DanmakuBufferStep(BaseProcessingStep):
                 price = msg.get("price_yuan", 0)
                 num = msg.get("gift_num", 1)
                 if price > 0:
-                    special_lines.append(
-                        f"【礼物 ¥{price:.0f}】{msg['user']} 送了 {msg['text']} x{num}"
-                    )
+                    special.append((
+                        f"【礼物 ¥{price:.0f}】{msg['user']} 送了 {msg['text']} x{num}",
+                        price,
+                    ))
                 else:
                     regular.append((f"送了{msg['text']}", msg["user"], "普通用户"))
             elif msg["msg_type"] == "guard":
                 guard_name = self.GUARD_NAMES.get(
                     msg.get("guard_level", 3), "舰长"
                 )
-                special_lines.append(
-                    f"【上舰】{msg['user']} 开通了{guard_name}"
-                )
+                price = msg.get("price_yuan", 0)
+                special.append((
+                    f"【上舰 ¥{price:.0f}】{msg['user']} 开通了{guard_name}",
+                    price,
+                ))
             elif msg["msg_type"] == "super_chat":
                 price = msg.get("price_yuan", 0)
-                special_lines.append(
-                    f"【SC ¥{price:.0f}】{msg['user']}: {msg['text']}"
-                )
+                special.append((
+                    f"【SC ¥{price:.0f}】{msg['user']}: {msg['text']}",
+                    price,
+                ))
             else:
                 guard_level = msg.get("guard_level", 0)
                 if guard_level > 0:
@@ -243,6 +248,10 @@ class DanmakuBufferStep(BaseProcessingStep):
                 else:
                     tag = "普通用户"
                 regular.append((msg["text"], msg["user"], tag))
+
+        # Sort special by price ascending (most expensive = most important = last)
+        special.sort(key=lambda x: x[1])
+        special_lines = [line for line, _ in special]
 
         # Merge regular danmaku with same text
         from collections import OrderedDict
@@ -263,9 +272,10 @@ class DanmakuBufferStep(BaseProcessingStep):
             else:
                 regular_lines.append(f"(×{len(user_list)}) {text}")
 
+        # Order: regular danmaku first, system notifications last (most important at end)
         sections = []
-        if special_lines:
-            sections.append("===系统通知===\n" + "\n".join(special_lines))
         if regular_lines:
             sections.append("===观众弹幕===\n" + "\n".join(regular_lines))
+        if special_lines:
+            sections.append("===系统通知===\n" + "\n".join(special_lines))
         return "\n\n".join(sections) if sections else "(无弹幕)"

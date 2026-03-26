@@ -7,14 +7,14 @@
                 "input_vars": [
                     {
                         "input_name": "audio",
-                        "sources": ["audio"]
+                        "source": "audio"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "targets": ["audio_file"]
+                        "target": "audio_file"
                     }
                 ],
                 "next_nodes": [1],
@@ -28,18 +28,18 @@
                 "input_vars": [
                     {
                         "input_name": "audio_file",
-                        "sources": ["audio_file"]
+                        "source": "audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "result",
-                        "targets": ["1_text"]
+                        "target": "1_text"
                     },
                     {
                         "output_name": "language",
-                        "targets": ["1_language"]
+                        "target": "1_language"
                     }
                 ],
                 "next_nodes": [3],
@@ -53,26 +53,26 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "sources": ["1_text"]
+                        "source": "1_text"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "text",
-                        "targets": ["3_text"]
+                        "target": "3_text"
                     },
                     {
                         "output_name": "language",
-                        "targets": ["3_language"]
+                        "target": "3_language"
                     },
                     {
                         "output_name": "action",
-                        "targets": ["3_action"]
+                        "target": "3_action"
                     },
                     {
                         "output_name": "expression",
-                        "targets": ["3_expression"]
+                        "target": "3_expression"
                     }
                 ],
                 "next_nodes": [5],
@@ -108,31 +108,31 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "sources": ["3_action"]
+                        "source": "3_action"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "sources": ["3_text"],
-                        "targets": ["5_text"]
+                        "source": "3_text",
+                        "target": "5_text"
                     },
                     {
-                        "sources": ["3_language"],
-                        "targets": ["5_language"]
+                        "source": "3_language",
+                        "target": "5_language"
                     },
                     {
-                        "sources": ["3_action"],
-                        "targets": ["5_action_hint"]
+                        "source": "3_action",
+                        "target": "5_action_hint"
                     },
                     {
-                        "sources": ["3_expression"],
-                        "targets": ["5_expression"]
+                        "source": "3_expression",
+                        "target": "5_expression"
                     }
                 ],
                 "output_vars": [
                     {
                         "output_name": "result",
-                        "targets": ["5_action"]
+                        "target": "5_action"
                     }
                 ],
                 "dataset": "unity_chan",
@@ -149,39 +149,39 @@
                 "input_vars": [
                     {
                         "input_name": "text",
-                        "sources": ["5_text"]
+                        "source": "5_text"
                     },
                     {
                         "input_name": "language",
-                        "sources": ["5_language"]
+                        "source": "5_language"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "sources": ["5_text"],
-                        "targets": ["text"]
+                        "source": "5_text",
+                        "target": "text"
                     },
                     {
-                        "sources": ["5_language"],
-                        "targets": ["language"]
+                        "source": "5_language",
+                        "target": "language"
                     },
                     {
-                        "sources": ["5_action"],
-                        "targets": ["action"]
+                        "source": "5_action",
+                        "target": "action"
                     },
                     {
-                        "sources": ["5_action_hint"],
-                        "targets": ["action_hint"]
+                        "source": "5_action_hint",
+                        "target": "action_hint"
                     },
                     {
-                        "sources": ["5_expression"],
-                        "targets": ["expression"]
+                        "source": "5_expression",
+                        "target": "expression"
                     }
                 ],
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "targets": ["audio_data"]
+                        "target": "audio_data"
                     }
                 ],
                 "next_nodes": [7],
@@ -196,43 +196,43 @@
                 "input_vars": [
                     {
                         "input_name": "audio_data",
-                        "sources": ["audio_data"]
+                        "source": "audio_data"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "sources": ["text"],
-                        "targets": ["text"]
+                        "source": "text",
+                        "target": "text"
                     },
                     {
-                        "sources": ["language"],
-                        "targets": ["language"]
+                        "source": "language",
+                        "target": "language"
                     },
                     {
-                        "sources": ["action"],
-                        "targets": ["action"]
+                        "source": "action",
+                        "target": "action"
                     },
                     {
-                        "sources": ["action_hint"],
-                        "targets": ["action_hint"]
+                        "source": "action_hint",
+                        "target": "action_hint"
                     },
                     {
-                        "sources": ["expression"],
-                        "targets": ["expression"]
+                        "source": "expression",
+                        "target": "expression"
                     }
                 ],
                 "output_vars": [
                     {
                         "output_name": "audio",
-                        "targets": ["audio"]
+                        "target": "audio"
                     },
                     {
                         "output_name": "video",
-                        "targets": ["video"]
+                        "target": "video"
                     },
                     {
                         "output_name": "data",
-                        "targets": ["data"]
+                        "target": "data"
                     }
                 ],
                 "next_nodes": [],

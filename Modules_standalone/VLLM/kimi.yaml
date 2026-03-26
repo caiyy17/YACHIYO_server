@@ -1,0 +1,8 @@
+port: 8000
+tensor_parallel_size: 8
+trust_remote_code: true
+reasoning_parser: kimi_k2
+enable_auto_tool_choice: true
+tool_call_parser: kimi_k2
+served-model-name: moonshotai/Kimi-K2.5
+# python -m vllm.entrypoints.openai.api_server --model moonshotai/Kimi-K2.5 --config config_kimi_k25.yaml

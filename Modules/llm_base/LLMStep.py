@@ -41,7 +41,6 @@ class BaseLLMCaller:
         response = {}
         response["text"] = history[-1]["content"]
         response["raw_text"] = history[-1]["content"]
-        response["language"] = "auto"
         yield response
 
 
@@ -55,7 +54,6 @@ class LLMStep(BaseProcessingStep):
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
         sos_signal = {"signal": "SoS"}
-        self.add_output(sos_signal, "language", "auto")
         self.output_to_queue(sos_signal, pass_data)
         for response in self.llm_caller.call_stream(prompt):
             if self.check_cancel():

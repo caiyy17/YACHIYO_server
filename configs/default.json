@@ -7,16 +7,13 @@
                 "input_vars": [],
                 "pass_vars": [
                     {
-                        "sources": ["message"],
-                        "targets": ["message"]
+                        "source": "message",
+                        "target": "message"
                     }
                 ],
                 "output_vars": [],
                 "next_nodes": [3, 5, 7],
-                "dispatch_vars": [
-                    ["message"],
-                    ["message"]
-                ]
+                "dispatch_vars": [["message"], ["message"]]
             }
         },
         {
@@ -26,14 +23,14 @@
                 "input_vars": [
                     {
                         "input_name": "input1",
-                        "sources": ["message"]
+                        "source": "message"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "output1",
-                        "targets": ["3_result"]
+                        "target": "3_result"
                     }
                 ],
                 "next_nodes": [7],
@@ -47,14 +44,14 @@
                 "input_vars": [
                     {
                         "input_name": "input1",
-                        "sources": ["message"]
+                        "source": "message"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "output1",
-                        "targets": ["5_result"]
+                        "target": "5_result"
                     }
                 ],
                 "next_nodes": [7],
@@ -70,11 +67,11 @@
                 "output_vars": [
                     {
                         "output_name": "3_result",
-                        "targets": ["result_a"]
+                        "target": "result_a"
                     },
                     {
                         "output_name": "5_result",
-                        "targets": ["result_b"]
+                        "target": "result_b"
                     }
                 ],
                 "next_nodes": []

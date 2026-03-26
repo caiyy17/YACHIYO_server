@@ -123,7 +123,6 @@ class OpenaiStep(LLMStep):
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
         sos_signal = {"signal": "SoS"}
-        self.add_output(sos_signal, "language", "auto")
         self.output_to_queue(sos_signal, pass_data)
 
         current_loop = 0

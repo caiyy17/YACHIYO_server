@@ -34,7 +34,7 @@ logging_module.getLogger("blivedm").setLevel(logging_module.CRITICAL)
 CLIENT_ID = "vtuber_standalone"
 PIPELINE_CONFIG_FILE = "configs/vtuber_danmaku.json"
 # Set to a room ID to force connect, or None for auto-discovery
-FORCE_ROOM_ID = 22778610
+FORCE_ROOM_ID = 22632424
 
 BILIBILI_ROOM_LIST_API = "https://api.live.bilibili.com/room/v1/area/getRoomList"
 BILIBILI_HEADERS = {

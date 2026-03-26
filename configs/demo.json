@@ -7,18 +7,18 @@
                 "input_vars": [
                     {
                         "input_name": "audio_file",
-                        "sources": ["audio_file"]
+                        "source": "audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "result",
-                        "targets": ["1_text"]
+                        "target": "1_text"
                     },
                     {
                         "output_name": "language",
-                        "targets": ["1_language"]
+                        "target": "1_language"
                     }
                 ],
                 "next_nodes": [3],
@@ -32,18 +32,18 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "sources": ["1_text"]
+                        "source": "1_text"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "text",
-                        "targets": ["3_text"]
+                        "target": "3_text"
                     },
                     {
                         "output_name": "language",
-                        "targets": ["3_language"]
+                        "target": "3_language"
                     }
                 ],
                 "next_nodes": [6],
@@ -62,27 +62,27 @@
                 "input_vars": [
                     {
                         "input_name": "text",
-                        "sources": ["3_text"]
+                        "source": "3_text"
                     },
                     {
                         "input_name": "language",
-                        "sources": ["3_language"]
+                        "source": "3_language"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "sources": ["3_text"],
-                        "targets": ["text"]
+                        "source": "3_text",
+                        "target": "text"
                     },
                     {
-                        "sources": ["3_language"],
-                        "targets": ["language"]
+                        "source": "3_language",
+                        "target": "language"
                     }
                 ],
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "targets": ["audio_data"]
+                        "target": "audio_data"
                     }
                 ],
                 "next_nodes": [],

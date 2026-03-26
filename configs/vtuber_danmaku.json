@@ -5,16 +5,38 @@
             "function": "call_danmaku_buffer_vtuber",
             "config": {
                 "input_vars": [
-                    { "input_name": "text", "sources": ["text"] },
-                    { "input_name": "user", "sources": ["user"] },
-                    { "input_name": "msg_type", "sources": ["msg_type"] },
-                    { "input_name": "guard_level", "sources": ["guard_level"] },
-                    { "input_name": "gift_num", "sources": ["gift_num"] },
-                    { "input_name": "price_yuan", "sources": ["price_yuan"] },
-                    { "input_name": "last_batch_timestamp", "sources": ["last_batch_timestamp"] }
+                    {
+                        "input_name": "text",
+                        "source": "text"
+                    },
+                    {
+                        "input_name": "user",
+                        "source": "user"
+                    },
+                    {
+                        "input_name": "msg_type",
+                        "source": "msg_type"
+                    },
+                    {
+                        "input_name": "guard_level",
+                        "source": "guard_level"
+                    },
+                    {
+                        "input_name": "gift_num",
+                        "source": "gift_num"
+                    },
+                    {
+                        "input_name": "price_yuan",
+                        "source": "price_yuan"
+                    }
                 ],
                 "pass_vars": [],
-                "output_vars": [{ "output_name": "prompt", "targets": ["1_prompt"] }],
+                "output_vars": [
+                    {
+                        "output_name": "prompt",
+                        "target": "1_prompt"
+                    }
+                ],
                 "next_nodes": [3],
                 "character_name": "优酱",
                 "release_interval": 0,
@@ -28,26 +50,54 @@
             "node_id": 3,
             "function": "call_openai_llm",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "sources": ["1_prompt"] }],
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "1_prompt"
+                    }
+                ],
                 "pass_vars": [],
                 "output_vars": [
-                    { "output_name": "text", "targets": ["3_text"] },
-                    { "output_name": "language", "targets": ["3_language"] },
-                    { "output_name": "action", "targets": ["3_action"] },
-                    { "output_name": "expression", "targets": ["3_expression"] }
+                    {
+                        "output_name": "text",
+                        "target": "3_text"
+                    },
+                    {
+                        "output_name": "language",
+                        "target": "3_language"
+                    },
+                    {
+                        "output_name": "action",
+                        "target": "3_action"
+                    },
+                    {
+                        "output_name": "expression",
+                        "target": "3_expression"
+                    }
                 ],
                 "next_nodes": [5],
                 "history_mode": "tavern",
-                "lorebooks": [{ "name": "unity_chan_vtuber", "offset": 0 }],
+                "lorebooks": [
+                    {
+                        "name": "unity_chan_vtuber",
+                        "offset": 0
+                    }
+                ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
-                "history_length": 20,
-                "model": "qwen_397b_vtuber",
+                "history_length": 10,
+                "model": "custom_vtuber",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
-                    "action": { "start_mark": "[", "end_mark": "]" },
-                    "expression": { "start_mark": "(", "end_mark": ")" }
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
+                    }
                 }
             }
         },
@@ -57,10 +107,22 @@
             "config": {
                 "input_vars": [],
                 "pass_vars": [
-                    { "sources": ["3_text"], "targets": ["text"] },
-                    { "sources": ["3_language"], "targets": ["language"] },
-                    { "sources": ["3_action"], "targets": ["action_hint"] },
-                    { "sources": ["3_expression"], "targets": ["expression"] }
+                    {
+                        "source": "3_text",
+                        "target": "text"
+                    },
+                    {
+                        "source": "3_language",
+                        "target": "language"
+                    },
+                    {
+                        "source": "3_action",
+                        "target": "action_hint"
+                    },
+                    {
+                        "source": "3_expression",
+                        "target": "expression"
+                    }
                 ],
                 "output_vars": [],
                 "next_nodes": [7, 9, 11],
@@ -71,9 +133,19 @@
             "node_id": 7,
             "function": "call_motion_generation",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "sources": ["3_action"] }],
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "3_action"
+                    }
+                ],
                 "pass_vars": [],
-                "output_vars": [{ "output_name": "result", "targets": ["7_action"] }],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "7_action"
+                    }
+                ],
                 "duration": 5.0,
                 "seed": -1,
                 "cfg_scale": 5.0,
@@ -87,11 +159,22 @@
             "function": "call_openai_tts",
             "config": {
                 "input_vars": [
-                    { "input_name": "text", "sources": ["3_text"] },
-                    { "input_name": "language", "sources": ["3_language"] }
+                    {
+                        "input_name": "text",
+                        "source": "3_text"
+                    },
+                    {
+                        "input_name": "language",
+                        "source": "3_language"
+                    }
                 ],
                 "pass_vars": [],
-                "output_vars": [{ "output_name": "audio_file", "targets": ["9_audio"] }],
+                "output_vars": [
+                    {
+                        "output_name": "audio_file",
+                        "target": "9_audio"
+                    }
+                ],
                 "next_nodes": [11],
                 "model": "qwen_tts",
                 "voice": "test_cn"
@@ -104,8 +187,14 @@
                 "input_vars": [],
                 "pass_vars": [],
                 "output_vars": [
-                    { "output_name": "9_audio", "targets": ["audio_data"] },
-                    { "output_name": "7_action", "targets": ["action"] }
+                    {
+                        "output_name": "9_audio",
+                        "target": "audio_data"
+                    },
+                    {
+                        "output_name": "7_action",
+                        "target": "action"
+                    }
                 ],
                 "next_nodes": []
             }

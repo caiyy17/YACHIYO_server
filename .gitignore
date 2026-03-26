@@ -12,3 +12,5 @@ stop_scripts.sh
 *.backup
 .DS_Store
 .omc
+
+mio_*

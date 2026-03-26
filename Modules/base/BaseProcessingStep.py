@@ -116,8 +116,17 @@ class BaseProcessingStep:
                         self.current_timestamp = None
                         continue
 
-                    filtered_data = self.extract_input_data(data)
-                    pass_data = self.extract_pass_data(data)
+                    # Caught signals: pass all fields directly (no filtering)
+                    # Normal messages: filter through input_vars/pass_vars
+                    if data.get("signal", "") in self.catch_signal_set:
+                        filtered_data = {
+                            k: v for k, v in data.items()
+                            if k not in ("destination",)
+                        }
+                        pass_data = {"timestamp": data.get("timestamp")}
+                    else:
+                        filtered_data = self.extract_input_data(data)
+                        pass_data = self.extract_pass_data(data)
                     self.logger.info(f"processing data: {filtered_data}")
                     self.process(filtered_data, pass_data)
                     self.current_timestamp = None
@@ -174,14 +183,9 @@ class BaseProcessingStep:
         input_vars = self.config.get("input_vars", [])
         for input_var in input_vars:
             input_name = input_var["input_name"]
-            sources = input_var["sources"]
-
-            # Search sources in order within previous_outputs
-            for source in sources:
-                # Store the first matching source into extracted_data
-                if source in data:
-                    extracted_data[input_name] = data[source]
-                    break  # Stop once a match is found
+            source = input_var["source"]
+            if source in data:
+                extracted_data[input_name] = data[source]
 
         return extracted_data
 
@@ -199,16 +203,10 @@ class BaseProcessingStep:
 
         pass_vars = self.config.get("pass_vars", [])
         for pass_var in pass_vars:
-            targets = pass_var["targets"]
-            sources = pass_var["sources"]
-
-            # Search sources in order within previous_outputs
-            for source in sources:
-                # Store the first matching source into extracted_data
-                if source in data:
-                    for target in targets:
-                        extracted_data[target] = data[source]
-                    break
+            target = pass_var["target"]
+            source = pass_var["source"]
+            if source in data:
+                extracted_data[target] = data[source]
 
         return extracted_data
 
@@ -252,11 +250,15 @@ class BaseProcessingStep:
 
         for output_var in output_vars:
             output_name = output_var["output_name"]
-            self.output_dict[output_name] = output_var["targets"]
+            target = output_var["target"]
+            if output_name not in self.output_dict:
+                self.output_dict[output_name] = []
+            self.output_dict[output_name].append(target)
 
     def add_output(self, output_data, key, value):
-        targets = self.output_dict.get(key, [key])
-        for target in targets:
+        if key not in self.output_dict:
+            return
+        for target in self.output_dict[key]:
             if target not in output_data:
                 output_data[target] = value
 
