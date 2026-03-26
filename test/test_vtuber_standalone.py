@@ -173,14 +173,14 @@ class DanmakuForwarder(blivedm.BaseHandler):
     def _on_gift(self, client, message: web_models.GiftMessage):
         self.msg_count += 1
         # total_coin is in gold/silver coins; gold coins / 1000 = RMB
-        price_yuan = message.total_coin / 1000 if message.coin_type == "gold" else 0
-        print(f"[礼物] {message.uname} 送了 {message.gift_name} x{message.num} (¥{price_yuan:.0f})")
+        price = message.total_coin / 1000 if message.coin_type == "gold" else 0
+        print(f"[礼物] {message.uname} 送了 {message.gift_name} x{message.num} (¥{price:.0f})")
         self._send({
             "text": message.gift_name,
             "user": message.uname,
             "msg_type": "gift",
-            "gift_num": message.num,
-            "price_yuan": price_yuan,
+            "num": message.num,
+            "price": price,
         })
 
     def _on_super_chat(self, client, message: web_models.SuperChatMessage):
@@ -190,7 +190,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
             "text": message.message,
             "user": message.uname,
             "msg_type": "super_chat",
-            "price_yuan": message.price,
+            "price": message.price,
         })
 
     def _on_buy_guard(self, client, message: web_models.GuardBuyMessage):
@@ -202,7 +202,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
             "user": message.username,
             "msg_type": "guard",
             "guard_level": message.guard_level,
-            "price_yuan": message.price / 1000,
+            "price": message.price / 1000,
         })
 
 

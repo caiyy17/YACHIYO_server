@@ -22,12 +22,12 @@
                         "source": "guard_level"
                     },
                     {
-                        "input_name": "gift_num",
-                        "source": "gift_num"
+                        "input_name": "num",
+                        "source": "num"
                     },
                     {
-                        "input_name": "price_yuan",
-                        "source": "price_yuan"
+                        "input_name": "price",
+                        "source": "price"
                     }
                 ],
                 "pass_vars": [],

@@ -72,8 +72,8 @@ class DanmakuBufferStep(BaseProcessingStep):
         text = data.get("text", "")
         user = data.get("user", "unknown")
         msg_type = data.get("msg_type", "danmaku")
-        price_yuan = data.get("price_yuan", 0)
-        priority = self._classify_priority(text, msg_type, price_yuan)
+        price = data.get("price", 0)
+        priority = self._classify_priority(text, msg_type, price)
 
         # Drop emote-only and single-reaction messages
         if priority <= 1:
@@ -86,8 +86,8 @@ class DanmakuBufferStep(BaseProcessingStep):
             "priority": priority,
             "timestamp": time.time(),
             "guard_level": data.get("guard_level", 0),
-            "gift_num": data.get("gift_num", 1),
-            "price_yuan": data.get("price_yuan", 0),
+            "num": data.get("num", 0),
+            "price": price,
         })
         self.total_received += 1
 
@@ -143,9 +143,9 @@ class DanmakuBufferStep(BaseProcessingStep):
     def _has_high_priority(self):
         return any(m["priority"] >= 8 for m in self.buffer)
 
-    def _classify_priority(self, text, msg_type, price_yuan=0):
+    def _classify_priority(self, text, msg_type, price=0):
         if msg_type == "gift":
-            return 10 if price_yuan > 0 else 3
+            return 10 if price > 0 else 3
         if msg_type == "guard":
             return 9
         if msg_type == "super_chat":
@@ -217,8 +217,8 @@ class DanmakuBufferStep(BaseProcessingStep):
 
         for msg in batch:
             if msg["msg_type"] == "gift":
-                price = msg.get("price_yuan", 0)
-                num = msg.get("gift_num", 1)
+                price = msg.get("price", 0)
+                num = msg.get("num", 0)
                 if price > 0:
                     special.append((
                         f"【礼物 ¥{price:.0f}】{msg['user']} 送了 {msg['text']} x{num}",
@@ -230,13 +230,15 @@ class DanmakuBufferStep(BaseProcessingStep):
                 guard_name = self.GUARD_NAMES.get(
                     msg.get("guard_level", 3), "舰长"
                 )
-                price = msg.get("price_yuan", 0)
+                price = msg.get("price", 0)
+                num = msg.get("num", 0)
+                months = f" {num}个月" if num > 1 else ""
                 special.append((
-                    f"【上舰 ¥{price:.0f}】{msg['user']} 开通了{guard_name}",
+                    f"【上舰 ¥{price:.0f}】{msg['user']} 开通了{guard_name}{months}",
                     price,
                 ))
             elif msg["msg_type"] == "super_chat":
-                price = msg.get("price_yuan", 0)
+                price = msg.get("price", 0)
                 special.append((
                     f"【SC ¥{price:.0f}】{msg['user']}: {msg['text']}",
                     price,

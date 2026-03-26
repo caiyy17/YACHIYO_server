@@ -155,20 +155,20 @@ def main():
     # ===== Scenario 2: Gift =====
     run_scenario("礼物感谢", input_queue, send_queue, [
         {"text": "小花花", "user": "大佬甲", "msg_type": "gift",
-         "gift_num": 10, "price_yuan": 1},
+         "num": 10, "price": 1},
         {"text": "你最近在玩什么游戏", "user": "路人D"},
     ], wait_before=0)  # gift is immediate priority
 
     # ===== Scenario 3: Super Chat =====
     run_scenario("SC必须读", input_queue, send_queue, [
         {"text": "优酱能唱一首歌吗？我超喜欢你的声音！", "user": "土豪君",
-         "msg_type": "super_chat", "price_yuan": 50},
+         "msg_type": "super_chat", "price": 50},
     ], wait_before=0)
 
     # ===== Scenario 4: Guard purchase =====
     run_scenario("上舰感谢", input_queue, send_queue, [
         {"text": "舰长", "user": "新舰长", "msg_type": "guard",
-         "guard_level": 3, "price_yuan": 198},
+         "guard_level": 3, "price": 198},
         {"text": "恭喜上舰！", "user": "路人E"},
     ], wait_before=0)
 
@@ -199,7 +199,7 @@ def main():
     # ===== Scenario 8: Embarrassing SC =====
     run_scenario("羞耻SC", input_queue, send_queue, [
         {"text": "优酱我喜欢你❤能做我女朋友吗", "user": "痴汉",
-         "msg_type": "super_chat", "price_yuan": 30},
+         "msg_type": "super_chat", "price": 30},
     ], wait_before=0)
 
     print("\n\nAll scenarios complete!")

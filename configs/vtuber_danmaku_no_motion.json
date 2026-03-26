@@ -9,8 +9,8 @@
                     {"input_name": "user", "source": "user"},
                     {"input_name": "msg_type", "source": "msg_type"},
                     {"input_name": "guard_level", "source": "guard_level"},
-                    {"input_name": "gift_num", "source": "gift_num"},
-                    {"input_name": "price_yuan", "source": "price_yuan"}
+                    {"input_name": "num", "source": "num"},
+                    {"input_name": "price", "source": "price"}
                 ],
                 "pass_vars": [],
                 "output_vars": [{"output_name": "prompt", "target": "1_prompt"}],
