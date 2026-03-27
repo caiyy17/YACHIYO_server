@@ -434,7 +434,7 @@ faster-qwen3-tts 的 CUDA Graph 不支持并发推理（[Issue #85](https://gith
 ### 待做（按优先级）
 
 - [ ] **记忆/摘要系统**：必须在 LLM 模块内部实现（不能独立 module，有竞态问题），参考 Qvink 逐条总结方案，两份记录（完整+总结），增量更新
-- [ ] **Lorebook prompt 中英文分离**：通用规则（英文）和人设专用内容（中文）分开，测试最佳顺序
+- [x] **Lorebook 三类分离**：universal_rules（社区英文）、custom_rules/custom_reminder（项目中文）、character（角色中文）独立条目。所有 v2/v3 lorebook 统一结构，通用条目完全一致只需改 character。4 个 config 20 项测试全通过。
 - [ ] **Token 计数截断**：history_length 改为按 token 总数
 - [ ] **长时间运行稳定性**：server 卡死问题（跑 1.5 天后 uvicorn 无响应），需排查
 
