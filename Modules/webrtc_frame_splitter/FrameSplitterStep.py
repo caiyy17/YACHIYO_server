@@ -1,6 +1,10 @@
 import base64
 import io
+import json
+import queue
+import time
 import wave
+from collections import deque
 from math import gcd
 
 import numpy as np
@@ -16,24 +20,21 @@ DATA_FPS = 20
 
 class FrameSplitterStep(BaseProcessingStep):
     """
-    Receives TTS audio output (base64 WAV), resamples to WebRTC rate,
-    splits into synchronized audio-video-data groups, and outputs in standard format.
+    Clock-driven group output for WebRTC streaming.
 
-    Synchronization:
-      Audio: 48kHz / 960 = 50fps (20ms per frame)
-      Video: 30fps (~33.3ms per frame)
-      Data:  20fps (text, motion, etc.)
-      GCD(50, 30, 20) = 10 → 100ms per group
-      Group: 5 audio + 3 video + 2 data = 100ms (atomic sync unit)
+    Overrides BaseProcessingStep.run() with an absolute-time clock loop.
+    Paused until connection_start signal; pauses on connection_stop.
 
-    Standard output format:
-      {"audio": ["<pcm>"×5], "video": ["<jpeg>"×3], "data": [{...}, null]}
-      data is a list of length data_per_group, each entry is dict or null.
+    Each tick outputs exactly one group:
+      - Audio group from TTS when available
+      - Default silence group when idle
 
-    The WebRTC server consumes each group atomically:
-      - 5 audio frames (100ms) → audio track buffer
-      - 3 video frames (100ms) → video track buffer
-      - 2 data frames (100ms) → DataChannel (non-null entries sent)
+    Signals (SoS, EoS, etc.) are buffered in order with audio groups
+    and flushed at tick boundaries to preserve ordering.
+
+    Group size is calculated from GCD of audio/video/data frame rates
+    (all configurable via config). Standard output format:
+      {"audio": [<pcm>...], "video": [<jpeg>...], "data": [{...}, null, ...]}
     """
 
     def custom_init(self):
@@ -50,14 +51,30 @@ class FrameSplitterStep(BaseProcessingStep):
         self.audio_per_group = audio_fps // g          # 5
         self.video_per_group = self.video_fps // g     # 3
         self.data_per_group = self.data_fps // g       # 2
-        group_ms = self.audio_per_group * self.frame_samples / self.sample_rate * 1000
+        self._group_period = self.audio_per_group * self.frame_samples / self.sample_rate
+        group_ms = self._group_period * 1000
 
-        # Pre-generate white frame as base64 JPEG (reused for all groups)
-        self._white_frame_b64 = self._make_jpeg_b64(255, 255, 255)
+        # Pre-generate reusable frames
+        self._idle_frame_b64 = self._make_jpeg_b64(173, 216, 230)      # light blue: idle
+        self._speaking_frame_b64 = self._make_jpeg_b64(144, 238, 144)  # light green: speaking
+        self._silence_audio = [
+            base64.b64encode(
+                np.zeros(self.frame_samples, dtype=np.int16).tobytes()
+            ).decode("ascii")
+        ] * self.audio_per_group
+
+        # Internal buffer: only media groups ("group", json_str)
+        self._group_buffer = deque()
+        self._clock_running = False
+
+        # Catch connection_start signal from WebRTC server
+        self.catch_signal_set = {"connection_start"}
+
         self.logger.info(
             f"Sync group: {self.audio_per_group} audio + {self.video_per_group} video "
             f"+ {self.data_per_group} data ({group_ms:.0f}ms), "
-            f"video {self.video_width}x{self.video_height}"
+            f"video {self.video_width}x{self.video_height}, "
+            f"clock-driven output (paused until connection_start)"
         )
 
     def _make_jpeg_b64(self, r, g, b):
@@ -67,7 +84,160 @@ class FrameSplitterStep(BaseProcessingStep):
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
-    def process(self, data, pass_data={}):
+    # ── Clock-driven run loop (overrides BaseProcessingStep.run) ──
+
+    def run(self):
+        while True:
+            if self.kill_event.is_set():
+                self.dispose()
+                break
+
+            if not self._clock_running:
+                # Paused: wait for input like a normal module
+                self._wait_for_start()
+                continue
+
+            # Active: run clock-driven output
+            self._run_clock()
+
+    def _wait_for_start(self):
+        """Block on input_queue waiting for connection_start signal.
+        Forwards non-matching messages, handles cancel/kill."""
+        try:
+            raw = self.input_queue.get(timeout=1)
+        except queue.Empty:
+            self.check_cancel()
+            return
+
+        data = json.loads(raw)
+        self.check_cancel()
+
+        # Discard cancelled messages
+        ts = data.get("timestamp")
+        if ts is not None and ts < self.cancel_timestamp:
+            return
+
+        # Forward messages not destined for this node
+        dest = data.get("destination", self.index)
+        if dest != self.index and dest != -2:
+            self.output_queue.put(json.dumps(data))
+            return
+
+        signal = data.get("signal", "")
+        if signal == "connection_start":
+            self._clock_running = True
+            self.logger.info("connection_start received, clock started")
+            return
+
+        # Forward any other signal or data (shouldn't happen when paused, but be safe)
+        if signal and signal != "connection_stop":
+            data.pop("destination", None)
+            self.output_queue.put(json.dumps(data))
+
+    def custom_cancel(self, cancel_message):
+        """Clear buffer when current input is cancelled."""
+        self._group_buffer.clear()
+
+    def _run_clock(self):
+        """Run the 100ms clock loop until connection_stop or kill."""
+        clock_start = time.time()
+        group_index = 0
+
+        while self._clock_running:
+            if self.kill_event.is_set():
+                return
+
+            # Step 1: Cancel check (same as base)
+            # current_timestamp is None → no-op
+            # current_timestamp set and < cancel_timestamp → custom_cancel clears buffer
+            self.check_cancel()
+
+            # Step 2+3: Fill buffer and extract one media group to send.
+            # Signals are forwarded inline; if buffer empties after a signal, refill.
+            group_to_send = None
+            while group_to_send is None:
+                if not self._group_buffer:
+                    self.current_timestamp = None  # previous input fully sent
+                    self._fill_buffer()
+
+                if not self._group_buffer:
+                    break  # _fill_default should have filled, safety
+
+                entry_type, data_json = self._group_buffer.popleft()
+                if entry_type == "signal":
+                    self.output_queue.put(data_json)  # forward signal immediately
+                    continue
+                group_to_send = data_json
+
+            # Wait for tick (absolute time, no drift)
+            next_tick = clock_start + group_index * self._group_period
+            remaining = next_tick - time.time()
+            if remaining > 0:
+                time.sleep(remaining)
+
+            # Step 3: Send the media group
+            if group_to_send is not None:
+                self.output_queue.put(group_to_send)
+
+            group_index += 1
+
+    def _fill_buffer(self):
+        """Fill buffer when empty. Standard input flow: read from input_queue,
+        discard cancelled, until valid input found or queue empty (fill default)."""
+        while not self._group_buffer:
+            try:
+                raw = self.input_queue.get_nowait()
+            except queue.Empty:
+                # No input available → fill default
+                self._fill_default()
+                return
+
+            data = json.loads(raw)
+            ts = data.get("timestamp")
+
+            # Destination routing: forward if not for this node
+            dest = data.get("destination", self.index)
+            if dest != self.index and dest != -2:
+                self.output_queue.put(json.dumps(data))
+                continue
+
+            # Cancel check: discard old messages
+            if ts is not None and ts < self.cancel_timestamp:
+                self.logger.info(f"discarding old data: {data}")
+                continue
+
+            signal = data.get("signal", "")
+
+            if signal == "connection_start":
+                continue
+
+            # Valid signal: add to buffer, set current_timestamp for cancel tracking
+            if signal and signal not in self.catch_signal_set:
+                data.pop("destination", None)
+                self._group_buffer.append(("signal", json.dumps(data)))
+                self.current_timestamp = ts
+                return
+
+            # Valid audio data: split into groups
+            filtered_data = self.extract_input_data(data)
+            pass_data = self.extract_pass_data(data)
+            self._split_to_buffer(filtered_data, pass_data)
+            self.current_timestamp = ts
+            return
+
+    def _fill_default(self):
+        """Fill buffer with default content when no input available.
+        Currently fills one silence group. current_timestamp stays None."""
+        frame_data = {}
+        self.add_output(frame_data, "audio", self._silence_audio)
+        self.add_output(frame_data, "video",
+                        [self._idle_frame_b64] * self.video_per_group)
+        self.add_output(frame_data, "data", [None] * self.data_per_group)
+        self.add_destination(frame_data)
+        self._group_buffer.append(("group", json.dumps(frame_data)))
+
+    def _split_to_buffer(self, data, pass_data):
+        """Split TTS audio into groups and append to internal buffer."""
         audio_data = data.get("audio_data", "")
         if not audio_data:
             return
@@ -76,15 +246,10 @@ class FrameSplitterStep(BaseProcessingStep):
         if not pcm_frames:
             return
 
-        # Build metadata for first group (forward all pass_data)
         meta = {k: v for k, v in pass_data.items() if v}
 
-        # Group audio frames into sync groups
         group_count = 0
         for i in range(0, len(pcm_frames), self.audio_per_group):
-            if self.check_cancel():
-                self.logger.info("cancel inside loop")
-                break
             group_audio = pcm_frames[i:i + self.audio_per_group]
 
             # Pad last group if incomplete
@@ -95,9 +260,8 @@ class FrameSplitterStep(BaseProcessingStep):
                 base64.b64encode(f.tobytes()).decode("ascii")
                 for f in group_audio
             ]
-            video_list = [self._white_frame_b64] * self.video_per_group
+            video_list = [self._speaking_frame_b64] * self.video_per_group
 
-            # Data list: metadata in first slot of first group, null elsewhere
             data_list = [None] * self.data_per_group
             if group_count == 0 and meta:
                 data_list[0] = meta
@@ -106,19 +270,18 @@ class FrameSplitterStep(BaseProcessingStep):
             self.add_output(frame_data, "audio", audio_list)
             self.add_output(frame_data, "video", video_list)
             self.add_output(frame_data, "data", data_list)
+            self.add_destination(frame_data)
 
-            self.output_to_queue(
-                frame_data, pass_data,
-                is_add_pass_data=False,
-                is_add_timestamp=True,
-                is_log=(group_count == 0),
-            )
+            self._group_buffer.append(("group", json.dumps(frame_data)))
             group_count += 1
 
         duration = len(pcm_frames) * self.frame_samples / self.sample_rate
         self.logger.info(
-            f"Split into {group_count} sync groups ({duration:.2f}s)"
+            f"Buffered {group_count} groups ({duration:.2f}s), "
+            f"queue={len(self._group_buffer)}"
         )
+
+    # ── Audio decoding (unchanged) ──
 
     def _decode_and_split(self, audio_b64):
         """Decode base64 WAV, resample to target rate, split into frames."""

@@ -54,7 +54,7 @@ import json
 import logging
 import time
 from math import gcd
-from queue import SimpleQueue, Empty
+from queue import Queue, Empty
 from collections import deque
 
 import av
@@ -99,6 +99,9 @@ DATA_PER_GROUP  = DATA_FPS  // _GROUP_FPS   # 2
 # server-side group boundaries, up to 100ms apart.
 CANCEL_TIMESTAMP_OFFSET = -0.15
 
+# Number of groups to buffer before starting playback (jitter buffer)
+STARTUP_BUFFER = 4
+
 logger = logging.getLogger("server_webrtc")
 
 
@@ -117,7 +120,7 @@ class GroupDispatcher:
     Consumers never trigger unpacking — the group task is the sole driver.
     """
 
-    def __init__(self, group_queue: SimpleQueue, on_signal_callback):
+    def __init__(self, group_queue: Queue, on_signal_callback):
         self._group_queue = group_queue
         self._on_signal = on_signal_callback
         self._audio_buffer = deque()
@@ -310,7 +313,7 @@ class WebRTCSession:
         self.main_ws_url = main_server_url.replace("http", "ws", 1) + "/ws"
 
         self.pc = RTCPeerConnection()
-        self.group_queue = SimpleQueue()  # Groups from pipeline
+        self.group_queue = Queue()  # Groups from pipeline
         self.ws = None
         self.ws_ready = asyncio.Event()
         self._closed = asyncio.Event()  # Signaled on cleanup to unblock waiters
@@ -342,17 +345,35 @@ class WebRTCSession:
 
     async def _group_consumer(self, dispatcher):
         """Fill dispatcher buffers at GROUP_FPS (100ms).
-        This is the sole driver of group unpacking — consumers never trigger it."""
+        This is the sole driver of group unpacking — consumers never trigger it.
+        Startup: fills empty until group_queue has enough groups (jitter buffer)."""
         if dispatcher.start_time is None:
             dispatcher.start_time = time.time()
 
         group_index = 0
         group_period = 1.0 / _GROUP_FPS
+        buffering = True
+        # Don't buffer forever if pipeline is slow to connect
+        buffering_deadline = dispatcher.start_time + STARTUP_BUFFER * group_period * 5
+
         while self.connected:
             target = dispatcher.start_time + group_index * group_period
             wait = target - time.time()
             if wait > 0:
                 await asyncio.sleep(wait)
+
+            if buffering:
+                if (self.group_queue.qsize() >= STARTUP_BUFFER
+                        or time.time() > buffering_deadline):
+                    buffering = False
+                    logger.info(
+                        f"[{self.client_id}] Jitter buffer primed "
+                        f"({self.group_queue.qsize()} groups)"
+                    )
+                else:
+                    dispatcher._fill_empty()
+                    group_index += 1
+                    continue
 
             dispatcher.fill_next_group(self.cancel_timestamp)
             group_index += 1
@@ -582,6 +603,12 @@ class WebRTCSession:
                 self.ws = ws
                 self.ws_ready.set()
                 logger.info(f"[{self.client_id}] WebSocket connected")
+
+                # Notify pipeline that WebRTC connection is ready
+                await ws.send(json.dumps({
+                    "signal": "connection_start",
+                    "timestamp": time.time(),
+                }))
 
                 await self._relay_pipeline_output(ws)
 

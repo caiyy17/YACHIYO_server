@@ -103,10 +103,15 @@ class ClientConnection:
         pipeline = self.pipeline_config["pipeline"]
         num_functions = len(pipeline)
         # Create queues between functions
-        for _ in range(num_functions):
-            self.queues.append(Queue())
+        # Each node can set max_queue_size in its config to limit its input queue capacity.
+        # 0 (default) means unbounded. When full, upstream put() blocks until space is freed.
+        for i in range(num_functions):
+            max_queue_size = pipeline[i].get("config", {}).get("max_queue_size", 0)
+            self.queues.append(Queue(maxsize=max_queue_size))
             self.cancel_queues.append(Queue())
-        # Use send_queue as the last queue
+        # Recreate send_queue with optional max_queue_size from pipeline config
+        send_max = self.pipeline_config.get("send_queue_max_size", 0)
+        self.send_queue = Queue(maxsize=send_max)
         self.queues.append(self.send_queue)
         self.cancel_queues.append(self.send_cancel_queue)
 
@@ -174,7 +179,7 @@ class ClientConnection:
                     await asyncio.sleep(TIME_INTERVAL)
                     continue
                 data_dict = json.loads(data)
-                if data_dict["timestamp"] < cancel_timestamp:
+                if data_dict.get("timestamp", float("inf")) < cancel_timestamp:
                     self.log_info(f"Sent: Skipping data: {data}")
                     continue
 
@@ -486,4 +491,5 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             else:
                 break
     finally:
-        global_logger.info(f"Client {client_id} disconnected")
+        global_logger.info(f"Client {client_id} disconnected, disposing pipeline")
+        await client.dispose()

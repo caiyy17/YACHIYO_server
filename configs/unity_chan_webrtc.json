@@ -79,14 +79,14 @@
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
-                        "name": "unity_chan_v2",
+                        "name": "unity_chan_v3",
                         "offset": 0
                     }
                 ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
-                "model": "qwen",
+                "model": "custom",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {

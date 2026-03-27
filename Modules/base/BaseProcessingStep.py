@@ -97,42 +97,47 @@ class BaseProcessingStep:
             try:
                 data = self.input_queue.get(timeout=TIMEOUT)
                 data = json.loads(data)
+
+                # Destination check first: forward pass-through messages immediately
+                dest = data.get("destination", self.index)
+                if dest != self.index and dest != -2:
+                    self.output_queue.put(json.dumps(data))
+                    continue
+
+                # Cancel check: only for messages destined for this node
+                if "timestamp" not in data:
+                    self.logger.error(f"missing timestamp in data: {data}")
+                    continue
                 self.current_timestamp = data["timestamp"]
                 if self.current_timestamp < self.cancel_timestamp:
                     self.logger.info(f"discarding old data: {data}")
                     self.current_timestamp = None
                     continue
-                if (
-                    data.get("destination", self.index) == self.index
-                    or data.get("destination", self.index) == -2
-                ):
-                    # If this is a signal not in catch_signal_set, remove destination and forward to output_queue
-                    if (
-                        data.get("signal", "") != ""
-                        and data.get("signal", "") not in self.catch_signal_set
-                    ):
-                        data.pop("destination", None)
-                        self.output_queue.put(json.dumps(data))
-                        self.current_timestamp = None
-                        continue
 
-                    # Caught signals: pass all fields directly (no filtering)
-                    # Normal messages: filter through input_vars/pass_vars
-                    if data.get("signal", "") in self.catch_signal_set:
-                        filtered_data = {
-                            k: v for k, v in data.items()
-                            if k not in ("destination",)
-                        }
-                        pass_data = {"timestamp": data.get("timestamp")}
-                    else:
-                        filtered_data = self.extract_input_data(data)
-                        pass_data = self.extract_pass_data(data)
-                    self.logger.info(f"processing data: {filtered_data}")
-                    self.process(filtered_data, pass_data)
-                    self.current_timestamp = None
-                else:
+                # If this is a signal not in catch_signal_set, remove destination and forward to output_queue
+                if (
+                    data.get("signal", "") != ""
+                    and data.get("signal", "") not in self.catch_signal_set
+                ):
+                    data.pop("destination", None)
                     self.output_queue.put(json.dumps(data))
                     self.current_timestamp = None
+                    continue
+
+                # Caught signals: pass all fields directly (no filtering)
+                # Normal messages: filter through input_vars/pass_vars
+                if data.get("signal", "") in self.catch_signal_set:
+                    filtered_data = {
+                        k: v for k, v in data.items()
+                        if k not in ("destination",)
+                    }
+                    pass_data = {"timestamp": data.get("timestamp")}
+                else:
+                    filtered_data = self.extract_input_data(data)
+                    pass_data = self.extract_pass_data(data)
+                self.logger.info(f"processing data: {filtered_data}")
+                self.process(filtered_data, pass_data)
+                self.current_timestamp = None
             except queue.Empty:
                 self.custom_update()
             except Exception as e:

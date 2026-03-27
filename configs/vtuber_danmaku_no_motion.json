@@ -36,7 +36,7 @@
                 ],
                 "next_nodes": [5],
                 "history_mode": "tavern",
-                "lorebooks": [{"name": "unity_chan_vtuber", "offset": 0}],
+                "lorebooks": [{"name": "unity_chan_vtuber_v2", "offset": 0}],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 10,
