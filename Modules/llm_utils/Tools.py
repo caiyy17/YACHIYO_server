@@ -1,95 +1,158 @@
 ####################################################
+# variable providers
+####################################################
+
+import time as _time
+
+
+def _get_time():
+    return _time.strftime("%H:%M")
+
+
+def _get_date():
+    return _time.strftime("%Y-%m-%d")
+
+
+def _get_weekday():
+    return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][_time.localtime().tm_wday]
+
+
+VARIABLE_PROVIDERS = {
+    "time": _get_time,
+    "date": _get_date,
+    "weekday": _get_weekday,
+}
+
+
+def resolve_variables(text, static_vars=None):
+    """Replace {{key}} macros in text with values from providers and static vars.
+
+    Args:
+        text: The text containing {{key}} macros.
+        static_vars: Optional dict of static key-value pairs from config.
+
+    Returns:
+        Text with macros replaced. Unknown macros are left as-is.
+    """
+    import re
+    merged = dict(VARIABLE_PROVIDERS)
+    if static_vars:
+        for k, v in static_vars.items():
+            merged[k] = lambda val=v: val
+
+    def replace(match):
+        key = match.group(1)
+        if key in merged:
+            provider = merged[key]
+            return str(provider())
+        return match.group(0)  # leave unknown macros as-is
+
+    return re.sub(r"\{\{(\w+)\}\}", replace, text)
+
+
+####################################################
 # tools
 ####################################################
 
 
-def get_temperature_current(location: str, unit: str = "celsius"):
-    """Get current temperature at a location.
+def get_weather(location: str):
+    """Get current weather at a location.
 
     Args:
-        location: The location to get the temperature for, in the format "City, State, Country".
-        unit: The unit to return the temperature in. Defaults to "celsius". (choices: ["celsius", "fahrenheit"])
+        location: The city name, e.g. "Beijing", "Tokyo", "Shanghai".
 
     Returns:
-        the temperature, the location, and the unit in a dict
+        Weather information including temperature, description, humidity, wind.
     """
-    result = {
-        "temperature": 26,
-        "location": location,
-        "unit": unit,
-    }
-    return result
+    try:
+        import requests
+        r = requests.get(
+            f"http://wttr.in/{location}?format=j1&lang=zh",
+            timeout=10,
+            headers={"User-Agent": "curl/7.0"},
+        )
+        data = r.json()
+        cur = data["current_condition"][0]
+        desc_key = next((k for k in cur if k.startswith("lang")), None)
+        desc = cur[desc_key][0]["value"] if desc_key else cur.get("weatherDesc", [{}])[0].get("value", "")
+        return {
+            "location": location,
+            "time": _time.strftime("%Y-%m-%d %H:%M"),
+            "temperature": f"{cur['temp_C']}°C",
+            "feels_like": f"{cur['FeelsLikeC']}°C",
+            "description": desc,
+            "humidity": f"{cur['humidity']}%",
+            "wind": f"{cur['windspeedKmph']}km/h",
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
-def get_temperature_tomorrow(location: str, unit: str = "celsius"):
-    """Get tomorrow's temperature at a location.
+def web_search(query: str, max_results: int = 3):
+    """Search the web for information. Use this when you need to look up current events, facts, or anything you're not sure about.
 
     Args:
-        location: The location to get the temperature for, in the format "City, State, Country".
-        unit: The unit to return the temperature in. Defaults to "celsius". (choices: ["celsius", "fahrenheit"])
+        query: The search query string.
+        max_results: Maximum number of results to return. Defaults to 3.
 
     Returns:
-        the temperature, the location, and the unit in a dict
+        A list of search results with title and snippet.
     """
-    result = {
-        "temperature": 23,
-        "location": location,
-        "unit": unit,
-    }
-    return result
+    try:
+        from ddgs import DDGS
+        results = list(DDGS().text(query, max_results=max_results, backend="lite"))
+        if not results:
+            return {"results": [], "message": "No results found."}
+        return {
+            "results": [
+                {"title": r["title"], "snippet": r["body"][:200]}
+                for r in results
+            ]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_function_by_name(name):
-    if name == "get_temperature_current":
-        return get_temperature_current
-    elif name == "get_temperature_tomorrow":
-        return get_temperature_tomorrow
-    else:
-        return None
+    functions = {
+        "get_weather": get_weather,
+        "web_search": web_search,
+    }
+    return functions.get(name, None)
 
 
 TOOLS = {
-    "get_temperature_current": {
+    "get_weather": {
         "type": "function",
         "function": {
-            "name": "get_temperature_current",
-            "description": "Get current temperature at a location.",
+            "name": "get_weather",
+            "description": "Get current weather at a location.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "location": {
                         "type": "string",
-                        "description": 'The location to get the temperature for, in the format "City, State, Country".',
-                    },
-                    "unit": {
-                        "type": "string",
-                        "enum": ["celsius", "fahrenheit"],
-                        "description": 'The unit to return the temperature in. Defaults to "celsius".',
+                        "description": 'The city name, e.g. "Beijing", "Tokyo", "Shanghai".',
                     },
                 },
                 "required": ["location"],
             },
         },
     },
-    "get_temperature_tomorrow": {
+    "web_search": {
         "type": "function",
         "function": {
-            "name": "get_temperature_tomorrow",
-            "description": "Get tomorrow's temperature at a location.",
+            "name": "web_search",
+            "description": "Search the web for current information. Use this when you need to look up facts, news, events, or anything you're not certain about.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "location": {
+                    "query": {
                         "type": "string",
-                        "description": 'The location to get the temperature for, in the format "City, State, Country".',
-                    },
-                    "unit": {
-                        "type": "string",
-                        "enum": ["celsius", "fahrenheit"],
-                        "description": 'The unit to return the temperature in. Defaults to "celsius".',
+                        "description": "The search query.",
                     },
                 },
-                "required": ["location"],
+                "required": ["query"],
             },
         },
     },

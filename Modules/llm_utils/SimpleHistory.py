@@ -50,7 +50,20 @@ class SimpleHistory:
         )
         if prompt is not None:
             modified_history.append({"role": "user", "content": f"{prompt}"})
+        # Resolve {{variable}} macros in all messages
+        modified_history = self._resolve_macros(modified_history)
         return modified_history
+
+    def _resolve_macros(self, history):
+        from .Tools import resolve_variables
+        static_vars = self.config.get("vars", {})
+        result = []
+        for msg in history:
+            if "content" in msg and "{{" in msg["content"]:
+                msg = dict(msg)
+                msg["content"] = resolve_variables(msg["content"], static_vars)
+            result.append(msg)
+        return result
 
     def prepare_saving(self):
         history = self.current_history.copy()

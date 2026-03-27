@@ -250,4 +250,6 @@ class TavernHistory(SimpleHistory):
             result.append(modified_history[i])
         result.append(combined_history[-1])
         result = [item for sublist in result for item in sublist]
+        # Resolve {{variable}} macros in all messages
+        result = self._resolve_macros(result)
         return result

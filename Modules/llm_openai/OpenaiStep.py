@@ -65,20 +65,24 @@ class OpenaiCaller(BaseLLMCaller):
         except Exception as e:
             self.logger.error(f"LLM init call failed: {e}")
 
-    def create_stream(self, history):
+    def create_stream(self, history, allow_tools=True):
         model_name = self.model_config.get("model_name", "gpt")
         extra = self.model_config.get("extra", {})
+        tool_kwargs = {}
+        if self.toolsCaller.tools:
+            tool_kwargs["tools"] = self.toolsCaller.tools
+            tool_kwargs["tool_choice"] = "auto" if allow_tools else "none"
         result = self.client.chat.completions.create(
             model=model_name,
             messages=history,
-            tools=self.toolsCaller.tools,
             stream=True,
+            **tool_kwargs,
             **extra,
         )
         return result
 
-    def generate_result(self, history):
-        result = self.create_stream(history)
+    def generate_result(self, history, allow_tools=True):
+        result = self.create_stream(history, allow_tools=allow_tools)
         has_tool_call = False
         self.toolsCaller.reset()
         for chunk in result:
@@ -127,10 +131,12 @@ class OpenaiStep(LLMStep):
 
         current_loop = 0
         already_end = False
-        while not already_end and current_loop < self.config.get("loop_num", 5):
+        loop_num = self.config.get("loop_num", 5)
+        while not already_end and current_loop < loop_num:
             already_end = True
             current_loop += 1
-            for response in self.llm_caller.call_stream(prompt):
+            is_last_loop = current_loop >= loop_num
+            for response in self.llm_caller.call_stream(prompt, allow_tools=not is_last_loop):
                 if self.check_cancel():
                     self.logger.info("cancel inside loop")
                     break

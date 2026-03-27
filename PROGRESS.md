@@ -386,17 +386,57 @@ faster-qwen3-tts 的 CUDA Graph 不支持并发推理（[Issue #85](https://gith
 
 ### 已知问题
 
-- [x] ~~Database query error~~：`scores[index]` 越界，原因是 `query()` 用全局 index 写入局部 scores 数组。修复：`init_dataset()` 建 `global_to_local` 反向映射（与 motion 的 `key2index` 同模式），`query()` 通过映射转换。keyword 触发的 lorebook 条目恢复正常
-- [x] ~~caught signal 字段丢失~~：已在 input_vars 加 `last_batch_timestamp`。根本原因是 `extract_input_data()` 对 caught signal 也做字段过滤，后续可考虑改 BaseProcessingStep 让 caught signal 透传所有字段
-- [ ] **钓鱼弹幕防御**：系统通知/弹幕分区格式已区分真假，但 LLM 偶尔仍被高迷惑性钓鱼骗（约 1/3 概率）
-- [ ] **SC 复述**：LLM 有时不先读 SC 原文就直接回复
+- [x] ~~Database query error~~：`scores[index]` 越界。修复：`init_dataset()` 建 `global_to_local` 反向映射
+- [x] ~~caught signal 字段丢失~~：改 BaseProcessingStep，caught signal 透传所有字段，不走 extract_input_data
+- [ ] **钓鱼弹幕防御**：分区格式 + ¥标签已区分真假，Kimi-K2.5 大部分能识别，偶尔仍被骗
+- [ ] **SC 复述**：Kimi-K2.5 比 397B 改善明显，但偶尔仍不先读 SC 内容
+
+### 模型切换（2026-03-26）
+
+- Qwen3.5-397B → **Kimi-K2.5**（moonshotai/Kimi-K2.5，远端 vLLM）
+- 首 token ~0.5s，总 LLM ~0.8s（比 397B 快）
+- 人设一致性、多轮记忆、钓鱼防御均优于 397B
+- 12 项人设测试全通过（身份压力、恋爱暗示、跨轮回忆等）
+
+### BaseProcessingStep 配置格式更新
+
+- **input_vars**：`"sources": ["x"]` → `"source": "x"`（单一来源）
+- **pass_vars**：`"sources"/"targets"` → `"source"/"target"`（单一来源单一目标）
+- **output_vars**：`"targets": ["x"]` → `"target": "x"`（单一目标，同名多条目累积）
+- **output 白名单**：`add_output` 只输出 output_vars 里配置的字段，未配置的不输出
+- **caught signal 透传**：signal 在 catch_signal_set 里的消息不走 extract_input_data，直接透传所有字段
+- 所有配置文件已同步更新
+
+### Tool Call 系统
+
+- **tool_choice 控制**：最后一轮自动传 `tool_choice="none"` 强制文本输出，防止无限 tool 循环
+- **天气查询**（`get_weather`）：接入 wttr.in 免费 API，返回真实天气数据 + 查询时间
+- **网页搜索**（`web_search`）：接入 ddgs（DuckDuckGo），LLM 自行判断何时需要搜索
+- 已在 mio_v2 和 unity_chan 配置中测试通过
+
+### 变量替换系统
+
+- `Tools.py` 中注册动态变量 provider：`{{time}}`、`{{date}}`、`{{weekday}}`
+- pipeline config 的 `"vars"` 字段支持静态变量（如 `"location": "Tokyo"`）
+- `modify_history` 时统一替换 `{{xxx}}` 宏，使用安全拷贝不污染原始 history
+- SimpleHistory 和 TavernHistory 都支持
+
+### Lorebook 优化
+
+- **"不重复"规则移到最后**（order=100，format_reminder），利用 U 型注意力
+- **keyword 人格条目随机触发**：probability 从 1.0 降到 0.5，减少重复
+- **history_length 缩短**：20 → 10，减少风格锁定
+- **batch 格式改进**：弹幕在前系统通知在后（最重要的在最后），系统通知按金额升序
+- **表情包/单反应词**：priority≤1 直接丢弃不进 buffer
+- **LLM SoS 不再携带 language**：无用字段已清理
+- **Mio expression RAG**：pipeline 加入 data_query_link 节点匹配 50 个预定义表情
 
 ### 待做（按优先级）
 
-- [ ] **模型选型测试**：对比 RP 专用模型（Rocinante-X-12B、Qwen3.5-27B-Writer、Tifa-Deepsex-14b 等）vs 当前 397B
-- [ ] **Lorebook prompt 迭代**：SC 复述、钓鱼防御、动作格式需要更多轮测试
-- [ ] **记忆/摘要系统**：长对话 context rot，需要逐条摘要方案
+- [ ] **记忆/摘要系统**：必须在 LLM 模块内部实现（不能独立 module，有竞态问题），参考 Qvink 逐条总结方案，两份记录（完整+总结），增量更新
+- [ ] **Lorebook prompt 中英文分离**：通用规则（英文）和人设专用内容（中文）分开，测试最佳顺序
 - [ ] **Token 计数截断**：history_length 改为按 token 总数
+- [ ] **长时间运行稳定性**：server 卡死问题（跑 1.5 天后 uvicorn 无响应），需排查
 
 ### Prompt Engineering 参考研究（2026-03-27）
 

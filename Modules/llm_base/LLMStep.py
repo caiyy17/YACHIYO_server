@@ -16,11 +16,11 @@ class BaseLLMCaller:
     def cancel(self, cancel_message):
         self.history_manager.cancel(cancel_message)
 
-    def call_stream(self, prompt):
+    def call_stream(self, prompt, allow_tools=True):
         try:
             self.history_manager.load_history()
             modified_history = self.history_manager.modify_history(prompt)
-            result = self.generate_result(modified_history)
+            result = self.generate_result(modified_history, allow_tools=allow_tools)
             accumulated_response = []
             for response in result:
                 if response is None:

@@ -15,3 +15,7 @@ aiortc
 aiohttp
 Pillow
 av
+
+# VTuber danmaku pipeline
+blivedm
+ddgs
