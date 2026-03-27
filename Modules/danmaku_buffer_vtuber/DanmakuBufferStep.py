@@ -124,6 +124,9 @@ class DanmakuBufferStep(BaseProcessingStep):
             return
 
         # Not waiting — check if we should release
+        # Don't trigger any timer logic until the first danmaku has arrived
+        if self._last_release_wall_time == 0:
+            return
         if len(self.buffer) > 0 and self._max_wait_elapsed():
             self._release_batch({"timestamp": self.last_batch_timestamp})
         elif len(self.buffer) == 0 and self.idle_start_time is not None:
