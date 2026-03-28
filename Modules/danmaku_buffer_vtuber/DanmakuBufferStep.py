@@ -126,7 +126,6 @@ class DanmakuBufferStep(SpanProcessingStep):
     def on_span_cancel(self, cancel_message):
         """Cancel during collection: clear buffer."""
         self.buffer = []
-        self.waiting_for_playback = False
         self.idle_start_time = time.time()
         self.last_message_pts = cancel_message["timestamp"]
         self.span_start_time = 0
@@ -138,9 +137,14 @@ class DanmakuBufferStep(SpanProcessingStep):
 
         # Locked: waiting for playback_complete
         if self.waiting_for_playback:
+            # Cancel arrived after last release: the batch was cancelled, no playback expected
+            if self.last_release_pts < self.cancel_timestamp:
+                self.waiting_for_playback = False
+                self.buffer = []
+                self.logger.info("cancel invalidated last batch, unlocking")
             # Playback timeout: force unlock
-            if self.last_release_time > 0 and \
-               (now - self.last_release_time) >= self.playback_timeout:
+            elif self.last_release_time > 0 and \
+                 (now - self.last_release_time) >= self.playback_timeout:
                 self.logger.info(
                     f"playback_complete timeout after {self.playback_timeout}s, "
                     f"force unlocking"
