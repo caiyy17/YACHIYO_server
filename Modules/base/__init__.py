@@ -1,6 +1,7 @@
 from .BaseProcessingStep import BaseProcessingStep
 from .BaseProcessingStep import FuncA
 from .BaseProcessingStep import FuncB
+from .SpanProcessingStep import SpanProcessingStep
 
 function_map = {
     "default": BaseProcessingStep,

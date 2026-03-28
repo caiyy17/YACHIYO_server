@@ -1,26 +1,29 @@
 import time
 import json
 
-from ..base.BaseProcessingStep import BaseProcessingStep
+from ..base.SpanProcessingStep import SpanProcessingStep
 
 
-class DanmakuBufferStep(BaseProcessingStep):
+class DanmakuBufferStep(SpanProcessingStep):
     """
     Buffers incoming danmaku messages and releases batches to the LLM at intervals.
     Paced by client playback_complete signal.
 
-    Uses standard process() to buffer each incoming message,
-    and custom_update() (called when queue is empty) for timer-based batch release.
+    Inherits SpanProcessingStep for proper cancel handling during collection spans.
 
     State machine:
-      idle → release batch → waiting_for_playback → receive playback_complete
-        → buffer has msgs? → release batch (loop)
-        → buffer empty? → idle timer starts → idle timeout → release idle (loop)
+      idle → first danmaku (start_span) → collecting → release (end_span)
+        → waiting_for_playback → playback_complete → collecting or idle
+
+    Three independent timers in custom_update:
+      1. Playback timeout: from last release wall time. Force-unlock if too long.
+      2. Idle talk: from max(last_playback_time, last_cancel_time). Talk when idle.
+      3. Max wait: from span_timestamp (first danmaku). Force-release stale buffer.
     """
 
     GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
 
-    def custom_init(self):
+    def span_init(self):
         self.catch_signal_set = {"playback_complete"}
 
         self.buffer = []
@@ -35,37 +38,43 @@ class DanmakuBufferStep(BaseProcessingStep):
 
         # Playback pacing state
         self.waiting_for_playback = False
-        self.last_batch_timestamp = 0  # timestamp of the last released batch
-        self._last_release_wall_time = 0  # wall clock of last release (0 = never released)
-        self.idle_start_time = time.time()  # start idle timer immediately
+
+        # Pipeline timestamps (for cancel system)
+        self.last_release_pts = 0     # last released batch
+        self.last_message_pts = 0     # last received message of any kind
+        # Wall clocks for timer logic (all 0 = never triggered)
+        self.last_release_time = 0   # for playback timeout + release interval
+        self.idle_start_time = 0     # for idle talk
+        self.span_start_time = 0     # for max_wait (set on first danmaku)
 
         self.total_released = 0
         self.total_received = 0
         self.total_dropped = 0
 
-    def process(self, data, pass_data={}):
+    def span_process(self, data, pass_data={}):
+        # Any message resets idle timer and records pipeline timestamp
+        self.idle_start_time = time.time()
+        self.last_message_pts = data.get("timestamp", self.last_message_pts)
+
         signal = data.get("signal", "")
 
         # Handle playback_complete signal from client
         if signal == "playback_complete":
-            client_ts = data.get("last_batch_timestamp", 0)
-            if client_ts >= self.last_batch_timestamp:
-                # Matches latest batch — unlock
-                self.waiting_for_playback = False
-                self.idle_start_time = time.time()
-                self.logger.info(
-                    f"playback_complete matched, unlocked "
-                    f"(buf={len(self.buffer)})"
-                )
-                if self._should_release_now():
-                    self._release_batch(pass_data)
-            else:
-                # Older batch completed, latest batch still playing — stay locked
-                self.logger.info(
-                    f"playback_complete for older batch: "
-                    f"client={client_ts}, latest={self.last_batch_timestamp}, "
-                    f"staying locked"
-                )
+            if self.waiting_for_playback:
+                client_ts = data.get("last_batch_timestamp", 0)
+                if client_ts >= self.last_release_pts:
+                    self.waiting_for_playback = False
+                    self.logger.info(
+                        f"playback_complete matched, unlocked "
+                        f"(buf={len(self.buffer)})"
+                    )
+                else:
+                    self.logger.info(
+                        f"playback_complete for older batch: "
+                        f"client={client_ts}, latest={self.last_release_pts}, "
+                        f"staying locked"
+                    )
+            self.custom_update()
             return
 
         # Normal danmaku message — buffer it
@@ -79,12 +88,17 @@ class DanmakuBufferStep(BaseProcessingStep):
         if priority <= 1:
             return
 
+        # Start span on first danmaku (if not already collecting)
+        if not self.span_active:
+            self.start_span(data["timestamp"])
+            self.span_start_time = time.time()
+
         self.buffer.append({
             "text": text,
             "user": user,
             "msg_type": msg_type,
             "priority": priority,
-            "timestamp": time.time(),
+            "timestamp": data["timestamp"],
             "guard_level": data.get("guard_level", 0),
             "num": data.get("num", 0),
             "price": price,
@@ -103,45 +117,55 @@ class DanmakuBufferStep(BaseProcessingStep):
             f"(priority={priority}, buf={len(self.buffer)})"
         )
 
-        # Only release if not waiting for playback
-        if not self.waiting_for_playback:
-            if len(self.buffer) >= self.min_batch_size and self._interval_elapsed():
-                self._release_batch(pass_data)
+        # Check release conditions (same logic as timeout path)
+        self.custom_update()
+
+    def on_span_cancel(self, cancel_message):
+        """Cancel during collection: clear buffer."""
+        self.buffer = []
+        self.waiting_for_playback = False
+        self.idle_start_time = time.time()
+        self.last_message_pts = cancel_message["timestamp"]
+        self.span_start_time = 0
+        self.logger.info("span cancelled, buffer cleared")
 
     def custom_update(self):
-        """Called when no new messages. Handle timeouts and idle talk."""
+        """Release decision logic. Called after each message AND on timeout."""
         now = time.time()
 
+        # Locked: waiting for playback_complete
         if self.waiting_for_playback:
-            # Timeout: client didn't send playback_complete in time
-            if (now - self._last_release_wall_time) >= self.playback_timeout:
+            # Playback timeout: force unlock
+            if self.last_release_time > 0 and \
+               (now - self.last_release_time) >= self.playback_timeout:
                 self.logger.info(
                     f"playback_complete timeout after {self.playback_timeout}s, "
                     f"force unlocking"
                 )
                 self.waiting_for_playback = False
-                self.idle_start_time = now
+            else:
+                return
+
+        # Unlocked + buffer has content: check release conditions
+        if len(self.buffer) > 0:
+            should_release = False
+            # Enough messages + interval cooldown
+            if len(self.buffer) >= self.min_batch_size and self._interval_elapsed():
+                should_release = True
+            # High priority message (SC, guard, etc.)
+            if self._has_high_priority():
+                should_release = True
+            # Max wait timeout (first danmaku waited too long)
+            if (now - self.span_start_time) >= self.max_wait_time:
+                should_release = True
+            if should_release:
+                self._release_batch()
             return
 
-        # Not waiting — check if we should release
-        # Don't trigger idle talk until the first danmaku has been released
-        if len(self.buffer) > 0 and self._max_wait_elapsed():
-            self._release_batch({"timestamp": self.last_batch_timestamp})
-        elif (len(self.buffer) == 0 and self.idle_start_time is not None
-              and self._last_release_wall_time > 0):
-            # Only idle talk after at least one batch has been released
-            if (now - self.idle_start_time) >= self.idle_talk_interval:
-                self._release_idle({"timestamp": self.last_batch_timestamp})
-
-    def _should_release_now(self):
-        """Check if buffer has enough to release right after playback_complete."""
-        if len(self.buffer) == 0:
-            return False
-        if self._has_high_priority():
-            return True
-        if len(self.buffer) >= self.min_batch_size:
-            return True
-        return False
+        # Unlocked + buffer empty (guaranteed by return above): idle talk
+        if self.idle_start_time > 0 and \
+           (now - self.idle_start_time) >= self.idle_talk_interval:
+            self._release_idle()
 
     def _has_high_priority(self):
         return any(m["priority"] >= 8 for m in self.buffer)
@@ -166,12 +190,9 @@ class DanmakuBufferStep(BaseProcessingStep):
         return 3
 
     def _interval_elapsed(self):
-        return (time.time() - self._last_release_wall_time) >= self.release_interval
+        return (time.time() - self.last_release_time) >= self.release_interval
 
-    def _max_wait_elapsed(self):
-        return (time.time() - self._last_release_wall_time) >= self.max_wait_time
-
-    def _release_batch(self, pass_data):
+    def _release_batch(self):
         """Format and release a batch of danmaku to the LLM."""
         sorted_buf = sorted(
             self.buffer, key=lambda x: (-x["priority"], x["timestamp"])
@@ -182,18 +203,21 @@ class DanmakuBufferStep(BaseProcessingStep):
 
         prompt = self._format_batch(batch)
 
-        # Use the latest message's timestamp in this batch
-        ts = max(m["timestamp"] for m in batch) if batch else pass_data.get("timestamp", self.last_batch_timestamp)
+        # Use span start timestamp (first danmaku), consistent with vad_start pattern
+        ts = self.current_timestamp or self.last_release_pts
 
         output_data = {}
         self.add_output(output_data, "prompt", prompt)
         self.output_to_queue(output_data, {"timestamp": ts})
 
-        self.last_batch_timestamp = ts
-        self._last_release_wall_time = time.time()
+        self.last_release_pts = ts
+        self.last_release_time = time.time()
         self.waiting_for_playback = True
-        self.idle_start_time = None
         self.total_released += len(batch)
+
+        # End span after release; new span starts when next danmaku arrives
+        self.end_span()
+
         self.logger.info(
             f"released batch: {len(batch)} msgs, ts={ts}, "
             f"remaining={len(self.buffer)}, "
@@ -201,22 +225,22 @@ class DanmakuBufferStep(BaseProcessingStep):
             f"total_released={self.total_released}"
         )
 
-    def _release_idle(self, pass_data):
+    def _release_idle(self):
         """Send an empty prompt so LLM can decide to talk on its own."""
         prompt = "（当前没有新弹幕）"
         output_data = {}
         self.add_output(output_data, "prompt", prompt)
-        self.output_to_queue(output_data, pass_data)
+        self.output_to_queue(output_data, {"timestamp": self.last_message_pts})
 
-        self._last_release_wall_time = time.time()
+        self.last_release_pts = self.last_message_pts
+        self.last_release_time = time.time()
         self.waiting_for_playback = True
-        self.idle_start_time = None
-        self.logger.info(f"released idle prompt, ts={self.last_batch_timestamp}")
+        self.logger.info(f"released idle prompt, pts={self.last_release_pts}")
 
     def _format_batch(self, batch):
         """Format batch with section separation and duplicate merging."""
-        special = []  # (line, price) for sorting by price ascending (most expensive last)
-        regular = []  # (text, user, identity_tag)
+        special = []
+        regular = []
 
         for msg in batch:
             if msg["msg_type"] == "gift":
@@ -254,11 +278,9 @@ class DanmakuBufferStep(BaseProcessingStep):
                     tag = "普通用户"
                 regular.append((msg["text"], msg["user"], tag))
 
-        # Sort special by price ascending (most expensive = most important = last)
         special.sort(key=lambda x: x[1])
         special_lines = [line for line, _ in special]
 
-        # Merge regular danmaku with same text
         from collections import OrderedDict
         merged = OrderedDict()
         for text, user, tag in regular:
@@ -277,7 +299,6 @@ class DanmakuBufferStep(BaseProcessingStep):
             else:
                 regular_lines.append(f"(×{len(user_list)}) {text}")
 
-        # Order: regular danmaku first, system notifications last (most important at end)
         sections = []
         if regular_lines:
             sections.append("===观众弹幕===\n" + "\n".join(regular_lines))
