@@ -21,7 +21,7 @@ Output:
   test/test_webrtc_output.mp4
 
 Usage:
-  conda activate yachio
+  conda activate yachiyo
   python test/test_webrtc.py [--server http://localhost:15168]
 """
 

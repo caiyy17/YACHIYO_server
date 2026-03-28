@@ -1,7 +1,7 @@
 """
 Standalone VTuber Danmaku Pipeline Test
 
-Directly instantiates pipeline modules in-process (no YACHIO server needed).
+Directly instantiates pipeline modules in-process (no YACHIYO server needed).
 Connects to a real Bilibili VTuber room, feeds danmaku through the pipeline,
 and prints LLM responses.
 """
@@ -104,7 +104,7 @@ def setup_logger():
 
 
 def create_pipeline():
-    """Create pipeline modules connected by queues, same as YACHIO server does."""
+    """Create pipeline modules connected by queues, same as YACHIYO server does."""
     with open(PIPELINE_CONFIG_FILE, "r") as f:
         config = json.load(f)
 

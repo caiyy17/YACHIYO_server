@@ -13,4 +13,4 @@ stop_scripts.sh
 .DS_Store
 .omc
 
-mio_*
+dev_*

@@ -1,11 +1,11 @@
-# YACHIO Server
+# YACHIYO Server
 
 实时 AI 助手的模块化流式 pipeline 服务器。支持语音输入、LLM 对话、动作生成和语音输出，提供 WebRTC 和 WebSocket 两种接口。详细的技术分析（包括形式化证明、延迟模型和性能测试）请参阅 [technical report](technical_report/main.pdf)。
 
 ## 快速开始
 
 ```bash
-conda activate yachio  # 依赖见 requirements.txt
+conda activate yachiyo  # 依赖见 requirements.txt
 
 # 主服务器（pipeline）
 uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910

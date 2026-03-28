@@ -1,11 +1,11 @@
-# YACHIO Server
+# YACHIYO Server
 
 A modular, streaming pipeline server for real-time AI assistant applications. Supports voice input, LLM conversation, motion generation, and voice output, with WebRTC and WebSocket interfaces. For detailed technical analysis including formal proofs, latency models, and benchmarks, see the [technical report](technical_report/main.pdf).
 
 ## Quick Start
 
 ```bash
-conda activate yachio  # see requirements.txt for dependencies
+conda activate yachiyo  # see requirements.txt for dependencies
 
 # Main server (pipeline)
 uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910

@@ -301,7 +301,7 @@ async def benchmark_multi_user():
 
 async def main():
     print("=" * 60)
-    print("  YACHIO Latency Benchmark")
+    print("  YACHIYO Latency Benchmark")
     print("  GPU: NVIDIA RTX 5090 (single card, all local services)")
     print("=" * 60)
 

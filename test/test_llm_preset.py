@@ -2,7 +2,7 @@
 """
 Standalone LLM test for character presets.
 Loads lorebook, assembles messages, calls Kimi K2.5 directly.
-No external services needed (no YACHIO server, no data_query).
+No external services needed (no YACHIYO server, no data_query).
 
 Usage:
     python test/test_llm_preset.py mio_v2

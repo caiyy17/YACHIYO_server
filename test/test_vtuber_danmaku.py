@@ -2,7 +2,7 @@
 VTuber Danmaku Pipeline Test Script
 
 Connects to a real Bilibili VTuber live room via blivedm,
-forwards danmaku to YACHIO pipeline, receives and evaluates LLM responses.
+forwards danmaku to YACHIYO pipeline, receives and evaluates LLM responses.
 Auto-switches rooms when streamer goes offline.
 Hourly evaluation loop.
 """
@@ -22,8 +22,8 @@ import blivedm.models.web as web_models
 
 
 # ===== Configuration =====
-YACHIO_SERVER = "http://127.0.0.1:8910"
-YACHIO_WS = "ws://127.0.0.1:8910/ws"
+YACHIYO_SERVER = "http://127.0.0.1:8910"
+YACHIYO_WS = "ws://127.0.0.1:8910/ws"
 CLIENT_ID = "vtuber_test"
 PIPELINE_CONFIG = "vtuber_danmaku"
 EVAL_INTERVAL = 3600  # 1 hour in seconds
@@ -74,8 +74,8 @@ async def find_active_vtuber_room(session, exclude_rooms=None):
         return None, None, None
 
 
-# ===== YACHIO Pipeline Client =====
-class YachioClient:
+# ===== YACHIYO Pipeline Client =====
+class YachiyoClient:
     def __init__(self):
         self.ws = None
         self.connected = False
@@ -86,40 +86,40 @@ class YachioClient:
         self._current_response_start = None
 
     async def setup(self):
-        """Register client and init pipeline on YACHIO server."""
-        print(f"[YACHIO] Registering client '{CLIENT_ID}'...")
+        """Register client and init pipeline on YACHIYO server."""
+        print(f"[YACHIYO] Registering client '{CLIENT_ID}'...")
         try:
-            r = requests.post(f"{YACHIO_SERVER}/register/", json={"client_id": CLIENT_ID})
-            print(f"[YACHIO] Register: {r.json()}")
+            r = requests.post(f"{YACHIYO_SERVER}/register/", json={"client_id": CLIENT_ID})
+            print(f"[YACHIYO] Register: {r.json()}")
         except Exception as e:
-            print(f"[YACHIO] Register failed: {e}")
+            print(f"[YACHIYO] Register failed: {e}")
             return False
 
-        print(f"[YACHIO] Initializing pipeline '{PIPELINE_CONFIG}'...")
+        print(f"[YACHIYO] Initializing pipeline '{PIPELINE_CONFIG}'...")
         try:
             r = requests.post(
-                f"{YACHIO_SERVER}/init_pipeline/{CLIENT_ID}",
+                f"{YACHIYO_SERVER}/init_pipeline/{CLIENT_ID}",
                 json={"config": PIPELINE_CONFIG, "force": True},
             )
-            print(f"[YACHIO] Init pipeline: {r.json()}")
+            print(f"[YACHIYO] Init pipeline: {r.json()}")
         except Exception as e:
-            print(f"[YACHIO] Init pipeline failed: {e}")
+            print(f"[YACHIYO] Init pipeline failed: {e}")
             return False
 
         # Wait for pipeline threads to initialize
-        print("[YACHIO] Waiting for pipeline initialization (10s)...")
+        print("[YACHIYO] Waiting for pipeline initialization (10s)...")
         await asyncio.sleep(10)
 
-        print(f"[YACHIO] Connecting WebSocket...")
+        print(f"[YACHIYO] Connecting WebSocket...")
         try:
             self.ws = await websockets.connect(
-                f"{YACHIO_WS}/{CLIENT_ID}", max_size=16 * 1024 * 1024
+                f"{YACHIYO_WS}/{CLIENT_ID}", max_size=16 * 1024 * 1024
             )
             self.connected = True
-            print("[YACHIO] WebSocket connected!")
+            print("[YACHIYO] WebSocket connected!")
             return True
         except Exception as e:
-            print(f"[YACHIO] WebSocket connection failed: {e}")
+            print(f"[YACHIYO] WebSocket connection failed: {e}")
             return False
 
     async def send_danmaku(self, text, user, msg_type="danmaku"):
@@ -136,7 +136,7 @@ class YachioClient:
             await self.ws.send(json.dumps(msg))
             self.danmaku_sent.append(msg)
         except Exception as e:
-            print(f"[YACHIO] Send failed: {e}")
+            print(f"[YACHIYO] Send failed: {e}")
             self.connected = False
 
     async def receive_loop(self):
@@ -192,11 +192,11 @@ class YachioClient:
             except asyncio.TimeoutError:
                 continue
             except websockets.exceptions.ConnectionClosed:
-                print("[YACHIO] WebSocket disconnected")
+                print("[YACHIYO] WebSocket disconnected")
                 self.connected = False
                 break
             except Exception as e:
-                print(f"[YACHIO] Receive error: {e}")
+                print(f"[YACHIYO] Receive error: {e}")
                 await asyncio.sleep(1)
 
     async def close(self):
@@ -207,8 +207,8 @@ class YachioClient:
 
 # ===== blivedm Handler =====
 class DanmakuForwarder(blivedm.BaseHandler):
-    def __init__(self, yachio_client, loop):
-        self.yachio = yachio_client
+    def __init__(self, yachiyo_client, loop):
+        self.yachiyo = yachiyo_client
         self.loop = loop
         self.msg_count = 0
 
@@ -216,7 +216,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
         self.msg_count += 1
         print(f"[弹幕] {message.uname}: {message.msg}")
         asyncio.run_coroutine_threadsafe(
-            self.yachio.send_danmaku(message.msg, message.uname, "danmaku"),
+            self.yachiyo.send_danmaku(message.msg, message.uname, "danmaku"),
             self.loop,
         )
 
@@ -225,7 +225,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
         gift_text = f"{message.gift_name} x{message.num}"
         print(f"[礼物] {message.uname} 送了 {gift_text}")
         asyncio.run_coroutine_threadsafe(
-            self.yachio.send_danmaku(gift_text, message.uname, "gift"),
+            self.yachiyo.send_danmaku(gift_text, message.uname, "gift"),
             self.loop,
         )
 
@@ -233,7 +233,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
         self.msg_count += 1
         print(f"[SC] {message.uname} (¥{message.price}): {message.message}")
         asyncio.run_coroutine_threadsafe(
-            self.yachio.send_danmaku(message.message, message.uname, "super_chat"),
+            self.yachiyo.send_danmaku(message.message, message.uname, "super_chat"),
             self.loop,
         )
 
@@ -241,7 +241,7 @@ class DanmakuForwarder(blivedm.BaseHandler):
         self.msg_count += 1
         print(f"[舰长] {message.uname} 开通了舰长")
         asyncio.run_coroutine_threadsafe(
-            self.yachio.send_danmaku(
+            self.yachiyo.send_danmaku(
                 f"guard level {message.guard_level}", message.uname, "guard"
             ),
             self.loop,
@@ -250,8 +250,8 @@ class DanmakuForwarder(blivedm.BaseHandler):
 
 # ===== Evaluation =====
 class Evaluator:
-    def __init__(self, yachio_client):
-        self.yachio = yachio_client
+    def __init__(self, yachiyo_client):
+        self.yachiyo = yachiyo_client
         self.eval_count = 0
 
     def evaluate(self):
@@ -262,10 +262,10 @@ class Evaluator:
 
         # Recent data
         recent_danmaku = [
-            d for d in self.yachio.danmaku_sent if d["timestamp"] > hour_ago
+            d for d in self.yachiyo.danmaku_sent if d["timestamp"] > hour_ago
         ]
         recent_responses = [
-            r for r in self.yachio.response_texts if r["time"] > hour_ago
+            r for r in self.yachiyo.response_texts if r["time"] > hour_ago
         ]
 
         # 1. Response frequency
@@ -326,18 +326,18 @@ async def main():
     print("VTuber Danmaku Pipeline Test")
     print("=" * 60)
 
-    # Setup YACHIO pipeline
-    yachio = YachioClient()
-    if not await yachio.setup():
-        print("[FATAL] Failed to setup YACHIO pipeline. Exiting.")
+    # Setup YACHIYO pipeline
+    yachiyo = YachiyoClient()
+    if not await yachiyo.setup():
+        print("[FATAL] Failed to setup YACHIYO pipeline. Exiting.")
         return
 
     # Start WebSocket receive loop
     loop = asyncio.get_event_loop()
-    receive_task = asyncio.create_task(yachio.receive_loop())
+    receive_task = asyncio.create_task(yachiyo.receive_loop())
 
     # Setup evaluator
-    evaluator = Evaluator(yachio)
+    evaluator = Evaluator(yachiyo)
 
     # Setup Bilibili session
     bili_session = create_bilibili_session()
@@ -363,7 +363,7 @@ async def main():
             print(f"{'='*60}")
 
             # Connect blivedm
-            handler = DanmakuForwarder(yachio, loop)
+            handler = DanmakuForwarder(yachiyo, loop)
             blived = blivedm.BLiveClient(room_id, session=bili_session)
             blived.set_handler(handler)
             blived.start()
@@ -396,8 +396,8 @@ async def main():
                     elapsed_min = (time.time() - start_time) / 60
                     print(
                         f"  [STATUS] {elapsed_min:.0f}min | "
-                        f"danmaku={len(yachio.danmaku_sent)} | "
-                        f"responses={len(yachio.response_texts)} | "
+                        f"danmaku={len(yachiyo.danmaku_sent)} | "
+                        f"responses={len(yachiyo.response_texts)} | "
                         f"room_msgs={handler.msg_count}",
                         end="\r",
                     )
@@ -416,7 +416,7 @@ async def main():
         print("\n\n[INFO] Shutting down...")
     finally:
         # Final evaluation
-        if yachio.response_texts:
+        if yachiyo.response_texts:
             report = evaluator.evaluate()
             print(f"\n{'='*60}")
             print("FINAL EVALUATION REPORT")
@@ -424,7 +424,7 @@ async def main():
             print(f"{'='*60}")
 
         receive_task.cancel()
-        await yachio.close()
+        await yachiyo.close()
         await bili_session.close()
         print("[INFO] Cleanup complete.")
 

@@ -10,7 +10,7 @@ from typing import Optional
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-app = FastAPI(title="YACHIO Web UI", description="Web UI for client and configuration management")
+app = FastAPI(title="YACHIYO Web UI", description="Web UI for client and configuration management")
 
 templates = Jinja2Templates(directory="templates")
 

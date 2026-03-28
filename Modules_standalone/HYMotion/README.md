@@ -9,7 +9,7 @@ REST API + Web UI wrapper for [HY-Motion](https://github.com/Tencent-Hunyuan/HY-
 1. Clone HY-Motion to a sibling directory:
 
     ```bash
-    cd ..  # parent of YACHIO_server
+    cd ..  # parent of YACHIYO_server
     git clone https://github.com/Tencent-Hunyuan/HY-Motion-1.0.git
     cd MotionServer
     ```
@@ -25,7 +25,7 @@ REST API + Web UI wrapper for [HY-Motion](https://github.com/Tencent-Hunyuan/HY-
 3. Copy the wrapper files into the HY-Motion directory:
 
     ```bash
-    cp ../YACHIO_server/Modules_standalone/HYMotion/*.py custom/
+    cp ../YACHIYO_server/Modules_standalone/HYMotion/*.py custom/
     ```
 
 4. Download model checkpoints following HY-Motion's instructions.

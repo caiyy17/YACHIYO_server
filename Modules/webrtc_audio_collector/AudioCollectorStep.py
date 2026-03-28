@@ -37,6 +37,10 @@ class AudioCollectorStep(BaseProcessingStep):
             self.buffering = True
             self.audio_buffer = []
             self.vad_start_timestamp = data.get("timestamp", 0)
+            # Hold current_timestamp so cancel can trigger custom_cancel
+            # during the vad_start→vad_end period. Base run() resets it
+            # after process() returns, so we set it here to persist.
+            self.current_timestamp = self.vad_start_timestamp
             return
 
         if signal == "vad_end":
@@ -58,6 +62,7 @@ class AudioCollectorStep(BaseProcessingStep):
             self.buffering = False
             self.audio_buffer = []
             self.vad_start_timestamp = None
+            self.current_timestamp = None
             return
 
         # Regular audio frame(s) — single string or list of strings
@@ -70,6 +75,8 @@ class AudioCollectorStep(BaseProcessingStep):
             else:
                 pcm = np.frombuffer(base64.b64decode(audio_data), dtype=np.int16)
                 self.audio_buffer.append(pcm)
+            # Keep current_timestamp set to vad_start so cancel works
+            self.current_timestamp = self.vad_start_timestamp
         return
 
     def _assemble_wav(self):

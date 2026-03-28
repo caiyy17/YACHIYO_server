@@ -174,7 +174,7 @@ async def main():
             ok = resp.status == 200
             content_type = resp.content_type
             html = await resp.text()
-            has_title = "YACHIO" in html
+            has_title = "YACHIYO" in html
             mark = "PASS" if (ok and has_title) else "FAIL"
             print(f"  [{mark}] GET / -> status={resp.status}, type={content_type}, has_title={has_title}")
             all_passed &= ok and has_title

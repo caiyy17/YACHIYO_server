@@ -1,11 +1,11 @@
-# YACHIO Server Progress
+# YACHIYO Server Progress
 
 ## 端口配置
 
 | 服务            | 端口  |
 | --------------- | ----- |
 | vLLM (LLM)      | 8000  |
-| YACHIO 主服务器 | 8910  |
+| YACHIYO 主服务器 | 8910  |
 | WebRTC          | 15168 |
 | ASR             | 8010  |
 | TTS             | 8011  |
@@ -19,7 +19,7 @@
 | ASR      | qwen-asr   | 3.11   | qwen-asr (vLLM backend)           |
 | TTS      | qwen-tts   | 3.10   | faster-qwen3-tts                  |
 | Database | database   | 3.10   | sentence-transformers, faiss      |
-| YACHIO   | yachio     | 3.12   | uvicorn, fastapi                  |
+| YACHIYO   | yachiyo     | 3.12   | uvicorn, fastapi                  |
 
 ## vLLM 版本问题调研
 
@@ -121,7 +121,7 @@ Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99
 | 4B + vision              | 0.4     | 12960 MiB |
 | 9B + vision              | 0.5     | 15880 MiB |
 
-**vLLM 0.18.0 + Python 3.12，所有服务同时运行（yachio env 服务器，vLLM 先启动）：**
+**vLLM 0.18.0 + Python 3.12，所有服务同时运行（yachiyo env 服务器，vLLM 先启动）：**
 
 | Config               | DB       | ASR 0.6B (0.15) | TTS 0.6B | LLM       | Total     |
 | -------------------- | -------- | --------------- | -------- | --------- | --------- |
@@ -130,7 +130,7 @@ Capping cudagraph capture sizes from max 512 to 96 to fit Mamba cache blocks (99
 
 注：9B 必须先启动 vLLM（profiling 峰值 ~19 GiB），再启动其他服务。4B 无此限制。
 
-### 完整 Pipeline Benchmark（vLLM 0.18.0，yachio 服务器 port 8910）
+### 完整 Pipeline Benchmark（vLLM 0.18.0，yachiyo 服务器 port 8910）
 
 测试方法：`test/test_all_configs.py`，5 轮（首轮 warmup 排除），unity_chan / unity_chan_smpl config。
 
@@ -237,7 +237,7 @@ Qwen3-ASR-0.6B 是纯 Transformer 模型（无 GDN/Mamba 层），non-torch forw
 ### TTS Voice Fallback
 
 - TTS server 已修改：不存在的 voice name 自动 fallback 到 default voice 并打印 warning
-- 两个项目（YACHIO + Mio）均已同步
+- 两个项目（YACHIYO + Mio）均已同步
 
 ### flash-attn Build Failure
 
@@ -280,7 +280,7 @@ MotionGen 增加 ~539ms 延迟。并行执行恢复 113ms。
 
 ### 当前进度
 
-- [x] **SillyTavern 对比分析**：完成完整功能对比报告（见 SillyTavern/YACHIO*COMPARISON_REPORT.md 和 YACHIO*流程对比报告.md）
+- [x] **SillyTavern 对比分析**：完成完整功能对比报告（见 SillyTavern/YACHIYO*COMPARISON_REPORT.md 和 YACHIYO*流程对比报告.md）
 - [x] **unity_chan_v2 lorebook 设计**：按 U 形注意力原则拆分为 10 个条目（5 constant + 5 keyword），使用 `configs/lorebooks/unity_chan_v2.json`
 - [x] **标签符号**：动作 `[]`，表情 `()`，测试后保留原始符号（LLM 最自然）
 - [x] **pipeline 配置更新**：所有 unity_chan 配置已更新 extra_info（action+expression 双 mode）、expression 输出和管线传递
@@ -471,7 +471,7 @@ faster-qwen3-tts 的 CUDA Graph 不支持并发推理（[Issue #85](https://gith
 - `configs/lorebooks/unity_chan_v3.json` — 优酱 1:1 聊天版（从 v2 升级）
 - `configs/lorebooks/mio_vtuber_v2.json` — Mio VTuber 版（从 v1 升级）
 - `configs/lorebooks/unity_chan_vtuber_v2.json` — 优酱 VTuber 版（从 v1 升级）
-- `test/test_llm_preset.py` — LLM-only 测试脚本（无需 YACHIO 服务）
+- `test/test_llm_preset.py` — LLM-only 测试脚本（无需 YACHIYO 服务）
 
 **最终架构（SwanSong + Evening-Truth + Critic Expert）：**
 
@@ -551,7 +551,7 @@ faster-qwen3-tts 的 CUDA Graph 不支持并发推理（[Issue #85](https://gith
 - [x] Python 3.10 FakeTensorMode bug 确认和解决（升级 Python 3.12）
 - [x] torch.compile 排除为 profiling 主因
 - [x] 视觉编码器 profiling 影响量化（~1.0 GiB）
-- [x] 端口配置更新（vLLM:8000, YACHIO:8910, WebRTC:15168）
+- [x] 端口配置更新（vLLM:8000, YACHIYO:8910, WebRTC:15168）
 - [x] MotionGen 地址更新（10.81.7.113:7861）
 - [x] TTS voice fallback（两个项目）
 - [x] ASR README 补充 gpu-memory-utilization 说明

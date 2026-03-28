@@ -1,6 +1,6 @@
-# YACHIO Web UI
+# YACHIYO Web UI
 
-Web management interface for YACHIO server. Provides client management, pipeline configuration, and log viewing.
+Web management interface for YACHIYO server. Provides client management, pipeline configuration, and log viewing.
 
 ## Quick Start
 

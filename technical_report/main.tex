@@ -38,7 +38,7 @@
 \maketitle
 
 \begin{abstract}
-We present YACHIO, a client-server architecture for real-time embodied conversational agents. The system models a complex multi-modal agent---comprising automatic speech recognition (ASR), large language model (LLM), retrieval-augmented generation (RAG), text-to-speech synthesis (TTS), and character animation---as a directed acyclic graph (DAG) of processing nodes, and linearizes it via topological sort into a sequential pipeline connected by thread-safe queues. We formalize \emph{temporal consistency}---the guarantee that outputs respect causal, internal, and cancellation ordering---and show that linearization provides this guarantee with minimal implementation complexity. A dispatcher--receiver bracket recovers parallel execution for independent pipeline stages within the linear chain while preserving temporal consistency. A unified timestamp mechanism over WebSocket keeps the client and server synchronized, enabling streaming multi-modal output with low perceived latency. Each user owns an exclusive pipeline instance, while compute-heavy services run as shared standalone servers for independent scaling. We further introduce a WebRTC-based frame-level streaming mode that re-granularizes message boundaries from sentence-level to 20\,ms frame-level, enabling continuous multi-modal output with sub-100\,ms synchronization. We describe the architecture, formalize the pipeline model, present latency measurements on a single NVIDIA RTX 5090 GPU, and discuss deployment experience.
+We present YACHIYO, a client-server architecture for real-time embodied conversational agents. The system models a complex multi-modal agent---comprising automatic speech recognition (ASR), large language model (LLM), retrieval-augmented generation (RAG), text-to-speech synthesis (TTS), and character animation---as a directed acyclic graph (DAG) of processing nodes, and linearizes it via topological sort into a sequential pipeline connected by thread-safe queues. We formalize \emph{temporal consistency}---the guarantee that outputs respect causal, internal, and cancellation ordering---and show that linearization provides this guarantee with minimal implementation complexity. A dispatcher--receiver bracket recovers parallel execution for independent pipeline stages within the linear chain while preserving temporal consistency. A unified timestamp mechanism over WebSocket keeps the client and server synchronized, enabling streaming multi-modal output with low perceived latency. Each user owns an exclusive pipeline instance, while compute-heavy services run as shared standalone servers for independent scaling. We further introduce a WebRTC-based frame-level streaming mode that re-granularizes message boundaries from sentence-level to 20\,ms frame-level, enabling continuous multi-modal output with sub-100\,ms synchronization. We describe the architecture, formalize the pipeline model, present latency measurements on a single NVIDIA RTX 5090 GPU, and discuss deployment experience.
 \end{abstract}
 
 % ============================================================
@@ -72,7 +72,7 @@ On top of this linearized pipeline, we layer:
     \item \textbf{Service-oriented compute}: heavy models run as standalone HTTP services with OpenAI-compatible APIs, called by lightweight per-user pipeline nodes.
 \end{itemize}
 
-We call the resulting system YACHIO (\textbf{Y}et \textbf{A}nother \textbf{C}onversational \textbf{H}umanoid \textbf{I}nteractive \textbf{O}rchestrator). Existing frameworks address parts of this problem---LangChain~\cite{langchain} for LLM orchestration, LiveKit~\cite{livekit} for WebRTC transport---but none provides an integrated solution spanning pipeline linearization, temporal consistency, multi-modal streaming, client-server synchronization, and service-oriented scaling.
+We call the resulting system YACHIYO (\textbf{Y}et \textbf{A}nother \textbf{CH}aracter \textbf{I}nteraction s\textbf{Y}stem \textbf{O}rchestrator). Existing frameworks address parts of this problem---LangChain~\cite{langchain} for LLM orchestration, LiveKit~\cite{livekit} for WebRTC transport---but none provides an integrated solution spanning pipeline linearization, temporal consistency, multi-modal streaming, client-server synchronization, and service-oriented scaling.
 
 % ============================================================
 \section{Related Work}
@@ -302,7 +302,7 @@ Every message carries a \texttt{timestamp} field, preferring the client-provided
 \subsection{Two Paradigms: Event-Driven vs.\ Frame-Driven}
 \label{sec:paradigms}
 
-WebRTC is a real-time communication protocol that provides \emph{tracks} (continuous media streams for audio and video) and a \emph{DataChannel} (a reliable or unreliable channel for arbitrary application data). The two communication modes in YACHIO reflect fundamentally different timing paradigms:
+WebRTC is a real-time communication protocol that provides \emph{tracks} (continuous media streams for audio and video) and a \emph{DataChannel} (a reliable or unreliable channel for arbitrary application data). The two communication modes in YACHIYO reflect fundamentally different timing paradigms:
 
 \paragraph{WebSocket: event-driven, client-timestamped.}
 Messages are produced only on events (user speech, LLM output, TTS completion); between events the channel is silent. The timing origin is the client's wall clock, propagated through the pipeline.
@@ -601,7 +601,7 @@ Planned extensions include: (1) nested dispatcher--receiver brackets for multi-l
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented YACHIO, a linearized pipeline architecture for real-time embodied conversational agents. The key contributions are:
+We presented YACHIYO, a linearized pipeline architecture for real-time embodied conversational agents. The key contributions are:
 \begin{enumerate}[nosep]
     \item A DAG-to-linear-chain transformation that ensures correct execution order while enabling streaming at every stage, reducing first-output latency from the sum of all stage latencies to the critical path of a single sentence.
     \item A formal definition of \emph{temporal consistency} (causal order, internal order, cancellation consistency) and a proof that the linearized pipeline guarantees all three properties.

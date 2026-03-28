@@ -38,19 +38,19 @@ cd "$SCRIPT_DIR"
 # started separately. See Modules_standalone/*/README.md.
 # ============================================================
 
-kill_screen_if_exists "yachio"
+kill_screen_if_exists "yachiyo"
 kill_screen_if_exists "webrtc"
 
 echo "Starting pipeline server..."
 
 # 1. Main server - port 8910
-echo "[1/2] Starting YACHIO server..."
-screen -dmS yachio zsh -c "source ~/.zshrc; conda activate yachio && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910; exec zsh"
-wait_for_port 8910 "YACHIO"
+echo "[1/2] Starting YACHIYO server..."
+screen -dmS yachiyo zsh -c "source ~/.zshrc; conda activate yachiyo && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910; exec zsh"
+wait_for_port 8910 "YACHIYO"
 
 # 2. WebRTC server - port 15168
 echo "[2/2] Starting WebRTC server..."
-screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachio && python server_webrtc.py --port 15168; exec zsh"
+screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachiyo && python server_webrtc.py --port 15168; exec zsh"
 wait_for_port 15168 "WebRTC"
 
 echo ""

@@ -11,7 +11,7 @@ kill_screen_if_exists() {
 }
 
 # Stop pipeline server (does not stop model services)
-kill_screen_if_exists "yachio"
+kill_screen_if_exists "yachiyo"
 kill_screen_if_exists "webrtc"
 
 echo "Pipeline server stopped."
