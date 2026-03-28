@@ -3,6 +3,9 @@ import json
 
 from ..base.SpanProcessingStep import SpanProcessingStep
 
+# Tolerance for float timestamp comparison (covers JSON serialization precision loss)
+TIMESTAMP_EPSILON = 1e-3
+
 
 class DanmakuBufferStep(SpanProcessingStep):
     """
@@ -62,7 +65,7 @@ class DanmakuBufferStep(SpanProcessingStep):
         if signal == "playback_complete":
             if self.waiting_for_playback:
                 client_ts = data.get("last_batch_timestamp", 0)
-                if client_ts >= self.last_release_pts:
+                if client_ts >= self.last_release_pts - TIMESTAMP_EPSILON:
                     self.waiting_for_playback = False
                     self.logger.info(
                         f"playback_complete matched, unlocked "

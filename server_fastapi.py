@@ -4,6 +4,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, stat
 from typing import Dict
 from pydantic import BaseModel
 
+# Tolerance for float timestamp comparison (covers JSON serialization precision loss)
+TIMESTAMP_EPSILON = 1e-3
+
 from starlette.responses import PlainTextResponse
 
 import asyncio
@@ -247,7 +250,7 @@ class ClientConnection:
                 self.connected = False
                 self.log_info(f"Received: Client {self.client_id} disconnected")
                 for q in self.cancel_queues:
-                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + 1e-6}))
+                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
                 break
             except Exception as e:
                 self.logger.error(f"Received: {e}")
