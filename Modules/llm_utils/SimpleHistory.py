@@ -59,7 +59,11 @@ class SimpleHistory:
         static_vars = self.config.get("vars", {})
         result = []
         for msg in history:
-            if "content" in msg and "{{" in msg["content"]:
+            if isinstance(msg, str):
+                # TavernHistory flattens lorebook entries to plain strings
+                if "{{" in msg:
+                    msg = resolve_variables(msg, static_vars)
+            elif isinstance(msg, dict) and "content" in msg and "{{" in msg["content"]:
                 msg = dict(msg)
                 msg["content"] = resolve_variables(msg["content"], static_vars)
             result.append(msg)
