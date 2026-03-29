@@ -36,10 +36,6 @@
                     {
                         "output_name": "result",
                         "target": "1_text"
-                    },
-                    {
-                        "output_name": "language",
-                        "target": "1_language"
                     }
                 ],
                 "next_nodes": [3],
@@ -63,10 +59,6 @@
                         "target": "3_text"
                     },
                     {
-                        "output_name": "language",
-                        "target": "3_language"
-                    },
-                    {
                         "output_name": "action",
                         "target": "3_action"
                     },
@@ -75,11 +67,11 @@
                         "target": "3_expression"
                     }
                 ],
-                "next_nodes": [5],
+                "next_nodes": [4],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
-                        "name": "unity_chan_v3",
+                        "name": "unity_chan",
                         "offset": 0
                     }
                 ],
@@ -102,40 +94,36 @@
             }
         },
         {
+            "node_id": 4,
+            "function": "call_data_query_link",
+            "config": {
+                "input_vars": [{ "input_name": "prompt", "source": "3_expression" }],
+                "pass_vars": [
+                    { "source": "3_text", "target": "4_text" },
+                    { "source": "3_action", "target": "4_action" },
+                    { "source": "3_expression", "target": "4_expression_hint" }
+                ],
+                "output_vars": [{ "output_name": "result", "target": "4_expression" }],
+                "dataset": "unity_chan_expression_list",
+                "type": "BGE",
+                "k": 5,
+                "score_threshold": 0.6,
+                "next_nodes": [5]
+            }
+        },
+        {
             "node_id": 5,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [
-                    {
-                        "input_name": "prompt",
-                        "source": "3_action"
-                    }
-                ],
+                "input_vars": [{ "input_name": "prompt", "source": "4_action" }],
                 "pass_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "5_text"
-                    },
-                    {
-                        "source": "3_language",
-                        "target": "5_language"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "5_action_hint"
-                    },
-                    {
-                        "source": "3_expression",
-                        "target": "5_expression"
-                    }
+                    { "source": "4_text", "target": "5_text" },
+                    { "source": "4_expression", "target": "5_expression" },
+                    { "source": "4_expression_hint", "target": "5_expression_hint" },
+                    { "source": "4_action", "target": "5_action_hint" }
                 ],
-                "output_vars": [
-                    {
-                        "output_name": "result",
-                        "target": "5_action"
-                    }
-                ],
-                "dataset": "unity_chan",
+                "output_vars": [{ "output_name": "result", "target": "5_action" }],
+                "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
@@ -150,20 +138,12 @@
                     {
                         "input_name": "text",
                         "source": "5_text"
-                    },
-                    {
-                        "input_name": "language",
-                        "source": "5_language"
                     }
                 ],
                 "pass_vars": [
                     {
                         "source": "5_text",
                         "target": "text"
-                    },
-                    {
-                        "source": "5_language",
-                        "target": "language"
                     },
                     {
                         "source": "5_action",
@@ -176,6 +156,10 @@
                     {
                         "source": "5_expression",
                         "target": "expression"
+                    },
+                    {
+                        "source": "5_expression_hint",
+                        "target": "expression_hint"
                     }
                 ],
                 "output_vars": [
@@ -205,10 +189,6 @@
                         "target": "text"
                     },
                     {
-                        "source": "language",
-                        "target": "language"
-                    },
-                    {
                         "source": "action",
                         "target": "action"
                     },
@@ -219,6 +199,10 @@
                     {
                         "source": "expression",
                         "target": "expression"
+                    },
+                    {
+                        "source": "expression_hint",
+                        "target": "expression_hint"
                     }
                 ],
                 "output_vars": [

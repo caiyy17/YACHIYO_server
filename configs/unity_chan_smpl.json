@@ -15,10 +15,6 @@
                     {
                         "output_name": "result",
                         "target": "1_text"
-                    },
-                    {
-                        "output_name": "language",
-                        "target": "1_language"
                     }
                 ],
                 "next_nodes": [3],
@@ -42,10 +38,6 @@
                         "target": "3_text"
                     },
                     {
-                        "output_name": "language",
-                        "target": "3_language"
-                    },
-                    {
                         "output_name": "action",
                         "target": "3_action"
                     },
@@ -54,11 +46,11 @@
                         "target": "3_expression"
                     }
                 ],
-                "next_nodes": [5],
+                "next_nodes": [4],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
-                        "name": "unity_chan_v3",
+                        "name": "unity_chan",
                         "offset": 0
                     }
                 ],
@@ -81,31 +73,37 @@
             }
         },
         {
+            "node_id": 4,
+            "function": "call_data_query_link",
+            "config": {
+                "input_vars": [{ "input_name": "prompt", "source": "3_expression" }],
+                "pass_vars": [
+                    { "source": "3_text", "target": "4_text" },
+                    { "source": "3_action", "target": "4_action" },
+                    { "source": "3_expression", "target": "4_expression_hint" }
+                ],
+                "output_vars": [{ "output_name": "result", "target": "4_expression" }],
+                "dataset": "unity_chan_expression_list",
+                "type": "BGE",
+                "k": 5,
+                "score_threshold": 0.6,
+                "next_nodes": [5]
+            }
+        },
+        {
             "node_id": 5,
             "function": "call_dispatcher",
             "config": {
                 "input_vars": [],
                 "pass_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "3_language",
-                        "target": "language"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "action_hint"
-                    },
-                    {
-                        "source": "3_expression",
-                        "target": "expression"
-                    }
+                    { "source": "4_text", "target": "text" },
+                    { "source": "4_action", "target": "action_hint" },
+                    { "source": "4_expression", "target": "expression" },
+                    { "source": "4_expression_hint", "target": "expression_hint" }
                 ],
                 "output_vars": [],
                 "next_nodes": [7, 9, 11],
-                "dispatch_vars": [["3_action"], ["3_text", "3_language"]]
+                "dispatch_vars": [["4_action"], ["4_text"]]
             }
         },
         {
@@ -115,7 +113,7 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "source": "3_action"
+                        "source": "4_action"
                     }
                 ],
                 "pass_vars": [],
@@ -140,11 +138,7 @@
                 "input_vars": [
                     {
                         "input_name": "text",
-                        "source": "3_text"
-                    },
-                    {
-                        "input_name": "language",
-                        "source": "3_language"
+                        "source": "4_text"
                     }
                 ],
                 "pass_vars": [],
@@ -173,14 +167,6 @@
                     {
                         "output_name": "7_action",
                         "target": "action"
-                    },
-                    {
-                        "output_name": "expression",
-                        "target": "expression"
-                    },
-                    {
-                        "output_name": "action_hint",
-                        "target": "action_hint"
                     }
                 ],
                 "next_nodes": []

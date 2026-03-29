@@ -37,7 +37,7 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.max_buffer_size = self.get_config("max_buffer_size", 50)
         self.idle_talk_interval = self.get_config("idle_talk_interval", 45)
         self.playback_timeout = self.get_config("playback_timeout", 60)
-        self.character_name = self.get_config("character_name", "优酱")
+        self.priority_keywords = self.get_config("priority_keywords", [])
 
         # Playback pacing state
         self.waiting_for_playback = False
@@ -190,7 +190,7 @@ class DanmakuBufferStep(SpanProcessingStep):
             return 1
         if text in ("流汗", "流口水", "吃草", "笑死", "哈哈", "666", "好耶", "草"):
             return 1
-        if self.character_name in text:
+        if any(kw in text for kw in self.priority_keywords):
             return 7
         if "?" in text or "？" in text:
             return 6

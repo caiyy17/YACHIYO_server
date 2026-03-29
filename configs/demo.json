@@ -15,10 +15,6 @@
                     {
                         "output_name": "result",
                         "target": "1_text"
-                    },
-                    {
-                        "output_name": "language",
-                        "target": "1_language"
                     }
                 ],
                 "next_nodes": [3],
@@ -40,10 +36,6 @@
                     {
                         "output_name": "text",
                         "target": "3_text"
-                    },
-                    {
-                        "output_name": "language",
-                        "target": "3_language"
                     }
                 ],
                 "next_nodes": [6],
@@ -63,20 +55,12 @@
                     {
                         "input_name": "text",
                         "source": "3_text"
-                    },
-                    {
-                        "input_name": "language",
-                        "source": "3_language"
                     }
                 ],
                 "pass_vars": [
                     {
                         "source": "3_text",
                         "target": "text"
-                    },
-                    {
-                        "source": "3_language",
-                        "target": "language"
                     }
                 ],
                 "output_vars": [
