@@ -1,0 +1,34 @@
+{
+    "pipeline": [
+        {
+            "node_id": 3,
+            "function": "call_openai_llm",
+            "config": {
+                "input_vars": [{ "input_name": "prompt", "source": "text" }],
+                "pass_vars": [],
+                "output_vars": [
+                    { "output_name": "text", "target": "text" },
+                    { "output_name": "action", "target": "action" },
+                    { "output_name": "expression", "target": "expression" }
+                ],
+                "next_nodes": [],
+                "history_mode": "tavern",
+                "lorebooks": [{ "name": "sora", "offset": 0 }],
+                "similarity_threshold": 0.8,
+                "reset_history": true,
+                "history_length": 30,
+                "model": "dev_llm",
+                "punctuations": "、：，。？！:,.?!\n\t",
+                "sentence_length_threshold": 5,
+                "extra_info": {
+                    "action": { "start_mark": "[", "end_mark": "]" },
+                    "expression": { "start_mark": "(", "end_mark": ")" }
+                },
+                "tool_names": ["get_weather", "web_search"],
+                "vars": {
+                    "location": "Tokyo"
+                }
+            }
+        }
+    ]
+}
