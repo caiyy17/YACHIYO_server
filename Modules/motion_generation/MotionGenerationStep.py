@@ -16,6 +16,7 @@ class MotionGenerationCaller:
         self.cfg_scale = self.config.get("cfg_scale", 5.0)
         self.use_prompt_engineering = self.config.get("use_prompt_engineering", False)
         self.post_process = self.config.get("post_process", True)
+        self.character = self.config.get("character", "")
 
     def call(self, prompt):
         seed = self.seed if self.seed >= 0 else random.randint(0, 2**32 - 1)
@@ -29,6 +30,7 @@ class MotionGenerationCaller:
                     "cfg_scale": self.cfg_scale,
                     "use_prompt_engineering": self.use_prompt_engineering,
                     "post_process": self.post_process,
+                    "character": self.character,
                 },
             )
             response.raise_for_status()
