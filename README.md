@@ -45,7 +45,7 @@ Each client gets an isolated pipeline instance (threads + queues). Compute-heavy
 | LLM (vLLM)            | `Modules_standalone/VLLM/`           | Config files for vLLM's native OpenAI API       | [Apache 2.0](https://github.com/vllm-project/vllm)                    |
 | TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | OpenAI TTS-compatible wrapper for Qwen3-TTS     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                     |
 | MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation  | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) |
-| Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server         | MIT / Apache 2.0                                                      |
+| Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server         | [MIT](https://huggingface.co/BAAI/bge-m3) / [MIT](https://github.com/facebookresearch/faiss) |
 
 Each service runs in its own conda environment. Replace any service with any OpenAI-compatible implementation by editing `configs/settings/settings.json`.
 
@@ -85,3 +85,7 @@ WebRTC: `POST /offer/{client_id}` on port 15168 for SDP exchange, then communica
 ## Documentation
 
 [Technical Report](technical_report/main.pdf) — architecture, formal proofs, latency analysis, pipeline config format, signal routing, timestamps, cancellation, and implementation details.
+
+## License
+
+[MIT](LICENSE). Standalone model services use their own licenses (see [Model Services](#model-services)).
