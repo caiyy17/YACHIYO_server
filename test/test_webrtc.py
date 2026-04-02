@@ -106,7 +106,7 @@ def load_test_audio(path):
 # Client-side tracks
 # ============================================================
 class TestAudioTrack(MediaStreamTrack):
-    """Sends test_voice.wav, then silence. Records all sent PCM."""
+    """Sends silence until triggered, then test_voice.wav, then silence. Records all sent PCM."""
     kind = "audio"
 
     def __init__(self, audio_frames):
@@ -115,6 +115,7 @@ class TestAudioTrack(MediaStreamTrack):
         self._index = 0
         self._timestamp = 0
         self._start = None
+        self.speaking = False  # set True to start sending speech
         self.finished_speech = False
         self.recorded_pcm = []
 
@@ -125,12 +126,12 @@ class TestAudioTrack(MediaStreamTrack):
         if wait > 0:
             await asyncio.sleep(wait)
 
-        if self._index < len(self._frames):
+        if self.speaking and self._index < len(self._frames):
             pcm = self._frames[self._index]
             self._index += 1
         else:
             pcm = np.zeros(AUDIO_SAMPLES, dtype=np.int16)
-            if not self.finished_speech:
+            if self.speaking and self._index >= len(self._frames) and not self.finished_speech:
                 self.finished_speech = True
 
         self.recorded_pcm.append(pcm)
@@ -177,7 +178,7 @@ class TestVideoTrack(MediaStreamTrack):
         if wait > 0:
             await asyncio.sleep(wait)
 
-        active = not self._audio.finished_speech
+        active = self._audio.speaking and not self._audio.finished_speech
         self.recorded_frames.append(
             (time.time() - self._start, self._make_rgb(active))
         )
@@ -272,7 +273,11 @@ def record_mp4(
         # Build composite frame with subtitle bar
         frame_rgb = np.zeros((OUTPUT_HEIGHT, COMPOSITE_WIDTH, 3), dtype=np.uint8)
 
-        # Video area
+        # Video area — resize if dimensions don't match
+        if left_rgb.shape[:2] != (VIDEO_HEIGHT, VIDEO_WIDTH):
+            left_rgb = np.array(Image.fromarray(left_rgb).resize((VIDEO_WIDTH, VIDEO_HEIGHT)))
+        if right_rgb.shape[:2] != (VIDEO_HEIGHT, VIDEO_WIDTH):
+            right_rgb = np.array(Image.fromarray(right_rgb).resize((VIDEO_WIDTH, VIDEO_HEIGHT)))
         frame_rgb[:VIDEO_HEIGHT, :VIDEO_WIDTH] = left_rgb
         frame_rgb[:VIDEO_HEIGHT, VIDEO_WIDTH:] = right_rgb
 
@@ -485,6 +490,11 @@ async def run_test():
                 json={
                     "sdp": pc.localDescription.sdp,
                     "type": pc.localDescription.type,
+                    "sample_rate": SAMPLE_RATE,
+                    "audio_ptime": AUDIO_PTIME,
+                    "video_fps": VIDEO_FPS,
+                    "video_width": VIDEO_WIDTH,
+                    "video_height": VIDEO_HEIGHT,
                 },
             ) as resp:
                 if resp.status != 200:
@@ -523,9 +533,15 @@ async def run_test():
         await pc.close()
         return False
 
+    # --- Wait for initial silence period (visible in recording) ---
+    SILENCE_BEFORE_SPEECH = 3  # seconds of silence before vad_start
+    print(f"[Client] Waiting {SILENCE_BEFORE_SPEECH}s silence before speech...")
+    await asyncio.sleep(SILENCE_BEFORE_SPEECH)
+
     # --- Send speech ---
     test_start = time.time()
     client_dc.send(json.dumps({"signal": "vad_start"}))
+    send_audio.speaking = True  # start sending speech audio after vad_start
     print(f"[Client] vad_start → sending {speech_duration:.1f}s of speech...")
 
     while not send_audio.finished_speech:
@@ -601,6 +617,67 @@ async def run_test():
 
 
 def main():
+    global WEBRTC_SERVER, PIPELINE_CONFIG, TEST_DURATION
+    global SAMPLE_RATE, AUDIO_PTIME, AUDIO_SAMPLES, AUDIO_TIME_BASE
+    global VIDEO_FPS, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_TIMESTAMP_INCREMENT
+    global COMPOSITE_WIDTH, OUTPUT_HEIGHT
+    global OUTPUT_MP4
+
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server", default=WEBRTC_SERVER)
+    parser.add_argument("--pipeline", default=PIPELINE_CONFIG)
+    parser.add_argument("--duration", type=int, default=TEST_DURATION)
+    parser.add_argument("--sample-rate", type=int, default=None)
+    parser.add_argument("--audio-ptime", type=float, default=None)
+    parser.add_argument("--video-fps", type=int, default=None)
+    parser.add_argument("--video-width", type=int, default=None)
+    parser.add_argument("--video-height", type=int, default=None)
+    parser.add_argument("--data-fps", type=int, default=None)
+    args = parser.parse_args()
+
+    WEBRTC_SERVER = args.server
+    TEST_DURATION = args.duration
+
+    if args.sample_rate: SAMPLE_RATE = args.sample_rate
+    if args.audio_ptime: AUDIO_PTIME = args.audio_ptime
+    AUDIO_SAMPLES = int(SAMPLE_RATE * AUDIO_PTIME)
+    AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
+    if args.video_fps: VIDEO_FPS = args.video_fps
+    if args.video_width: VIDEO_WIDTH = args.video_width
+    if args.video_height: VIDEO_HEIGHT = args.video_height
+    VIDEO_TIMESTAMP_INCREMENT = VIDEO_CLOCK_RATE // VIDEO_FPS
+    COMPOSITE_WIDTH = VIDEO_WIDTH * 2
+    OUTPUT_HEIGHT = VIDEO_HEIGHT + SUBTITLE_HEIGHT
+
+    data_fps = args.data_fps or 20
+
+    # If custom params, generate matching pipeline config based on the base pipeline
+    if any([args.sample_rate, args.video_fps, args.video_width, args.video_height, args.data_fps]):
+        # Load base pipeline config and patch FrameSplitter's params
+        base_config_path = os.path.join(SCRIPT_DIR, "..", "configs", f"{args.pipeline}.json")
+        with open(base_config_path) as f:
+            pipeline_config = json.load(f)
+        # Find and patch FrameSplitter node
+        for node in pipeline_config["pipeline"]:
+            if node["function"] == "frame_splitter":
+                node["config"]["sample_rate"] = SAMPLE_RATE
+                node["config"]["frame_samples"] = AUDIO_SAMPLES
+                node["config"]["video_fps"] = VIDEO_FPS
+                node["config"]["video_width"] = VIDEO_WIDTH
+                node["config"]["video_height"] = VIDEO_HEIGHT
+                if args.data_fps:
+                    node["config"]["data_fps"] = data_fps
+        config_name = "test_webrtc_custom"
+        config_path = os.path.join(SCRIPT_DIR, "..", "configs", f"{config_name}.json")
+        with open(config_path, "w") as f:
+            json.dump(pipeline_config, f)
+        PIPELINE_CONFIG = config_name
+        OUTPUT_MP4 = os.path.join(OUTPUT_DIR,
+            f"test_webrtc_{SAMPLE_RATE}_{VIDEO_FPS}fps_{VIDEO_WIDTH}x{VIDEO_HEIGHT}.mp4")
+    else:
+        PIPELINE_CONFIG = args.pipeline
+
     result = asyncio.run(run_test())
     sys.exit(0 if result else 1)
 

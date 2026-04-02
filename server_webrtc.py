@@ -5,17 +5,18 @@ Architecture:
   Client (WebRTC) <-> server_webrtc <-> server_fastapi (WebSocket) <-> Pipeline
 
 Audio-Video-Data Synchronization:
-  Audio: 48kHz / 960 = 50fps (20ms per frame)
-  Video: 30fps (~33.3ms per frame)
-  Data:  20fps (text, motion, etc.)
-  GCD(50, 30, 20) = 10 → group rate 10fps → 100ms per group
-  Group: 5 audio + 3 video + 2 data = 100ms (atomic sync unit)
+  All frame rates are configurable via WebRTCSession init. Default:
+    Audio: 48kHz / 960 = 50fps (20ms per frame)
+    Video: 30fps (~33.3ms per frame)
+    Data:  20fps (text, motion, etc.)
+    GCD(50, 30, 20) = 10 → group rate 10fps → 100ms per group
+    Group: 5 audio + 3 video + 2 data = 100ms (atomic sync unit)
 
-  The pipeline's FrameSplitter outputs one message per 100ms group:
+  The pipeline's FrameSplitter outputs one message per group period:
     {"audio": ["<pcm1>", ..., "<pcm5>"], "video": ["<jpeg1>", ..., "<jpeg3>"],
      "data": [{...}, null]}
 
-  A group consumer task runs at GROUP_FPS (10fps, 100ms):
+  A group consumer task runs at group_fps:
     - Dequeue one pipeline group, or fill with empty data (silence/black/null)
     - Fill audio/video/data buffers atomically from the same group
   Audio/video/data consumers independently pop from their buffers at their own fps.
@@ -28,13 +29,13 @@ Audio-Video-Data Synchronization:
 
 Standard frame format:
   Input (WebRTC → pipeline):
-    {"audio": ["<pcm1>", ..., "<pcm5>"], "video": ["<jpeg1>", ..., "<jpeg3>"],
+    {"audio": ["<pcm1>", ...], "video": ["<jpeg1>", ...],
      "data": [{...}, null], "timestamp": ...}
     {"signal": "vad_start/vad_end", "timestamp": ...}
-  Input uses the same group structure as output (5 audio + 3 video + 2 data = 100ms).
+  Input uses the same group structure as output.
   Signals are forwarded immediately via WebSocket (not grouped).
   Output (pipeline → WebRTC):
-    {"audio": ["<pcm1>", ..., "<pcm5>"], "video": ["<jpeg1>", ..., "<jpeg3>"],
+    {"audio": ["<pcm1>", ...], "video": ["<jpeg1>", ...],
      "data": [{...}, null]}
     {"signal": "SoS/EoS", "timestamp": ...}
 
@@ -68,29 +69,19 @@ from aiortc import (
 from PIL import Image
 
 # ============================================================
-# Constants
+# Default constants (can be overridden per-session)
 # ============================================================
-SAMPLE_RATE = 48000
-AUDIO_PTIME = 0.02
-AUDIO_SAMPLES = int(SAMPLE_RATE * AUDIO_PTIME)  # 960
-AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
+DEFAULT_SAMPLE_RATE = 48000
+DEFAULT_AUDIO_PTIME = 0.02
+DEFAULT_VIDEO_FPS = 30
+DEFAULT_VIDEO_WIDTH = 320
+DEFAULT_VIDEO_HEIGHT = 240
+DEFAULT_DATA_FPS = 20
+DEFAULT_STARTUP_BUFFER = 2
+DEFAULT_CONSUMER_OFFSET = 0.005   # 5ms: consumer fills buffer before track consumes
+DEFAULT_ASSEMBLER_OFFSET = 0.05   # 50ms: assembler waits for frames to arrive
 
-VIDEO_WIDTH, VIDEO_HEIGHT = 320, 240
-VIDEO_FPS = 30
-VIDEO_CLOCK_RATE = 90000
-VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
-# Integer division — avoids float precision bug (1/30 * 90000 = 2999.999... in IEEE 754)
-VIDEO_TIMESTAMP_INCREMENT = VIDEO_CLOCK_RATE // VIDEO_FPS  # 3000
-
-# Data (text, motion, etc.) frame rate
-DATA_FPS = 20
-
-# Sync group: GCD of all fps = group rate, per_group = fps / group_rate
-_AUDIO_FPS = SAMPLE_RATE // AUDIO_SAMPLES       # 50
-_GROUP_FPS = gcd(gcd(_AUDIO_FPS, VIDEO_FPS), DATA_FPS)  # gcd(50,30,20) = 10
-AUDIO_PER_GROUP = _AUDIO_FPS // _GROUP_FPS  # 5
-VIDEO_PER_GROUP = VIDEO_FPS // _GROUP_FPS   # 3
-DATA_PER_GROUP  = DATA_FPS  // _GROUP_FPS   # 2
+VIDEO_CLOCK_RATE = 90000  # RTP clock rate for video (fixed by RTP spec)
 
 # Cancel timestamp offset: cancel signals are shifted back to avoid
 # racing with data signals stamped at the same group boundary.
@@ -99,28 +90,26 @@ DATA_PER_GROUP  = DATA_FPS  // _GROUP_FPS   # 2
 # server-side group boundaries, up to 100ms apart.
 CANCEL_TIMESTAMP_OFFSET = -0.15
 
-# Number of groups to buffer before starting playback (jitter buffer)
-STARTUP_BUFFER = 4
-
 logger = logging.getLogger("server_webrtc")
 
 
 # ============================================================
 # GroupDispatcher: buffers for audio/video/data frames
 #
-# A group consumer task calls fill_next_group() at GROUP_FPS (100ms).
+# A group consumer task calls fill_next_group() at group_fps.
 # Each call dequeues one pipeline group (or fills with empty data).
 # Audio/video/data consumers pop from buffers at their own fps.
 # ============================================================
 class GroupDispatcher:
     """Holds audio, video, and data buffers filled by the group consumer task.
 
-    fill_next_group() is called at GROUP_FPS to fill all buffers atomically.
+    fill_next_group() is called at group_fps to fill all buffers atomically.
     get_audio()/get_video()/get_data() are called by consumers at their own rate.
     Consumers never trigger unpacking — the group task is the sole driver.
     """
 
-    def __init__(self, group_queue: Queue, on_signal_callback):
+    def __init__(self, group_queue, on_signal_callback,
+                 audio_samples, audio_per_group, video_per_group, data_per_group):
         self._group_queue = group_queue
         self._on_signal = on_signal_callback
         self._audio_buffer = deque()
@@ -128,6 +117,11 @@ class GroupDispatcher:
         self._data_buffer = deque()
         # Shared by all consumers — set by group consumer on first tick
         self.start_time = None
+
+        self._audio_samples = audio_samples
+        self._audio_per_group = audio_per_group
+        self._video_per_group = video_per_group
+        self._data_per_group = data_per_group
 
     def fill_next_group(self, cancel_timestamp=0):
         """Dequeue one media group into buffers, or fill with empty data.
@@ -158,10 +152,10 @@ class GroupDispatcher:
                     pcm = np.frombuffer(
                         base64.b64decode(a_b64), dtype=np.int16
                     )
-                    if len(pcm) < AUDIO_SAMPLES:
-                        pcm = np.pad(pcm, (0, AUDIO_SAMPLES - len(pcm)))
-                    elif len(pcm) > AUDIO_SAMPLES:
-                        pcm = pcm[:AUDIO_SAMPLES]
+                    if len(pcm) < self._audio_samples:
+                        pcm = np.pad(pcm, (0, self._audio_samples - len(pcm)))
+                    elif len(pcm) > self._audio_samples:
+                        pcm = pcm[:self._audio_samples]
                     self._audio_buffer.append(pcm)
                 has_media = True
 
@@ -187,18 +181,18 @@ class GroupDispatcher:
 
     def _fill_empty(self):
         """Fill all buffers with one group of empty data."""
-        for _ in range(AUDIO_PER_GROUP):
-            self._audio_buffer.append(np.zeros(AUDIO_SAMPLES, dtype=np.int16))
-        for _ in range(VIDEO_PER_GROUP):
+        for _ in range(self._audio_per_group):
+            self._audio_buffer.append(np.zeros(self._audio_samples, dtype=np.int16))
+        for _ in range(self._video_per_group):
             self._video_buffer.append(None)
-        for _ in range(DATA_PER_GROUP):
+        for _ in range(self._data_per_group):
             self._data_buffer.append(None)
 
     def get_audio(self):
         """Pop next audio frame. Returns ndarray (silence if buffer empty)."""
         if self._audio_buffer:
             return self._audio_buffer.popleft()
-        return np.zeros(AUDIO_SAMPLES, dtype=np.int16)
+        return np.zeros(self._audio_samples, dtype=np.int16)
 
     def get_video(self):
         """Pop next video frame. Returns base64 str or None."""
@@ -212,54 +206,62 @@ class GroupDispatcher:
 # ============================================================
 # Output tracks (pipeline → WebRTC client)
 #
-# Buffers are filled by the group consumer task at GROUP_FPS.
+# Buffers are filled by the group consumer task at group_fps.
 # Tracks pop from buffers at their own rate.
 # Timing: frame_time = start_time + frame_index * ptime
 # ============================================================
 class OutputAudioTrack(MediaStreamTrack):
-    """Consumes audio frames from GroupDispatcher at 50fps (20ms)."""
+    """Consumes audio frames from GroupDispatcher at audio_fps."""
     kind = "audio"
 
-    def __init__(self, dispatcher: GroupDispatcher):
+    def __init__(self, dispatcher, sample_rate, audio_samples):
         super().__init__()
         self._dispatcher = dispatcher
         self._timestamp = 0
+        self._sample_rate = sample_rate
+        self._audio_samples = audio_samples
+        self._time_base = fractions.Fraction(1, sample_rate)
 
     async def recv(self):
         if self._dispatcher.start_time is None:
             self._dispatcher.start_time = time.time()
 
-        wait = self._dispatcher.start_time + (self._timestamp / SAMPLE_RATE) - time.time()
+        wait = self._dispatcher.start_time + (self._timestamp / self._sample_rate) - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
 
         pcm = self._dispatcher.get_audio()
-        frame = av.AudioFrame(format="s16", layout="mono", samples=AUDIO_SAMPLES)
-        frame.sample_rate = SAMPLE_RATE
+        frame = av.AudioFrame(format="s16", layout="mono", samples=self._audio_samples)
+        frame.sample_rate = self._sample_rate
         frame.pts = self._timestamp
-        frame.time_base = AUDIO_TIME_BASE
+        frame.time_base = self._time_base
         frame.planes[0].update(pcm.tobytes())
-        self._timestamp += AUDIO_SAMPLES
+        self._timestamp += self._audio_samples
         return frame
 
 
 class OutputVideoTrack(MediaStreamTrack):
-    """Consumes video frames from GroupDispatcher at 30fps (~33.3ms)."""
+    """Consumes video frames from GroupDispatcher at video_fps."""
     kind = "video"
 
-    def __init__(self, dispatcher: GroupDispatcher):
+    def __init__(self, dispatcher, video_fps, video_width, video_height):
         super().__init__()
         self._dispatcher = dispatcher
         self._timestamp = 0
+        self._video_fps = video_fps
+        self._video_width = video_width
+        self._video_height = video_height
+        self._ts_increment = VIDEO_CLOCK_RATE // video_fps
+        self._time_base = fractions.Fraction(1, VIDEO_CLOCK_RATE)
         self._cached_b64 = None
         self._cached_frame = None
         self._idle_frame = self._make_black_frame()
 
     def _make_black_frame(self):
-        y = np.full((VIDEO_HEIGHT, VIDEO_WIDTH), 16, dtype=np.uint8)
-        u = np.full((VIDEO_HEIGHT // 2, VIDEO_WIDTH // 2), 128, dtype=np.uint8)
-        v = np.full((VIDEO_HEIGHT // 2, VIDEO_WIDTH // 2), 128, dtype=np.uint8)
-        frame = av.VideoFrame(VIDEO_WIDTH, VIDEO_HEIGHT, "yuv420p")
+        y = np.full((self._video_height, self._video_width), 16, dtype=np.uint8)
+        u = np.full((self._video_height // 2, self._video_width // 2), 128, dtype=np.uint8)
+        v = np.full((self._video_height // 2, self._video_width // 2), 128, dtype=np.uint8)
+        frame = av.VideoFrame(self._video_width, self._video_height, "yuv420p")
         frame.planes[0].update(y.tobytes())
         frame.planes[1].update(u.tobytes())
         frame.planes[2].update(v.tobytes())
@@ -271,8 +273,8 @@ class OutputVideoTrack(MediaStreamTrack):
             return self._cached_frame
         try:
             img = Image.open(io.BytesIO(base64.b64decode(b64_data))).convert("RGB")
-            if img.size != (VIDEO_WIDTH, VIDEO_HEIGHT):
-                img = img.resize((VIDEO_WIDTH, VIDEO_HEIGHT))
+            if img.size != (self._video_width, self._video_height):
+                img = img.resize((self._video_width, self._video_height))
             rgb_frame = av.VideoFrame.from_ndarray(np.array(img), format="rgb24")
             frame = rgb_frame.reformat(format="yuv420p")
             self._cached_b64 = b64_data
@@ -296,8 +298,8 @@ class OutputVideoTrack(MediaStreamTrack):
             frame = self._idle_frame
 
         frame.pts = self._timestamp
-        frame.time_base = VIDEO_TIME_BASE
-        self._timestamp += VIDEO_TIMESTAMP_INCREMENT
+        frame.time_base = self._time_base
+        self._timestamp += self._ts_increment
         return frame
 
 
@@ -307,11 +309,56 @@ class OutputVideoTrack(MediaStreamTrack):
 class WebRTCSession:
     """Manages one WebRTC client's bidirectional connection to the pipeline."""
 
-    def __init__(self, client_id, main_server_url, on_session_end=None):
+    def __init__(self, client_id, main_server_url,
+                 sample_rate=DEFAULT_SAMPLE_RATE,
+                 audio_ptime=DEFAULT_AUDIO_PTIME,
+                 video_fps=DEFAULT_VIDEO_FPS,
+                 video_width=DEFAULT_VIDEO_WIDTH,
+                 video_height=DEFAULT_VIDEO_HEIGHT,
+                 data_fps=DEFAULT_DATA_FPS,
+                 startup_buffer=DEFAULT_STARTUP_BUFFER,
+                 consumer_offset=DEFAULT_CONSUMER_OFFSET,
+                 assembler_offset=DEFAULT_ASSEMBLER_OFFSET,
+                 on_session_end=None):
         self.client_id = client_id
         self.main_server_url = main_server_url
         self.main_ws_url = main_server_url.replace("http", "ws", 1) + "/ws"
 
+        # Audio params
+        self.sample_rate = sample_rate
+        self.audio_samples = int(sample_rate * audio_ptime)
+
+        # Video params
+        self.video_fps = video_fps
+        self.video_width = video_width
+        self.video_height = video_height
+
+        # Data params
+        self.data_fps = data_fps
+
+        # Group structure (GCD-based)
+        audio_fps = sample_rate // self.audio_samples
+        group_fps = gcd(gcd(audio_fps, video_fps), data_fps)
+        self.audio_per_group = audio_fps // group_fps
+        self.video_per_group = video_fps // group_fps
+        self.data_per_group = data_fps // group_fps
+        self.group_period = 1.0 / group_fps
+
+        # Startup buffer and timing offsets
+        self.startup_buffer = startup_buffer
+        self.consumer_offset = consumer_offset
+        self.assembler_offset = assembler_offset
+
+        logger.info(
+            f"[{client_id}] Session params: "
+            f"audio={sample_rate}Hz/{self.audio_samples}samp, "
+            f"video={video_fps}fps/{video_width}x{video_height}, "
+            f"data={data_fps}fps, "
+            f"group={self.audio_per_group}a+{self.video_per_group}v+{self.data_per_group}d "
+            f"({self.group_period*1000:.0f}ms)"
+        )
+
+        # Connection state
         self.pc = RTCPeerConnection()
         self.group_queue = Queue()  # Groups from pipeline
         self.ws = None
@@ -320,13 +367,14 @@ class WebRTCSession:
         self.dc_server = None
         self.connected = False
         self._on_session_end = on_session_end  # Callback to remove from server's sessions
-        self._input_video_buffer = deque()  # Client video frames waiting to be grouped
-        self._input_video_event = asyncio.Event()  # Signaled when new video frame arrives
-        self._last_video_frame = None  # Last received video frame (for drop fill)
-        self._input_data_buffer = deque()  # Client data frames waiting to be grouped
-        self._input_data_event = asyncio.Event()  # Signaled when new data frame arrives
+        # Input buffers: each receiver appends (pts, data) pairs independently
+        self._input_audio_buffer = deque()   # (pts, b64_pcm) from audio track
+        self._input_video_buffer = deque()   # (pts, b64_jpeg) from video track
+        self._last_video_frame = None        # Last received video frame (for drop fill)
+        self._input_data_buffer = deque()    # data dicts from DataChannel
         self._input_signal_buffer = deque()  # Client signals waiting for next group boundary
-        self.cancel_timestamp = 0  # Output-side cancel filtering
+        self.cancel_timestamp = 0            # Output-side cancel filtering
+        self._audio_pts_origin = None        # First audio PTS (for gap detection)
 
     def _on_signal(self, msg):
         """Called when a signal-only message (SoS/EoS) is unpacked by dispatcher."""
@@ -344,26 +392,25 @@ class WebRTCSession:
         self.dc_server.send(json.dumps(data))
 
     async def _group_consumer(self, dispatcher):
-        """Fill dispatcher buffers at GROUP_FPS (100ms).
+        """Fill dispatcher buffers at group rate.
         This is the sole driver of group unpacking — consumers never trigger it.
-        Startup: fills empty until group_queue has enough groups (jitter buffer)."""
+        Startup: fills empty until group_queue has enough groups (jitter buffer).
+        consumer_offset: fills slightly before track consumes to avoid race."""
         if dispatcher.start_time is None:
             dispatcher.start_time = time.time()
 
         group_index = 0
-        group_period = 1.0 / _GROUP_FPS
         buffering = True
-        # Don't buffer forever if pipeline is slow to connect
-        buffering_deadline = dispatcher.start_time + STARTUP_BUFFER * group_period * 5
+        buffering_deadline = dispatcher.start_time + self.startup_buffer * self.group_period * 5
 
         while self.connected:
-            target = dispatcher.start_time + group_index * group_period
+            target = dispatcher.start_time + group_index * self.group_period - self.consumer_offset
             wait = target - time.time()
             if wait > 0:
                 await asyncio.sleep(wait)
 
             if buffering:
-                if (self.group_queue.qsize() >= STARTUP_BUFFER
+                if (self.group_queue.qsize() >= self.startup_buffer
                         or time.time() > buffering_deadline):
                     buffering = False
                     logger.info(
@@ -379,7 +426,7 @@ class WebRTCSession:
             group_index += 1
 
     async def _dispatch_data(self, dispatcher):
-        """Consume data frames from dispatcher at DATA_FPS.
+        """Consume data frames from dispatcher at data_fps.
         Uses absolute timing from dispatcher.start_time (same as audio/video tracks)."""
         while dispatcher.start_time is None and self.connected:
             await asyncio.sleep(0.005)
@@ -387,7 +434,7 @@ class WebRTCSession:
             return
 
         frame_index = 0
-        ptime = 1.0 / DATA_FPS
+        ptime = 1.0 / self.data_fps
         while self.connected:
             target = dispatcher.start_time + frame_index * ptime
             wait = target - time.time()
@@ -404,16 +451,24 @@ class WebRTCSession:
         """Process WebRTC offer, set up tracks, return answer."""
         offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
 
-        # All tracks share the same dispatcher (and thus the same start_time)
-        dispatcher = GroupDispatcher(self.group_queue, self._on_signal)
-        out_audio = OutputAudioTrack(dispatcher)
-        out_video = OutputVideoTrack(dispatcher)
+        dispatcher = GroupDispatcher(
+            self.group_queue, self._on_signal,
+            audio_samples=self.audio_samples,
+            audio_per_group=self.audio_per_group,
+            video_per_group=self.video_per_group,
+            data_per_group=self.data_per_group,
+        )
+        out_audio = OutputAudioTrack(dispatcher, self.sample_rate, self.audio_samples)
+        out_video = OutputVideoTrack(dispatcher, self.video_fps,
+                                     self.video_width, self.video_height)
         self.pc.addTrack(out_audio)
         self.pc.addTrack(out_video)
 
-        # Group consumer fills buffers at GROUP_FPS; data dispatched at DATA_FPS
+        # Output: group consumer fills dispatcher buffers at group rate
         self._group_task = asyncio.ensure_future(self._group_consumer(dispatcher))
         self._data_task = asyncio.ensure_future(self._dispatch_data(dispatcher))
+        # Input: group assembler pulls from input buffers at group rate
+        self._assembler_task = asyncio.ensure_future(self._group_assembler())
 
         self.dc_server = self.pc.createDataChannel("server-data", ordered=True)
 
@@ -445,7 +500,7 @@ class WebRTCSession:
                 await self.cleanup()
 
         # Set connected before setRemoteDescription — on_track fires during
-        # setRemoteDescription, and relay coroutines check self.connected.
+        # setRemoteDescription, and relay coroutines check self.connected
         self.connected = True
         await self.pc.setRemoteDescription(offer)
         answer = await self.pc.createAnswer()
@@ -457,7 +512,7 @@ class WebRTCSession:
 
     async def _forward_dc_message(self, raw_msg):
         """Handle DataChannel message from client.
-        Signal messages (vad_start/vad_end) → forward immediately to pipeline.
+        Signal messages (vad_start/vad_end) → buffer for next group boundary.
         Data messages → buffer for group inclusion."""
         try:
             msg = json.loads(raw_msg)
@@ -465,21 +520,13 @@ class WebRTCSession:
             return
 
         if msg.get("signal"):
-            # Signal → buffer for next group boundary
             self._input_signal_buffer.append(raw_msg)
         else:
-            # Data frame → buffer for group inclusion
             self._input_data_buffer.append(msg)
-            self._input_data_event.set()
 
     async def _relay_audio_input(self, track):
-        """Buffer audio frames, wait for matching video/data, send as group.
-        Group: 5 audio + 3 video + 2 data (audio-driven, 100ms).
-        Timeout prevents stalling on dropped video frames."""
-        await self.ws_ready.wait()
-        logger.info(f"[{self.client_id}] Audio relay started")
-
-        audio_group = []
+        """Receive audio frames and buffer with PTS for group assembler."""
+        logger.info(f"[{self.client_id}] Audio input started")
         try:
             while self.connected:
                 av_frame = await track.recv()
@@ -487,86 +534,14 @@ class WebRTCSession:
                 layout = av_frame.layout.name if av_frame.layout else "mono"
                 if layout == "stereo":
                     pcm = pcm[::2]
-
-                audio_group.append(
-                    base64.b64encode(pcm.tobytes()).decode("ascii")
-                )
-
-                if len(audio_group) < AUDIO_PER_GROUP:
-                    continue
-
-                # 5 audio frames ready — wait for 3 video frames
-                # Timeout = one video frame period (~33ms) to handle drops
-                timeout = 1.0 / VIDEO_FPS
-                while len(self._input_video_buffer) < VIDEO_PER_GROUP:
-                    try:
-                        await asyncio.wait_for(
-                            self._input_video_event.wait(), timeout=timeout
-                        )
-                        self._input_video_event.clear()
-                    except asyncio.TimeoutError:
-                        break  # Video frame likely dropped, send what we have
-
-                # Drop stale video frames, keep at most VIDEO_PER_GROUP
-                while len(self._input_video_buffer) > VIDEO_PER_GROUP:
-                    self._input_video_buffer.popleft()
-
-                video_group = []
-                for _ in range(VIDEO_PER_GROUP):
-                    if self._input_video_buffer:
-                        video_group.append(self._input_video_buffer.popleft())
-
-                # Fill dropped frames with last received frame
-                while len(video_group) < VIDEO_PER_GROUP and self._last_video_frame:
-                    video_group.append(self._last_video_frame)
-
-                # Wait for data frames (same logic as video)
-                data_timeout = 1.0 / DATA_FPS
-                while len(self._input_data_buffer) < DATA_PER_GROUP:
-                    try:
-                        await asyncio.wait_for(
-                            self._input_data_event.wait(), timeout=data_timeout
-                        )
-                        self._input_data_event.clear()
-                    except asyncio.TimeoutError:
-                        break
-
-                # Drop stale data frames, keep at most DATA_PER_GROUP
-                while len(self._input_data_buffer) > DATA_PER_GROUP:
-                    self._input_data_buffer.popleft()
-                data_group = []
-                for _ in range(DATA_PER_GROUP):
-                    if self._input_data_buffer:
-                        data_group.append(self._input_data_buffer.popleft())
-                    else:
-                        data_group.append(None)
-
-                # Flush pending signals at group boundary
-                while self._input_signal_buffer:
-                    sig = json.loads(self._input_signal_buffer.popleft())
-                    sig["timestamp"] = time.time()
-                    if sig.get("signal") == "cancel":
-                        sig["timestamp"] += CANCEL_TIMESTAMP_OFFSET
-                        self.cancel_timestamp = sig["timestamp"]
-                    await self.ws.send(json.dumps(sig))
-
-                msg = {
-                    "audio": audio_group,
-                    "timestamp": time.time(),
-                }
-                if video_group:
-                    msg["video"] = video_group
-                msg["data"] = data_group
-
-                await self.ws.send(json.dumps(msg))
-                audio_group = []
+                b64 = base64.b64encode(pcm.tobytes()).decode("ascii")
+                self._input_audio_buffer.append((av_frame.pts, b64))
         except Exception as e:
-            logger.info(f"[{self.client_id}] Audio relay ended: {e}")
+            logger.info(f"[{self.client_id}] Audio input ended: {e}")
 
     async def _relay_video_input(self, track):
-        """Buffer video frames for audio relay to pack into groups."""
+        """Receive video frames and buffer with PTS for group assembler."""
         logger.info(f"[{self.client_id}] Video input started")
-
         try:
             while self.connected:
                 frame = await track.recv()
@@ -574,11 +549,146 @@ class WebRTCSession:
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=85)
                 b64_frame = base64.b64encode(buf.getvalue()).decode("ascii")
-                self._input_video_buffer.append(b64_frame)
+                self._input_video_buffer.append((frame.pts, b64_frame))
                 self._last_video_frame = b64_frame
-                self._input_video_event.set()
         except Exception as e:
             logger.info(f"[{self.client_id}] Video input ended: {e}")
+
+    async def _group_assembler(self):
+        """Assemble input groups at group_period intervals using PTS.
+        Runs independently from receivers. Waits for first audio+video frames
+        to align wall clock, then uses PTS ranges to select frames per group.
+        Audio gaps detected via PTS and filled with silence."""
+        await self.ws_ready.wait()
+        logger.info(f"[{self.client_id}] Group assembler started")
+
+        # Pre-compute constants
+        group_audio_span = self.audio_per_group * self.audio_samples  # PTS span per group (audio clock)
+        video_pts_per_frame = VIDEO_CLOCK_RATE // self.video_fps
+        group_video_span = self.video_per_group * video_pts_per_frame  # PTS span per group (video clock)
+        silence_b64 = base64.b64encode(
+            np.zeros(self.audio_samples, dtype=np.int16).tobytes()
+        ).decode("ascii")
+
+        # Wait for both audio and video to have data before starting
+        while self.connected:
+            if self._input_audio_buffer and self._input_video_buffer:
+                break
+            await asyncio.sleep(0.005)
+        if not self.connected:
+            return
+
+        # Align to the LATEST frames in buffer (not oldest) so wall time
+        # matches current content, not stale frames from before pipeline was ready
+        audio_pts_origin = self._input_audio_buffer[-1][0]
+        video_pts_origin = self._input_video_buffer[-1][0]
+        wall_origin = time.time()
+        # Clear data buffer — discard anything that arrived before alignment
+        self._input_data_buffer.clear()
+        logger.info(
+            f"[{self.client_id}] Group assembler aligned: "
+            f"audio_pts0={audio_pts_origin}, video_pts0={video_pts_origin}, "
+            f"offset={self.assembler_offset*1000:.0f}ms"
+        )
+
+        group_index = 0
+
+        while self.connected:
+            # Absolute timing with offset — frames get assembler_offset to arrive
+            target = wall_origin + group_index * self.group_period + self.assembler_offset
+            wait = target - time.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+            # PTS ranges for this group
+            audio_pts_start = audio_pts_origin + group_index * group_audio_span
+            audio_pts_end = audio_pts_start + group_audio_span
+            video_pts_start = video_pts_origin + group_index * group_video_span
+            video_pts_end = video_pts_start + group_video_span
+
+            # === Audio: take frames in PTS range, fill gaps with silence ===
+            audio_group = []
+            expected_pts = audio_pts_start
+            while expected_pts < audio_pts_end:
+                if self._input_audio_buffer:
+                    pts, b64 = self._input_audio_buffer[0]
+                    if pts < expected_pts:
+                        # Stale frame (before this group), discard
+                        self._input_audio_buffer.popleft()
+                        continue
+                    if pts == expected_pts:
+                        # Exact match — use it
+                        self._input_audio_buffer.popleft()
+                        audio_group.append(b64)
+                        expected_pts += self.audio_samples
+                    elif pts > expected_pts and pts < audio_pts_end:
+                        # Gap — fill silence up to this frame's PTS
+                        audio_group.append(silence_b64)
+                        expected_pts += self.audio_samples
+                    else:
+                        # Frame belongs to future group — fill silence
+                        audio_group.append(silence_b64)
+                        expected_pts += self.audio_samples
+                else:
+                    # Buffer empty — fill silence
+                    audio_group.append(silence_b64)
+                    expected_pts += self.audio_samples
+
+            # === Video: take frames in PTS range, fill with last frame ===
+            video_group = []
+            # Discard stale video frames (before this group)
+            while self._input_video_buffer:
+                pts, _ = self._input_video_buffer[0]
+                if pts < video_pts_start:
+                    self._input_video_buffer.popleft()
+                else:
+                    break
+
+            # Take frames within this group's PTS range
+            while len(video_group) < self.video_per_group and self._input_video_buffer:
+                pts, b64 = self._input_video_buffer[0]
+                if pts < video_pts_end:
+                    self._input_video_buffer.popleft()
+                    video_group.append(b64)
+                    self._last_video_frame = b64
+                else:
+                    break
+
+            # Fill missing with last received frame
+            while len(video_group) < self.video_per_group and self._last_video_frame:
+                video_group.append(self._last_video_frame)
+
+            # === Data: take data_per_group items (no PTS, arrival order) ===
+            data_group = []
+            for _ in range(self.data_per_group):
+                if self._input_data_buffer:
+                    data_group.append(self._input_data_buffer.popleft())
+                else:
+                    data_group.append(None)
+
+            # === Flush pending signals at group boundary ===
+            # Timestamp set at send time, same basis as group timestamp
+            while self._input_signal_buffer:
+                sig = json.loads(self._input_signal_buffer.popleft())
+                sig["timestamp"] = time.time()
+                if sig.get("signal") == "cancel":
+                    sig["timestamp"] += CANCEL_TIMESTAMP_OFFSET
+                    self.cancel_timestamp = sig["timestamp"]
+                if self.ws:
+                    await self.ws.send(json.dumps(sig))
+
+            # === Send group ===
+            if self.ws:
+                msg = {
+                    "audio": audio_group,
+                    "timestamp": time.time(),
+                }
+                if video_group:
+                    msg["video"] = video_group
+                msg["data"] = data_group
+                await self.ws.send(json.dumps(msg))
+
+            group_index += 1
 
     def _notify_client(self, signal, message=""):
         """Send a signal to client via DataChannel (best-effort)."""
@@ -636,20 +746,21 @@ class WebRTCSession:
             logger.info(f"[{self.client_id}] Pipeline response timeout")
             self._notify_client("error", "Pipeline response timeout")
         except Exception as e:
-            if self.connected:  # Only notify if not already cleaning up
+            if self.connected:
                 logger.info(f"[{self.client_id}] Pipeline relay ended: {e}")
                 self._notify_client("error", f"Pipeline disconnected: {e}")
 
     async def cleanup(self):
         if self._closed.is_set():
-            return  # Already cleaned up
+            return
         self._closed.set()
         self.connected = False
         logger.info(f"[{self.client_id}] Cleaning up session")
 
         # Cancel async tasks
         for task in (getattr(self, '_group_task', None),
-                     getattr(self, '_data_task', None)):
+                     getattr(self, '_data_task', None),
+                     getattr(self, '_assembler_task', None)):
             if task and not task.done():
                 task.cancel()
 
@@ -690,9 +801,17 @@ class WebRTCServer:
         if client_id in self.sessions:
             await self.sessions[client_id].cleanup()
 
+        # Optional session params from request body
+        session_kwargs = {}
+        for key in ("sample_rate", "audio_ptime", "video_fps",
+                     "video_width", "video_height", "data_fps", "startup_buffer"):
+            if key in body:
+                session_kwargs[key] = body[key]
+
         session = WebRTCSession(
             client_id, self.main_server_url,
             on_session_end=lambda cid: self.sessions.pop(cid, None),
+            **session_kwargs,
         )
         self.sessions[client_id] = session
 

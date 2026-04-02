@@ -222,8 +222,11 @@ class FrameSplitterStep(BaseProcessingStep):
             filtered_data = self.extract_input_data(data)
             pass_data = self.extract_pass_data(data)
             self._split_to_buffer(filtered_data, pass_data)
-            self.current_timestamp = ts
-            return
+            if self._group_buffer:
+                # Buffer was filled — set current_timestamp for cancel tracking
+                self.current_timestamp = ts
+                return
+            # No audio_data in message — continue reading next message
 
     def _fill_default(self):
         """Fill buffer with default content when no input available.

@@ -1,5 +1,132 @@
 # YACHIYO Server Progress
 
+## aiortc 帧交付行为测试报告（2026-04-01）
+
+loopback 直连两个 RTCPeerConnection，sender 端模拟各种网络异常，receiver 端记录交付时间、PTS、内容。
+
+### 一、Baseline
+
+| 指标 | Audio | Video |
+|---|---|---|
+| 帧率 | 50fps (20ms/帧) | 30fps (33.3ms/帧) |
+| PTS 步长 | 960 (= 48000 × 0.02) | ~3000 (= 90000 / 30) |
+| wall clock std | 0.6ms | 1.0ms |
+| PTS 跳跃 | 0 | 0 |
+| A-V PTS span diff | 67ms（两路 jitter buffer 独立延迟） |
+
+### 二、丢帧
+
+#### Audio 随机丢帧
+
+| 丢包率 | 收到帧数 | 丢失帧数 | wall avg | wall max | PTS 跳跃次数 |
+|---|---|---|---|---|---|
+| 5% | 130 | 14 | 22.6ms | 60.8ms | 13 |
+| 15% | 123 | 22 | 23.3ms | 60.1ms | 19 |
+| 30% | 109 | 37 | 26.9ms | 80.5ms | 28 |
+
+- 丢 1 帧：wall 间隔 ~40ms，PTS delta = 1920
+- 连丢多帧：wall 间隔成倍增加，PTS delta = (missed+1) × 960
+- **Video 完全不受 audio 丢帧影响**
+
+#### Video 随机丢帧
+
+| 丢包率 | 收到帧数 | 丢失帧数 | wall avg | wall max | PTS 跳跃次数 |
+|---|---|---|---|---|---|
+| 5% | 86 | 2 | 34.9ms | 67.6ms | 4 |
+| 15% | 82 | 5 | 36.6ms | 99.6ms | 7 |
+| 30% | 56 | 27 | 53.3ms | 167.4ms | 20 |
+
+- **Audio 完全不受 video 丢帧影响**
+
+#### Audio 突发丢帧
+
+| 突发长度 | 丢失帧数 | wall max | PTS 跳跃 |
+|---|---|---|---|
+| 2帧/50帧 | 4 | 60.8ms | delta=2880 (2 missed) |
+| 5帧/50帧 | 10 | 119.6ms | delta=5760 (5 missed) |
+| 10帧/50帧 | 20 | 219.1ms | delta=10560 (10 missed) |
+
+#### Video 突发丢帧
+
+| 突发长度 | 丢失帧数 | wall max | PTS 跳跃 |
+|---|---|---|---|
+| 2帧/30帧 | 4 | 67.2ms | delta=8999 (2 missed) |
+| 5帧/30帧 | 10 | 199.3ms | delta=17999 (5 missed) |
+| 10帧/30帧 | 20 | 365.2ms | delta=32999 (10 missed) |
+
+#### 特殊丢帧模式
+
+- **隔帧丢（50%）**：audio wall 固定 40ms，每个 PTS delta = 1920。帧率稳定降半，时序规律
+- **渐进退化（0→10→30%）**：前 50 帧正常，之后开始出现零散 PTS 跳跃，越来越频繁
+
+### 三、抖动（Jitter）
+
+| 场景 | wall avg | wall min | wall max | wall std | PTS 跳跃 |
+|---|---|---|---|---|---|
+| Audio ±5ms | 20.0ms | 7.3ms | 30.1ms | 5.8ms | **0** |
+| Audio ±15ms | 20.0ms | 0.4ms | 39.6ms | 9.6ms | **0** |
+| Audio ±30ms | 20.0ms | 0.0ms | 73.5ms | 18.1ms | **0** |
+| Audio ±50ms | 20.0ms | 0.0ms | 90.3ms | 25.6ms | **0** |
+| Video ±5ms | 33.3ms | 17.4ms | 51.7ms | 5.7ms | **0** |
+| Video ±15ms | 33.3ms | 6.9ms | 56.3ms | 12.2ms | **0** |
+| Video ±30ms | 33.3ms | 0.1ms | 88.2ms | 21.1ms | **0** |
+
+**关键发现：jitter buffer 完全吸收了抖动。** 无论抖动多大（最大 ±50ms，超过 2 个帧周期），PTS 始终连续无跳跃，帧内容完整。只有 wall clock 间隔波动。
+
+### 四、慢速发送
+
+| 场景 | 收到帧数 | PTS 跳跃 | PTS span | wall span | drift |
+|---|---|---|---|---|---|
+| Audio 80% speed | 117 | 0 | 2.32s | 2.90s | 579ms |
+| Video 80% speed | 72 | 0 | 2.37s | 2.96s | 591ms |
+
+PTS 连续无跳跃，但 PTS span < wall span（内容时间比实际时间短）。另一路正常。A-V sync drift > 500ms。
+
+### 五、临时冻结（500ms）
+
+| 场景 | 冻结路帧数 | 另一路帧数 | 冻结路行为 | A-V sync |
+|---|---|---|---|---|
+| Audio 冻结 | 46 + 2 timeout | 90 正常 | recv() 超时，无恢复帧 | diff=2067ms |
+| Video 冻结 | 29 + 2 timeout | 146 正常 | 同上 | diff=1967ms |
+| 双方冻结 | 46 + 2 / 29 + 2 | — | 双方超时 | diff=33ms |
+
+冻结期间 recv() 阻塞直到超时。恢复后（如果有）PTS 出现大跳跃。双方同时冻结则同步性保持。
+
+### 六、完全丢失
+
+| 场景 | 丢失路 | 正常路 |
+|---|---|---|
+| Audio 100% loss | 0 帧，全部 timeout | Video 正常 90 帧 |
+| Video 100% loss | 0 帧，全部 timeout | Audio 正常 146 帧 |
+
+一路完全丢失不影响另一路。
+
+### 七、组合场景
+
+| 场景 | Audio 结果 | Video 结果 | A-V sync |
+|---|---|---|---|
+| Both 5% loss | 135帧, 11 missed | 85帧, 4 missed | diff=107ms |
+| Both 15% loss | 117帧, 25 missed | 79帧, 8 missed | diff=107ms |
+| Both ±15ms jitter | 146帧, 0 missed | 90帧, 0 missed | diff=67ms |
+| Audio 10% loss + Video ±15ms jitter | 131帧, 15 missed | 90帧, 0 missed | diff=67ms |
+
+### 核心结论
+
+1. **jitter buffer 工作正常**：吸收到达时间波动，PTS 保持连续。±50ms 抖动下零丢帧。
+2. **丢帧无补偿**：丢了就没了，PTS 跳跃标记缺口，无 PLC / 舒适噪声 / 冻结帧。
+3. **wall clock 交付时间**：丢帧时间隔拉大（丢 N 帧 → 间隔 ≈ (N+1)×帧周期），jitter 时波动但均值不变。
+4. **单路丢帧不影响另一路**。
+5. **A-V 同步**：baseline 约 67ms 偏差（各自 jitter buffer 延迟）。单路丢帧会增大偏差。慢速/冻结导致大偏移。
+6. **PTS 是唯一可靠的帧连续性判据**。wall clock 会波动但 PTS 精确反映内容时间线。
+7. **track.recv() 无内置超时**，完全丢失时永久阻塞，必须用 `asyncio.wait_for` 包装。
+
+### 对 server 帧处理的影响
+
+- 必须检查 PTS 连续性（delta != expected → 丢帧），补静音/冻结帧
+- 必须用 PTS 对齐音视频（不能只按帧数计数）
+- 必须给 recv() 加超时防止永久阻塞
+- jitter 不需要额外处理（jitter buffer 已吸收）
+
 ## 端口配置
 
 | 服务            | 端口  |
