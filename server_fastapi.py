@@ -8,6 +8,7 @@ from pydantic import BaseModel
 TIMESTAMP_EPSILON = 1e-3
 
 from starlette.responses import PlainTextResponse
+from starlette.middleware.cors import CORSMiddleware
 
 import asyncio
 import json
@@ -17,6 +18,7 @@ from queue import Queue
 from Modules import get_function_class_by_name
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 TIME_INTERVAL = 0.05
 MESSAGE_MAX_LENGTH = 200
 
@@ -357,9 +359,11 @@ class ClientManager:
         formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(formatter)
 
-        # Add file handler to the logger
-        if not logger.hasHandlers():
-            logger.addHandler(file_handler)
+        # Replace old handlers (logger is cached by name, old handlers may point to deleted files)
+        for h in logger.handlers[:]:
+            logger.removeHandler(h)
+            h.close()
+        logger.addHandler(file_handler)
 
         logger.info(f"---------- Logger initialized for client {client_id} ----------")
 

@@ -4,6 +4,7 @@ logs/
 history/
 
 secrets.json
+settings.json
 run_scripts.sh
 stop_scripts.sh
 *_tmp.json

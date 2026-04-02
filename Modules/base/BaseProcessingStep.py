@@ -301,7 +301,7 @@ class BaseProcessingStep:
         """Process the extracted data. Subclasses can override this method."""
         output_data = {}
         self.add_output(output_data, "result", f"Processed by {self.name}")
-        self.output_to_queue(output_data)
+        self.output_to_queue(output_data, pass_data)
         return
 
     def get_config(self, key, default=None):

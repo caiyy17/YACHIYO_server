@@ -53,6 +53,7 @@ import fractions
 import io
 import json
 import logging
+import os
 import time
 from math import gcd
 from queue import Queue, Empty
@@ -854,9 +855,24 @@ def main():
 
     server = WebRTCServer(args.main_server)
 
+    import aiohttp_cors
+
     app = web.Application()
-    app.router.add_post("/offer/{client_id}", server.handle_offer)
-    app.router.add_get("/status", server.handle_status)
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_headers="*", allow_methods="*",
+        )
+    })
+    cors.add(app.router.add_post("/offer/{client_id}", server.handle_offer))
+    cors.add(app.router.add_get("/status", server.handle_status))
+
+    # Serve webrtc_client.html at root (same-origin, no CORS needed for /offer)
+    app.router.add_static("/static", os.path.dirname(os.path.abspath(__file__)))
+    async def index(request):
+        return web.FileResponse(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "webrtc_client.html")
+        )
+    app.router.add_get("/", index)
 
     async def on_shutdown(app):
         await server.cleanup()

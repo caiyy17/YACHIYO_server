@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebRTC Client</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: monospace; background: #fff; color: #111; padding: 20px; }
+h1 { font-size: 18px; margin-bottom: 16px; }
+
+.row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; }
+label { min-width: 100px; font-size: 13px; }
+input, select { font-family: monospace; font-size: 13px; padding: 4px 8px; border: 1px solid #999; }
+input[type="text"] { width: 240px; }
+
+button { font-family: monospace; font-size: 13px; padding: 6px 16px; border: 1px solid #111;
+  background: #fff; cursor: pointer; }
+button:hover { background: #eee; }
+button:active { background: #ddd; }
+button:disabled { color: #999; border-color: #ccc; cursor: default; }
+button.danger { border-color: #c00; color: #c00; }
+button.danger:hover { background: #fee; }
+
+#talkBtn { font-size: 16px; padding: 12px 32px; user-select: none; -webkit-user-select: none; }
+#talkBtn.active { background: #111; color: #fff; }
+
+.panel { display: flex; gap: 20px; margin-top: 16px; }
+.col { flex: 1; }
+
+video { width: 100%; background: #000; display: block; }
+#log { font-size: 12px; height: 300px; overflow-y: auto; border: 1px solid #ccc;
+  padding: 8px; white-space: pre-wrap; word-break: break-all; background: #fafafa; }
+
+.status { font-size: 12px; color: #666; margin-bottom: 8px; }
+.status .on { color: #090; }
+.status .off { color: #c00; }
+</style>
+</head>
+<body>
+
+<h1>WebRTC Client</h1>
+
+<div class="row">
+  <label>Main Server</label>
+  <input type="text" id="mainServer" value="">
+</div>
+<div class="row">
+  <label>WebRTC Server</label>
+  <input type="text" id="webrtcServer" value="">
+</div>
+<div class="row">
+  <label>Client ID</label>
+  <input type="text" id="clientId" value="">
+</div>
+<div class="row">
+  <label>Pipeline</label>
+  <input type="text" id="pipeline" value="unity_chan_webrtc">
+</div>
+<div class="row">
+  <button id="connectBtn" onclick="connect()">Connect</button>
+  <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+</div>
+
+<div class="status" id="statusLine">
+  Connection: <span class="off">disconnected</span>
+</div>
+
+<div class="row" style="margin-top: 12px;">
+  <button id="talkBtn" disabled>Hold to Talk</button>
+  <button id="cancelBtn" class="danger" onclick="sendCancel()" disabled>Cancel</button>
+</div>
+
+<div class="panel">
+  <div class="col">
+    <div style="font-size: 13px; margin-bottom: 4px;">Received Video</div>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <audio id="remoteAudio" autoplay></audio>
+  </div>
+  <div class="col">
+    <div style="font-size: 13px; margin-bottom: 4px;">Log</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+// Auto-fill server URLs based on current host
+const host = window.location.hostname || 'localhost';
+document.getElementById('mainServer').value = `http://${host}:8910`;
+// Offer uses same origin (page is served from webrtc server)
+document.getElementById('webrtcServer').value = '';
+
+let pc = null;
+let dc = null;
+let localStream = null;
+let canvasStream = null;
+let canvasInterval = null;
+let connected = false;
+
+const logEl = document.getElementById('log');
+function log(msg) {
+  const t = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3});
+  logEl.textContent += `[${t}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text, ok) {
+  document.getElementById('statusLine').innerHTML =
+    `Connection: <span class="${ok ? 'on' : 'off'}">${text}</span>`;
+}
+
+function generateClientId() {
+  return crypto.randomUUID();
+}
+
+// Generate dummy video track from canvas
+function createCanvasVideoTrack(w, h, fps) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#888';
+  ctx.fillRect(0, 0, w, h);
+  const stream = canvas.captureStream(fps);
+  // Update canvas periodically to keep frames flowing
+  canvasInterval = setInterval(() => {
+    ctx.fillStyle = connected ? '#aaa' : '#888';
+    ctx.fillRect(0, 0, w, h);
+  }, 1000 / fps);
+  canvasStream = stream;
+  return stream.getVideoTracks()[0];
+}
+
+async function connect() {
+  const mainServer = document.getElementById('mainServer').value;
+  const webrtcServer = document.getElementById('webrtcServer').value;
+  let clientId = document.getElementById('clientId').value;
+  const pipeline = document.getElementById('pipeline').value;
+
+  if (!clientId) {
+    clientId = generateClientId();
+    document.getElementById('clientId').value = clientId;
+  }
+
+  log(`Registering ${clientId}...`);
+  try {
+    let r = await fetch(`${mainServer}/register/`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({client_id: clientId})
+    });
+    log(`Register: ${(await r.json()).status}`);
+
+    r = await fetch(`${mainServer}/init_pipeline/${clientId}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({config: pipeline, force: true})
+    });
+    if (!r.ok) { log(`Init pipeline failed: ${r.status}`); return; }
+    log(`Pipeline: ${(await r.json()).status}`);
+  } catch(e) { log(`Error: ${e.message}`); return; }
+
+  // Get microphone
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
+    log('Microphone acquired');
+  } catch(e) { log(`Mic error: ${e.message}`); return; }
+
+  // Create PeerConnection
+  pc = new RTCPeerConnection();
+  pc.addTrack(localStream.getAudioTracks()[0], localStream);
+  pc.addTrack(createCanvasVideoTrack(1280, 720, 30));
+
+  // DataChannel
+  dc = pc.createDataChannel('client-signals', {ordered: true});
+  dc.onopen = () => {
+    log('DataChannel open');
+    document.getElementById('talkBtn').disabled = false;
+    document.getElementById('cancelBtn').disabled = false;
+  };
+  dc.onclose = () => log('DataChannel closed');
+
+  // Receive tracks
+  const remoteStream = new MediaStream();
+  pc.ontrack = (e) => {
+    log(`Received ${e.track.kind} track`);
+    remoteStream.addTrack(e.track);
+    if (e.track.kind === 'video') {
+      document.getElementById('remoteVideo').srcObject = remoteStream;
+    } else {
+      document.getElementById('remoteAudio').srcObject = new MediaStream([e.track]);
+    }
+  };
+
+  // Receive DataChannel from server
+  pc.ondatachannel = (e) => {
+    log(`Server DC: ${e.channel.label}`);
+    e.channel.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        // Skip empty data frames
+        if (Object.keys(msg).length === 0) return;
+        if (msg.signal) {
+          log(`Signal: ${msg.signal}`);
+        } else {
+          const display = {};
+          for (const [k,v] of Object.entries(msg)) {
+            if (typeof v === 'string' && v.length > 60) display[k] = v.substring(0,57) + '...';
+            else display[k] = v;
+          }
+          log(`Data: ${JSON.stringify(display)}`);
+        }
+      } catch(err) {}
+    };
+  };
+
+  pc.onconnectionstatechange = () => {
+    log(`Connection: ${pc.connectionState}`);
+    if (pc.connectionState === 'connected') {
+      connected = true;
+      setStatus('connected', true);
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      connected = false;
+      setStatus('disconnected', false);
+    }
+  };
+
+  // Create offer
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  log('Sending offer...');
+  try {
+    const r = await fetch(`${webrtcServer}/offer/${clientId}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sdp: pc.localDescription.sdp, type: pc.localDescription.type,
+        sample_rate: 48000, audio_ptime: 0.02,
+        video_fps: 30, video_width: 1280, video_height: 720, data_fps: 20
+      })
+    });
+    const answer = await r.json();
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    log('Answer received');
+  } catch(e) { log(`Offer error: ${e.message}`); return; }
+
+  document.getElementById('connectBtn').disabled = true;
+  document.getElementById('disconnectBtn').disabled = false;
+}
+
+async function disconnect() {
+  connected = false;
+  if (pc) { pc.close(); pc = null; }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (canvasStream) { canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
+  if (canvasInterval) { clearInterval(canvasInterval); canvasInterval = null; }
+
+  const mainServer = document.getElementById('mainServer').value;
+  const clientId = document.getElementById('clientId').value;
+  try {
+    await fetch(`${mainServer}/unregister/`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({client_id: clientId})
+    });
+  } catch(e) {}
+
+  dc = null;
+  setStatus('disconnected', false);
+  document.getElementById('connectBtn').disabled = false;
+  document.getElementById('disconnectBtn').disabled = true;
+  document.getElementById('talkBtn').disabled = true;
+  document.getElementById('cancelBtn').disabled = true;
+  log('Disconnected');
+}
+
+function sendSignal(signal) {
+  if (dc && dc.readyState === 'open') {
+    dc.send(JSON.stringify({signal}));
+    log(`Sent: ${signal}`);
+  }
+}
+
+function sendCancel() { sendSignal('cancel'); }
+
+// Talk button: press=vad_start, release=vad_end
+const talkBtn = document.getElementById('talkBtn');
+function talkStart(e) {
+  e.preventDefault();
+  if (talkBtn.disabled) return;
+  talkBtn.classList.add('active');
+  talkBtn.textContent = 'Speaking...';
+  sendSignal('vad_start');
+}
+function talkEnd(e) {
+  e.preventDefault();
+  if (talkBtn.disabled) return;
+  talkBtn.classList.remove('active');
+  talkBtn.textContent = 'Hold to Talk';
+  sendSignal('vad_end');
+}
+talkBtn.addEventListener('mousedown', talkStart);
+talkBtn.addEventListener('mouseup', talkEnd);
+talkBtn.addEventListener('mouseleave', (e) => {
+  if (talkBtn.classList.contains('active')) talkEnd(e);
+});
+talkBtn.addEventListener('touchstart', talkStart);
+talkBtn.addEventListener('touchend', talkEnd);
+</script>
+
+</body>
+</html>

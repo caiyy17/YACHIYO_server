@@ -170,7 +170,7 @@
                 ],
                 "next_nodes": [7],
                 "model": "qwen_tts",
-                "voice": "unity_chan"
+                "voice": "test_cn"
             }
         },
         {
@@ -223,8 +223,8 @@
                 "sample_rate": 48000,
                 "frame_samples": 960,
                 "video_fps": 30,
-                "video_width": 320,
-                "video_height": 240
+                "video_width": 1280,
+                "video_height": 720
             }
         }
     ]
