@@ -94,12 +94,10 @@ LiveKit Agents~\cite{livekit} and Daily Bots provide WebRTC infrastructure for c
 \section{Pipeline Model}
 \label{sec:pipeline}
 
-\subsection{DAG Definition}
-
-A pipeline is a JSON configuration listing processing nodes in topological order. Each node has a unique, monotonically increasing ID, a processing function (resolved from a module registry), and a configuration block specifying its data routing (detailed in Section~\ref{sec:routing}) and downstream connections. Variable names are prefixed with the producing node's ID (e.g., \texttt{3\_text}) to avoid namespace collisions. Node IDs need not be contiguous, allowing insertion without renumbering. See Appendix~\ref{app:config} for a complete example.
-
-\subsection{Why Linearization}
+\subsection{DAG Linearization}
 \label{sec:linearization}
+
+A pipeline is a JSON configuration listing processing nodes in topological order. Each node has a unique, monotonically increasing ID, a processing function (resolved from a module registry), and a configuration block specifying its data routing and downstream connections (see Appendix~\ref{app:routing} for details and a complete example). Variable names are prefixed with the producing node's ID (e.g., \texttt{3\_text}) to avoid namespace collisions. Node IDs need not be contiguous, allowing insertion without renumbering.
 
 The pipeline must guarantee \emph{temporal consistency}: outputs corresponding to earlier inputs must arrive before outputs of later inputs, and outputs within a single utterance must arrive in production order. We formalize this property in Section~\ref{sec:temporal}; here we argue why linearization is the natural execution model.
 
@@ -124,7 +122,7 @@ We restrict input DAGs to satisfy:
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Figure placeholder: DAG linearization diagram. Left: DAG with skip-connections. Right: linearized queue chain $Q_0 \rightarrow N_0 \rightarrow Q_1 \rightarrow N_1 \rightarrow \cdots \rightarrow Q_n \rightarrow \text{send\_queue}$, with destination-based routing shown]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[DAG linearization diagram. Left: DAG with skip-connections. Right: linearized queue chain $Q_0 \rightarrow N_0 \rightarrow Q_1 \rightarrow N_1 \rightarrow \cdots \rightarrow Q_n \rightarrow \text{send\_queue}$, with destination-based routing shown]}\vspace{2em}}}
     \caption{DAG linearization. The topological sort produces a linear chain of nodes connected by queues. Messages carry a \texttt{destination} field; intermediate nodes forward messages not addressed to them.}
     \label{fig:linearization}
 \end{figure}
@@ -155,7 +153,7 @@ where $L_k(m_{\text{prev}})$ is node $k$'s processing time for the preceding mes
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Figure placeholder: Streaming timeline. Horizontal axis = time. Rows: LLM (streaming sentences $s_1, s_2, s_3, \ldots$), TTS (synthesizing $s_1$ while LLM produces $s_2$), Client (playing $s_1$ audio while TTS synthesizes $s_2$). Show overlap between stages.]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Streaming timeline. Horizontal axis = time. Rows: LLM (streaming sentences $s_1, s_2, s_3, \ldots$), TTS (synthesizing $s_1$ while LLM produces $s_2$), Client (playing $s_1$ audio while TTS synthesizes $s_2$). Show overlap between stages.]}\vspace{2em}}}
     \caption{Streaming pipeline timeline. The LLM streams sentences incrementally; each sentence is immediately synthesized by TTS and played by the client, overlapping in time.}
     \label{fig:streaming}
 \end{figure}
@@ -173,9 +171,8 @@ L_{\text{batch}} = L_{\text{ASR}} + \sum_{k=1}^{K} L^{\text{LLM}}_k + \sum_{k=1}
 In \textbf{streaming mode}, the client receives the first audio segment as soon as the first sentence is processed:
 \begin{equation}
 \label{eq:stream_first}
-L_{\text{stream}}^{\text{first}} = L_{\text{ASR}} + L^{\text{LLM}}_1 + L_{\text{mid}} + L^{\text{TTS}}_1 + L_{\text{net}}
+L_{\text{stream}}^{\text{first}} = L_{\text{ASR}} + L^{\text{LLM}}_1 + L^{\text{TTS}}_1 + L_{\text{net}}
 \end{equation}
-where $L_{\text{mid}}$ is the total processing time of intermediate nodes between LLM and TTS. When $L_{\text{mid}}$ is small (e.g., a lightweight RAG lookup), it can be omitted from the approximations below; when it is large (e.g., motion generation), the dispatcher--receiver bracket (Section~\ref{sec:parallel}) can parallelize it with TTS.
 
 Subsequent sentences overlap: while TTS synthesizes $s_k$, the LLM generates $s_{k+1}$. Defining $L^{\text{LLM}}_{K+1} = 0$ (no sentence after the last), the total time becomes:
 \begin{equation}
@@ -188,29 +185,8 @@ When TTS dominates ($L^{\text{TTS}}_k \gg L^{\text{LLM}}_{k+1}$ for most $k$), t
 The speedup factor for first-output latency is:
 \begin{equation}
 \label{eq:speedup}
-S = \frac{L_{\text{batch}}}{L_{\text{stream}}^{\text{first}}} = \frac{L_{\text{ASR}} + \sum_k L^{\text{LLM}}_k + \sum_k L^{\text{TTS}}_k + L_{\text{net}}}{L_{\text{ASR}} + L^{\text{LLM}}_1 + L^{\text{TTS}}_1 + L_{\text{net}}}
+S = \frac{L_{\text{batch}}}{L_{\text{stream}}^{\text{first}}}
 \end{equation}
-
-\subsection{Data Routing and Variable Mapping}
-\label{sec:routing}
-
-Each inter-node message is a flat key-value object. Variable names are prefixed with the producing node's ID to avoid collisions. Three routing mechanisms handle data flow without requiring nodes to know the full pipeline topology: (1) \emph{input extraction} selects which upstream fields a node consumes, with ordered fallback sources; (2) \emph{output mapping} maps processing results to prefixed target names; (3) \emph{pass-through forwarding} carries metadata unchanged across nodes that do not consume it (e.g., the LLM's action tag passes through TTS to reach the client). Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \emph{destination} field enables skip-connections to non-adjacent nodes. See Appendix~\ref{app:config} for a concrete configuration example.
-
-\subsection{Signal Propagation: An Analogy with CPU Pipelines}
-\label{sec:signals}
-
-\paragraph{Why signals are needed.}
-A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``voice activity detected'' (\texttt{vad\_start}/\texttt{vad\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
-
-\paragraph{Why signals should not overtake data.}
-If control signals could freely overtake data messages in the queue, ordering guarantees would break: the client might receive \texttt{EoS} before the last audio chunk. This is analogous to the hazard problem in CPU instruction pipelines, where out-of-order execution of control instructions (branches) relative to data instructions causes incorrect results.
-
-\paragraph{Our design: forwarding without processing.}
-Instead of giving signals a separate fast path, we keep them in the \emph{same} queue as data but exempt them from processing. When a signal arrives at a node that does not catch it, the node clears the signal's destination and immediately forwards it to the next queue. The signal thus travels at the speed of queue forwarding ($\sim$$\mu$s per hop) rather than the speed of data processing ($\sim$ms--s per stage)---but only \emph{after} it reaches the head of each queue. A signal does not jump ahead of messages already queued before it; it simply passes through each node's processing step in negligible time. This is analogous to a CPU pipeline's \emph{bypass/forwarding} mechanism: the result is forwarded to where it is needed without waiting for the full stage to complete.
-
-Each node declares which signals it catches. A signal emitted by any node will reach the client directly as long as no downstream node explicitly catches it---creating an express lane within the existing linear structure, without introducing a separate channel.
-
-The one exception requiring out-of-band delivery is cancellation, discussed in Section~\ref{sec:cancel}.
 
 \subsection{Parallel Execution via Dispatcher--Receiver Bracket}
 \label{sec:parallel}
@@ -263,13 +239,35 @@ Within a single utterance, the LLM generates sentences $s_1, s_2, \ldots, s_K$ s
 
 Linearization makes temporal consistency a structural guarantee rather than a runtime enforcement. The dispatcher--receiver bracket (Section~\ref{sec:parallel}) preserves this property by ensuring that all branch messages for $u_i$ are dispatched, processed, and collected before any branch messages for $u_{i+1}$, as shown in the FIFO argument of Section~\ref{sec:parallel}.
 
-\subsection{Cancellation Consistency}
+\subsection{Signals}
+\label{sec:signals}
+
+\paragraph{Why signals are needed.}
+A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``voice activity detected'' (\texttt{vad\_start}/\texttt{vad\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
+
+\paragraph{Why signals should not overtake data.}
+If control signals could freely overtake data messages in the queue, ordering guarantees would break: the client might receive \texttt{EoS} before the last audio chunk. This is analogous to the hazard problem in CPU instruction pipelines, where out-of-order execution of control instructions (branches) relative to data instructions causes incorrect results.
+
+\paragraph{Our design: forwarding without processing.}
+Instead of giving signals a separate fast path, we keep them in the \emph{same} queue as data but exempt them from processing. When a signal arrives at a node that does not catch it, the node clears the signal's destination and immediately forwards it to the next queue. The signal thus travels at the speed of queue forwarding ($\sim$$\mu$s per hop) rather than the speed of data processing ($\sim$ms--s per stage)---but only \emph{after} it reaches the head of each queue. A signal does not jump ahead of messages already queued before it; it simply passes through each node's processing step in negligible time. This is analogous to a CPU pipeline's \emph{bypass/forwarding} mechanism: the result is forwarded to where it is needed without waiting for the full stage to complete.
+
+Each node declares which signals it catches. A signal emitted by any node will reach the client directly as long as no downstream node explicitly catches it---creating an express lane within the existing linear structure, without introducing a separate channel.
+
+The one exception requiring out-of-band delivery is cancellation, discussed in Section~\ref{sec:cancel}.
+
+\subsection{Timestamps and Cancellation}
 \label{sec:cancel}
+
+\paragraph{First-principles motivation.}
+The causal origin of a conversational event is the client: the user spoke. Therefore, the timestamp that identifies the event should be assigned by the client at the moment of input. If the server assigned timestamps instead, variable network latency would corrupt the ordering: two utterances sent in quick succession might receive server-side timestamps in the wrong order, or the same order but with distorted intervals. By using the client's wall clock, the timestamp reflects the true causal ordering of user actions.
+
+\paragraph{Design.}
+Every message carries a \texttt{timestamp} field, preferring the client-provided value (wall clock at input time); if absent, the server falls back to its own clock. The timestamp is set once at utterance start and propagated unchanged through all pipeline stages as a reserved field. The client uses it to associate responses with utterances, discard stale output, and maintain ordering under concurrency.
 
 \paragraph{Why cancellation needs out-of-band delivery.}
 When the user interrupts (barge-in), every pipeline node must \emph{immediately} stop processing stale messages. If the cancel signal traveled through the data queue, it would wait behind the very messages it intends to invalidate---defeating its purpose. This is analogous to a CPU pipeline \emph{flush}: upon a branch misprediction, all in-flight instructions must be discarded simultaneously, not sequentially.
 
-\paragraph{Design.}
+\paragraph{Cancellation design.}
 Each node has a dedicated \texttt{cancel\_queue} (parallel to its data queue), checked before each dequeue operation. When the client sends $\texttt{cancel}(T)$, the server broadcasts $T$ to every node's cancel queue. Each node updates its local $\texttt{cancel\_timestamp}$; any subsequently dequeued message with timestamp $\leq \texttt{cancel\_timestamp}$ is silently dropped.
 
 The send queue performs a final filter: before transmitting any message to the client, it verifies that the message's timestamp exceeds the current cancel timestamp. This provides a safety net for messages that were already past intermediate nodes when the cancel arrived.
@@ -282,18 +280,6 @@ After $\text{cancel}(T)$ is issued, consider any message $m$ with $\text{timesta
     \item \textbf{Already in the send queue}: the send queue checks the cancel timestamp before each transmission and drops $m$.
 \end{itemize}
 In all three cases, $m$ (or any output derived from $m$) is never delivered to the client after $\text{cancel}(T)$, satisfying cancellation consistency. \qed
-
-% ============================================================
-\section{Client-Server Synchronization}
-\label{sec:sync}
-
-\subsection{Timestamp Mechanism}
-
-\paragraph{First-principles motivation.}
-The causal origin of a conversational event is the client: the user spoke. Therefore, the timestamp that identifies the event should be assigned by the client at the moment of input. If the server assigned timestamps instead, variable network latency would corrupt the ordering: two utterances sent in quick succession might receive server-side timestamps in the wrong order, or the same order but with distorted intervals. By using the client's wall clock, the timestamp reflects the true causal ordering of user actions.
-
-\paragraph{Design.}
-Every message carries a \texttt{timestamp} field, preferring the client-provided value (wall clock at input time); if absent, the server falls back to its own clock. The timestamp is set once at utterance start and propagated unchanged through all pipeline stages as a reserved field. The client uses it to associate responses with utterances, discard stale output, and maintain ordering under concurrency.
 
 % ============================================================
 \section{WebRTC: Frame-Level Streaming}
@@ -311,7 +297,7 @@ Messages are produced only on events (user speech, LLM output, TTS completion); 
 Audio and video tracks produce frames at fixed rates (50\,fps, 30\,fps) regardless of activity, emitting silence when idle. The timing origin is the server's monotonic frame clock.
 
 \paragraph{Paradigm adapters.}
-Two adapter nodes bridge the paradigms: AudioCollector assembles continuous microphone frames into a single WAV buffer on \texttt{vad\_end} (frame $\rightarrow$ event); FrameSplitter splits TTS audio into 20\,ms PCM frames (event $\rightarrow$ frame). The core pipeline remains purely event-driven.
+Two adapter nodes bridge the paradigms: \textbf{AudioCollector} assembles continuous microphone frames into a single WAV buffer on \texttt{vad\_end} (frame $\rightarrow$ event); \textbf{FrameSplitter} is a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data (event $\rightarrow$ frame). FrameSplitter overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
 
 \subsection{Motivation: From Sentence-Level to Frame-Level}
 
@@ -323,21 +309,11 @@ In WebSocket mode, the message boundary is a complete TTS segment ($\sim$0.5--1\
 \end{itemize}
 The output becomes a continuous stream rather than discrete chunks.
 
-\subsection{Pipeline Extension for WebRTC}
-
-Two adapter nodes are inserted at the boundaries of the pipeline:
-\begin{itemize}[nosep]
-    \item \textbf{AudioCollector} (head): collects incoming WebRTC audio frames between \texttt{vad\_start} and \texttt{vad\_end} signals, assembles them into a complete WAV buffer, and pushes it to the ASR node.
-    \item \textbf{FrameSplitter} (tail): receives complete TTS audio output (WAV), resamples to WebRTC rate, splits into synchronized frame groups, and pushes them to the WebRTC tracks.
-\end{itemize}
-
-The core pipeline (ASR $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ TTS) remains unchanged. AudioCollector and FrameSplitter are \emph{paradigm adapters}---they translate between event-driven and frame-driven data representations at the pipeline boundary, allowing the core pipeline to remain purely event-driven regardless of the transport protocol.
-
 \subsection{Multi-Modal Frame Synchronization}
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Figure placeholder: Frame group diagram. One 100ms group containing 5 audio frames (20ms each), 3 video frames (33ms each), and 2 data slots (50ms each). Show GCD calculation: GCD(50, 30, 20) = 10 $\rightarrow$ 100ms group period.]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Frame group diagram. One 100\,ms group containing 5 audio frames (20\,ms each), 3 video frames (33\,ms each), and 2 data slots (50\,ms each). GCD(50, 30, 20) = 10 $\rightarrow$ 100\,ms group period.]}\vspace{2em}}}
     \caption{Multi-modal frame synchronization. Each 100\,ms group bundles 5 audio frames, 3 video frames, and 2 data slots into an atomic synchronization unit.}
     \label{fig:frame_sync}
 \end{figure}
@@ -359,6 +335,8 @@ This is the \emph{finest} common synchronization granularity---any shorter perio
 
 The group is the atomic synchronization unit: the client consumes one group per $T_g$, dispatching exactly $n_a$ audio frames, $n_v$ video frames, and $n_d$ data slots to their respective output channels. Metadata (text, action, emotion) is placed in the first data slot of the first group for each TTS segment; remaining data slots are null. This guarantees that no modality drifts ahead of or behind others within a group.
 
+All frame rates and video resolution are configurable per session; the GCD calculation adapts automatically (e.g., 24\,fps video with 12\,fps data yields $R_g = 2$, $T_g = 500$\,ms).
+
 \subsection{Comparison: WebSocket vs.\ WebRTC Mode}
 
 \begin{table}[h]
@@ -379,8 +357,8 @@ The group is the atomic synchronization unit: the client consumes one group per 
 \end{table}
 
 % ============================================================
-\section{Resource Sharing and Scalability}
-\label{sec:scaling}
+\section{System Design}
+\label{sec:system}
 
 \subsection{Per-User Pipeline, Shared Services}
 
@@ -389,7 +367,7 @@ Pipeline state consists of threads, queues, and per-user context (conversation h
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Figure placeholder: System architecture diagram showing Unity client $\leftrightarrow$ WebSocket/WebRTC $\leftrightarrow$ FastAPI server $\leftrightarrow$ Standalone services (ASR, LLM, TTS, VectorDB)]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[System architecture. Unity client $\leftrightarrow$ WebSocket/WebRTC $\leftrightarrow$ FastAPI server $\leftrightarrow$ Standalone services (ASR, LLM, TTS, VectorDB)]}\vspace{2em}}}
     \caption{System architecture. The client communicates with the pipeline server via WebSocket or WebRTC. The pipeline server orchestrates per-user pipeline instances, each calling shared standalone model services via HTTP APIs.}
     \label{fig:architecture}
 \end{figure}
@@ -402,71 +380,13 @@ Each user gets an exclusive pipeline instance (threads, queues, conversation sta
     \item Vector DB: BGE embedding + FAISS server (GPU/CPU)
 \end{itemize}
 
-Pipeline nodes are thin HTTP clients: they create an OpenAI SDK client, call the API, and process the response. Multiple users' pipelines share the same model servers concurrently.
+Pipeline nodes are thin HTTP clients: they create an OpenAI SDK client, call the API, and process the response. Multiple users' pipelines share the same model servers concurrently. All services expose OpenAI-compatible endpoints, so swapping a local model for a cloud API requires only a configuration change.
 
-\subsection{OpenAI-Compatible API Layer}
-
-\paragraph{Motivation.}
-Pipeline nodes communicate with model services via HTTP, which provides environment isolation (each service runs in its own process with its own dependencies). The remaining design choice is the HTTP protocol: a custom API or an existing standard. The OpenAI API has become the de facto standard in the LLM ecosystem---every major model serving framework (vLLM, Ollama, TGI) already implements it, and client SDKs are freely available. Adopting this standard minimizes integration effort: swapping a local model for a cloud API (or vice versa) requires only changing the configuration file, with no code modification.
-
-All standalone services expose OpenAI-compatible endpoints:
-\begin{itemize}[nosep]
-    \item ASR: \texttt{POST /v1/audio/transcriptions} (Whisper API format)
-    \item LLM: \texttt{POST /v1/chat/completions} (Chat Completions API format)
-    \item TTS: \texttt{POST /v1/audio/speech} (TTS API format)
-\end{itemize}
-
-Model selection is config-driven: each model has a JSON configuration file specifying \texttt{api\_base}, \texttt{api\_key}, \texttt{model}, and \texttt{extra} parameters. Each module makes an initialization call at startup to verify service availability and trigger any needed model loading (e.g., TTS voice model switching).
-
-\subsection{Comparison with Monolithic Execution}
-
-Systems like ComfyUI~\cite{comfyui} execute all nodes within a single runtime, loading every model into the same process and GPU memory space. While this avoids inter-process communication overhead, it creates several constraints that conflict with the requirements of a multi-user, real-time conversational system:
-
-\begin{enumerate}[nosep]
-    \item \textbf{Resource sharing}: in a monolithic system, each session must load its own model instances or implement complex in-process model multiplexing. In our architecture, a single GPU-hosted model server serves many concurrent users transparently, with the serving framework (e.g., vLLM's continuous batching) handling request scheduling.
-    \item \textbf{Independent scaling}: if the TTS service becomes the bottleneck, it can be replicated to additional GPUs without touching the pipeline or other services. In a monolithic system, scaling one component requires replicating the entire runtime.
-    \item \textbf{Environment isolation}: each service runs in its own environment (e.g., different PyTorch versions for TTS and LLM), and swapping a model from local to cloud is a configuration edit.
-    \item \textbf{Fault isolation}: a crash in one service does not bring down the entire system; other users' pipelines continue operating.
-\end{enumerate}
-
-The trade-off is HTTP overhead per call ($\sim$1--10\,ms), which is negligible when per-node inference time is 30\,ms--1\,s.
-
-% ============================================================
-\section{Implementation}
-\label{sec:implementation}
-
-\subsection{Technology Stack}
+\subsection{Implementation Overview}
 
 The server is implemented in Python 3.12 using FastAPI and uvicorn for HTTP/WebSocket serving, aiortc for WebRTC, and the OpenAI Python SDK for model service calls. Each client follows the lifecycle: \texttt{register} $\rightarrow$ \texttt{init\_pipeline} (from a JSON configuration) $\rightarrow$ \texttt{connect} (WebSocket or WebRTC) $\rightarrow$ pipeline runs $\rightarrow$ \texttt{unregister}. The pipeline is instantiated per-client with a dedicated thread per node and inter-node queues.
 
-The client is built with Unity 2022 (C\#) using WebSocket-Sharp and Unity WebRTC for communication, and the Animator controller with blend shapes for character animation. The system comprises $\sim$15 pipeline module types, dynamically discovered via a module registry. All configuration is JSON-based: pipeline configs, dataset configs, and model configs. Deployment uses per-service conda environments with a startup script that launches services sequentially and verifies port readiness.
-
-\subsection{Client Architecture}
-
-The Unity client mirrors the server's pipeline design: modules (VAD, recording, WebSocket communication, audio playback, animation) are connected in a sequential queue chain with the same destination-based routing, timestamp propagation, and cancel-queue mechanism. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
-
-\begin{figure}[h]
-    \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[Figure placeholder: State machine diagram. Four states: Idle, Ready, Listening, Answering. Transitions: Idle $\xrightarrow{\text{ready\_start}}$ Ready $\xrightarrow{\text{listening\_start}}$ Listening $\xrightarrow{\text{listening\_end}}$ Answering $\xrightarrow{\text{answering\_end}}$ Ready. Dashed arrow: any state $\xrightarrow{\text{cancel}}$ Idle.]}\vspace{2em}}}
-    \caption{Client-side state machine governing agent behavior.}
-    \label{fig:state_machine}
-\end{figure}
-
-A four-state machine governs the interaction flow:
-\begin{itemize}[nosep]
-    \item \textbf{Idle}: character plays idle animation, awaiting activation.
-    \item \textbf{Ready}: pre-listening countdown; times out to Idle if no input arrives.
-    \item \textbf{Listening}: dual-threshold VAD detects speech; audio is recorded and sent to the server.
-    \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. Barge-in returns to Listening.
-\end{itemize}
-
-The state machine is purely client-side; the server does not track client state. For motion generation pipelines, the client includes a SMPLH motion player that converts received joint parameters into real-time skeletal animation via per-frame interpolation.
-
-\subsection{LLM Node: Tavern-Style Conversation Workflow}
-
-The LLM node internally implements a structured dialogue management workflow inspired by the SillyTavern character card format:
-
-Multi-turn history is persisted per client. Character personality is defined in external ``lorebook'' files whose entries are activated by keyword or vector similarity and injected into the prompt at each turn. The LLM streams tokens, segmented into sentences by the StreamCutter; action tags are parsed for downstream animation mapping; tool calls are executed in a loop. This workflow runs entirely within the LLM node---upstream and downstream nodes are unaware of it.
+The client is built with Unity 6 (C\#) using WebSocket-Sharp and Unity WebRTC for communication, and the Animator controller with blend shapes for character animation. The system comprises $\sim$15 pipeline module types, dynamically discovered via a module registry. All configuration is JSON-based: pipeline configs, dataset configs, and model configs. Deployment uses per-service conda environments with a startup script that launches services sequentially and verifies port readiness.
 
 % ============================================================
 \section{Evaluation}
@@ -514,6 +434,8 @@ The local pipeline achieves a first-audio latency of $\sim$1.1\,s, with TTS synt
     \end{tabular}
 \end{table}
 
+Table~\ref{tab:multiuser} reports a separate multi-user experiment (single run per configuration); the 1-user baseline differs slightly from Table~\ref{tab:latency} (which averages 4 runs) due to natural variance.
+
 When $U$ concurrent users share services on a single GPU, latency depends on the serialization behavior of each service. The LLM server (vLLM) supports continuous batching and can partially parallelize concurrent requests, but the TTS server (Qwen3-TTS) processes requests sequentially. Modeling the TTS as the serialization bottleneck, the expected first-audio latency for user $u$ (ordered by arrival) is approximately:
 \begin{equation}
 \label{eq:multiuser}
@@ -526,19 +448,6 @@ where $L_{\text{bottleneck}}$ is the processing time of the slowest shared servi
 \end{equation}
 
 Table~\ref{tab:multiuser} confirms this model: for 1--3 users, first-audio latency increases by $\sim$950\,ms per additional user, consistent with TTS serialization ($\sim$875\,ms plus scheduling overhead). With $R$ replicas of the bottleneck service, the effective capacity scales as $\bar{L} \approx L_{\text{stream}}^{\text{first}} + \frac{U - 1}{2R} \cdot L_{\text{bottleneck}}$.
-
-\subsection{WebRTC Streaming}
-
-In WebRTC mode, the pipeline successfully delivers frame-level synchronized output over a 45-second test session:
-\begin{itemize}[nosep]
-    \item 901 DataChannel messages (one 100\,ms frame group each)
-    \item 2262 audio frames sent, 2259 received (48\,kHz stereo)
-    \item 1357 video frames sent and received (30\,fps)
-    \item ASR correctly transcribes the test input via the AudioCollector--ASR path
-    \item Audio, video, and data remain synchronized throughout
-\end{itemize}
-
-The FrameSplitter overhead is negligible ($<$1\,ms per group), confirming that frame-level re-granularization does not add meaningful latency.
 
 \subsection{Configurability}
 
@@ -588,7 +497,7 @@ Since MotionGen and TTS are independent (both consume LLM output), they can be p
 The improvement ($113$\,ms, 6.9\%) is modest because the MotionGen service adds $\sim$540\,ms to the pipeline (sequential first audio $1649$\,ms vs.\ standard $1110$\,ms), but TTS ($\sim$875\,ms) still dominates the critical path in the parallel configuration. The theoretical maximum improvement equals the MotionGen latency ($\sim$540\,ms), but is limited by the dispatcher--receiver overhead and the fact that both branches share GPU resources.
 
 % ============================================================
-\section{Discussion}
+\section{Discussion and Conclusion}
 \label{sec:discussion}
 
 \paragraph{Limitations.}
@@ -597,10 +506,7 @@ The dispatcher--receiver bracket (Section~\ref{sec:parallel}) supports fork--joi
 \paragraph{Future Work.}
 Planned extensions include: (1) nested dispatcher--receiver brackets for multi-level parallelism; (2) vision input modality (camera $\rightarrow$ image understanding); (3) adaptive frame rate synchronization for WebRTC; (4) multi-GPU TTS serving for concurrent multi-character support.
 
-% ============================================================
-\section{Conclusion}
-\label{sec:conclusion}
-
+\paragraph{Conclusion.}
 We presented YACHIYO, a linearized pipeline architecture for real-time embodied conversational agents. The key contributions are:
 \begin{enumerate}[nosep]
     \item A DAG-to-linear-chain transformation that ensures correct execution order while enabling streaming at every stage, reducing first-output latency from the sum of all stage latencies to the critical path of a single sentence.
@@ -614,6 +520,7 @@ We presented YACHIYO, a linearized pipeline architecture for real-time embodied 
 On a single NVIDIA RTX 5090 GPU hosting all services, the system achieves $\sim$1.0\,s first-audio latency for a fully local pipeline and supports up to 3 concurrent users within interactive latency bounds ($<$3\,s first audio).
 
 % ============================================================
+\newpage
 \bibliographystyle{plain}
 \begin{thebibliography}{9}
 
@@ -682,7 +589,6 @@ Under assumptions (A1)--(A3), $G$ can be executed correctly by a linear chain $v
     \end{itemize}
     By (A3), $v_j$ can correctly process the message because all its dependencies (from nodes earlier in the topological order) have already been processed and their outputs forwarded. For multi-dependency nodes, all predecessors are placed earlier in the linearization, so their outputs arrive at $v_j$ in the correct order. By (A3), $v_j$'s output depends only on messages it has already received, so it can accumulate inputs from predecessors via internal state and produce its output upon receiving the final dependency---no external synchronization is required.
 
-    \item \textbf{Bandwidth optimization via variable filtering.} To avoid unnecessary data transfer, each node specifies \texttt{input\_vars} (fields it needs) and \texttt{pass\_vars} (fields to forward). Fields not listed in either are discarded. This reduces the message size at each hop without affecting correctness.
 \end{enumerate}
 
 \paragraph{Trade-off: serialization of parallel nodes.}
@@ -694,10 +600,19 @@ where $L_k$ is the processing time of node $k$ for the preceding message.
 
 For independent nodes that both process the same message, reordering does not reduce the combined latency---the total is always $\sum L_k$. The dispatcher--receiver bracket (Section~\ref{sec:parallel}) reduces this to $\max(L_k)$.
 
-\section{Pipeline Configuration Example}
-\label{app:config}
+% ============================================================
+\section{Data Routing and Configuration}
+\label{app:routing}
 
-A complete pipeline configuration for the \texttt{unity\_chan} character:
+Each inter-node message is a flat key-value object. Variable names are prefixed with the producing node's ID to avoid collisions (e.g., \texttt{3\_text}). Three routing mechanisms handle data flow without requiring nodes to know the full pipeline topology:
+
+\begin{itemize}[nosep]
+    \item \textbf{input\_vars}: selects which upstream fields a node consumes, with ordered fallback sources.
+    \item \textbf{output\_vars}: maps processing results to prefixed target names.
+    \item \textbf{pass\_vars}: carries metadata unchanged across nodes that do not consume it (e.g., the LLM's action tag passes through TTS to reach the client).
+\end{itemize}
+
+Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \texttt{destination} field enables skip-connections to non-adjacent nodes. Node IDs need not be contiguous but must be monotonically increasing.
 
 \begin{lstlisting}[caption={Pipeline configuration (simplified).}]
 {
@@ -707,11 +622,9 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
       "function": "call_openai_asr",
       "config": {
         "input_vars": [{"input_name": "audio_file",
-                        "sources": ["audio_file"]}],
+                        "source": "audio_file"}],
         "output_vars": [{"output_name": "result",
-                         "targets": ["1_text"]},
-                        {"output_name": "language",
-                         "targets": ["1_language"]}],
+                         "target": "1_text"}],
         "next_nodes": [3],
         "model": "qwen_asr"
       }
@@ -721,11 +634,11 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
       "function": "call_openai_llm",
       "config": {
         "input_vars": [{"input_name": "prompt",
-                        "sources": ["1_text"]}],
+                        "source": "1_text"}],
         "output_vars": [{"output_name": "text",
-                         "targets": ["3_text"]},
+                         "target": "3_text"},
                         {"output_name": "action",
-                         "targets": ["3_action"]}],
+                         "target": "3_action"}],
         "next_nodes": [5],
         "model": "qwen"
       }
@@ -735,11 +648,11 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
       "function": "call_data_query_link",
       "config": {
         "input_vars": [{"input_name": "prompt",
-                        "sources": ["3_action"]}],
-        "pass_vars": [{"sources": ["3_text"],
-                       "targets": ["5_text"]}],
+                        "source": "3_action"}],
+        "pass_vars": [{"source": "3_text",
+                       "target": "5_text"}],
         "output_vars": [{"output_name": "result",
-                         "targets": ["5_action"]}],
+                         "target": "5_action"}],
         "next_nodes": [6]
       }
     },
@@ -748,11 +661,11 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
       "function": "call_openai_tts",
       "config": {
         "input_vars": [{"input_name": "text",
-                        "sources": ["5_text"]}],
-        "pass_vars": [{"sources": ["5_action"],
-                       "targets": ["action"]}],
+                        "source": "5_text"}],
+        "pass_vars": [{"source": "5_action",
+                       "target": "action"}],
         "output_vars": [{"output_name": "audio_file",
-                         "targets": ["audio_data"]}],
+                         "target": "audio_data"}],
         "next_nodes": [],
         "model": "qwen_tts"
       }
@@ -762,5 +675,75 @@ A complete pipeline configuration for the \texttt{unity\_chan} character:
 \end{lstlisting}
 
 Note: \texttt{node\_id} values (1, 3, 5, 6) are non-contiguous but monotonically increasing, allowing future insertion of new nodes (e.g., node 2 or 4) without renumbering existing nodes.
+
+% ============================================================
+\section{Implementation Details}
+\label{app:details}
+
+\subsection{OpenAI-Compatible API Layer}
+
+\paragraph{Motivation.}
+Pipeline nodes communicate with model services via HTTP, which provides environment isolation (each service runs in its own process with its own dependencies). The remaining design choice is the HTTP protocol: a custom API or an existing standard. The OpenAI API has become the de facto standard in the LLM ecosystem---every major model serving framework (vLLM, Ollama, TGI) already implements it, and client SDKs are freely available. Adopting this standard minimizes integration effort: swapping a local model for a cloud API (or vice versa) requires only changing the configuration file, with no code modification.
+
+All standalone services expose OpenAI-compatible endpoints:
+\begin{itemize}[nosep]
+    \item ASR: \texttt{POST /v1/audio/transcriptions} (Whisper API format)
+    \item LLM: \texttt{POST /v1/chat/completions} (Chat Completions API format)
+    \item TTS: \texttt{POST /v1/audio/speech} (TTS API format)
+\end{itemize}
+
+Model selection is config-driven: each model has a JSON configuration file specifying \texttt{api\_base}, \texttt{api\_key}, \texttt{model}, and \texttt{extra} parameters. Each module makes an initialization call at startup to verify service availability and trigger any needed model loading (e.g., TTS voice model switching).
+
+\subsection{Comparison with Monolithic Execution}
+
+Systems like ComfyUI~\cite{comfyui} execute all nodes within a single runtime, loading every model into the same process and GPU memory space. While this avoids inter-process communication overhead, it creates several constraints that conflict with the requirements of a multi-user, real-time conversational system:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Resource sharing}: in a monolithic system, each session must load its own model instances or implement complex in-process model multiplexing. In our architecture, a single GPU-hosted model server serves many concurrent users transparently, with the serving framework (e.g., vLLM's continuous batching) handling request scheduling.
+    \item \textbf{Independent scaling}: if the TTS service becomes the bottleneck, it can be replicated to additional GPUs without touching the pipeline or other services. In a monolithic system, scaling one component requires replicating the entire runtime.
+    \item \textbf{Environment isolation}: each service runs in its own environment (e.g., different PyTorch versions for TTS and LLM), and swapping a model from local to cloud is a configuration edit.
+    \item \textbf{Fault isolation}: a crash in one service does not bring down the entire system; other users' pipelines continue operating.
+\end{enumerate}
+
+The trade-off is HTTP overhead per call ($\sim$1--10\,ms), which is negligible when per-node inference time is 30\,ms--1\,s.
+
+\subsection{Client Architecture}
+
+The Unity client mirrors the server's pipeline design: modules (VAD, recording, WebSocket communication, audio playback, animation) are connected in a sequential queue chain with the same destination-based routing, timestamp propagation, and cancel-queue mechanism. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
+
+\begin{figure}[h]
+    \centering
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[State machine. Four states: Idle, Ready, Listening, Answering. Transitions: Idle $\xrightarrow{\text{ready\_start}}$ Ready $\xrightarrow{\text{listening\_start}}$ Listening $\xrightarrow{\text{listening\_end}}$ Answering $\xrightarrow{\text{answering\_end}}$ Ready. Dashed arrow: any state $\xrightarrow{\text{cancel}}$ Idle.]}\vspace{2em}}}
+    \caption{Client-side state machine governing agent behavior.}
+    \label{fig:state_machine}
+\end{figure}
+
+A four-state machine governs the interaction flow:
+\begin{itemize}[nosep]
+    \item \textbf{Idle}: character plays idle animation, awaiting activation.
+    \item \textbf{Ready}: pre-listening countdown; times out to Idle if no input arrives.
+    \item \textbf{Listening}: dual-threshold VAD detects speech; audio is recorded and sent to the server.
+    \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. Barge-in returns to Listening.
+\end{itemize}
+
+The state machine is purely client-side; the server does not track client state. For motion generation pipelines, the client includes a SMPLH motion player that converts received joint parameters into real-time skeletal animation via per-frame interpolation.
+
+\subsection{LLM Workflow}
+
+The LLM node internally implements a structured dialogue management workflow inspired by the SillyTavern character card format:
+
+Multi-turn history is persisted per client. Character personality is defined in external ``lorebook'' files whose entries are activated by keyword or vector similarity and injected into the prompt at each turn. The LLM streams tokens, segmented into sentences by the StreamCutter; action tags are parsed for downstream animation mapping; tool calls are executed in a loop. This workflow runs entirely within the LLM node---upstream and downstream nodes are unaware of it.
+
+\subsection{Backpressure}
+
+Each inter-node queue accepts an optional \texttt{max\_queue\_size} parameter. When a producer attempts to enqueue into a full queue, the \texttt{put()} call blocks until the consumer drains a slot. The send queue supports a separate \texttt{send\_queue\_max\_size} for the same purpose.
+
+\subsection{SpanProcessingStep}
+
+Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{vad\_start} and \texttt{vad\_end}). The \texttt{SpanProcessingStep} base class provides: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+
+\subsection{Connection Lifecycle}
+
+When a WebSocket or WebRTC connection closes, the server automatically disposes the client's pipeline, killing all node threads and clearing queues. For WebRTC, a \texttt{connection\_start} signal is sent upon WebSocket establishment, allowing clock-driven modules to begin output only after the transport is ready.
 
 \end{document}
