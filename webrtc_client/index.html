@@ -93,7 +93,6 @@ let pc = null;
 let dc = null;
 let localStream = null;
 let canvasStream = null;
-let canvasInterval = null;
 let connected = false;
 
 const logEl = document.getElementById('log');
@@ -113,22 +112,15 @@ function generateClientId() {
 }
 
 // Generate dummy video track from canvas
-function createCanvasVideoTrack(w, h, fps) {
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#888';
-  ctx.fillRect(0, 0, w, h);
-  const stream = canvas.captureStream(fps);
-  canvasStream = stream;
-  canvasInterval = setInterval(() => {
-    const r = Math.random() * 255 | 0;
-    const g = Math.random() * 255 | 0;
-    const b = Math.random() * 255 | 0;
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(0, 0, w, h);
-  }, 1000 / fps);
-  return stream.getVideoTracks()[0];
+async function createPlaceholderVideoTrack(w, h, fps) {
+  // Load a pre-generated placeholder video, loop it, captureStream
+  const video = document.createElement('video');
+  video.src = `/static/placeholder_${w}x${h}.webm`;
+  video.loop = true;
+  video.muted = true;
+  await video.play();
+  canvasStream = video.captureStream();
+  return canvasStream.getVideoTracks()[0];
 }
 
 async function connect() {
@@ -164,10 +156,10 @@ async function connect() {
     log('Microphone acquired');
   } catch(e) { log(`Mic error: ${e.message}`); return; }
 
-  // Create PeerConnection
+  // Create PeerConnection with placeholder video (30fps guaranteed)
   pc = new RTCPeerConnection();
   pc.addTrack(localStream.getAudioTracks()[0], localStream);
-  pc.addTrack(createCanvasVideoTrack(1280, 720, 30));
+  pc.addTrack(await createPlaceholderVideoTrack(1280, 720, 30));
 
   // DataChannel
   dc = pc.createDataChannel('client-signals', {ordered: true});
@@ -251,7 +243,6 @@ async function disconnect() {
   if (pc) { pc.close(); pc = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   if (canvasStream) { canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
-  if (canvasInterval) { clearInterval(canvasInterval); canvasInterval = null; }
 
   const mainServer = document.getElementById('mainServer').value;
   const clientId = document.getElementById('clientId').value;

@@ -1025,7 +1025,8 @@ def setup_logger():
     # Stats logger: writes to file for long-session analysis
     stats_logger.setLevel(logging.INFO)
     stats_logger.propagate = False
-    fh = logging.FileHandler("webrtc_stats.log", mode="w")
+    os.makedirs("logs", exist_ok=True)
+    fh = logging.FileHandler("logs/webrtc_stats.log", mode="w")
     fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     stats_logger.addHandler(fh)
 
@@ -1051,11 +1052,12 @@ def main():
     cors.add(app.router.add_post("/offer/{client_id}", server.handle_offer))
     cors.add(app.router.add_get("/status", server.handle_status))
 
-    # Serve webrtc_client.html at root (same-origin, no CORS needed for /offer)
-    app.router.add_static("/static", os.path.dirname(os.path.abspath(__file__)))
+    # Serve webrtc_client/ at root
+    client_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webrtc_client")
+    app.router.add_static("/static", client_dir)
     async def index(request):
         return web.FileResponse(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "webrtc_client.html")
+            os.path.join(client_dir, "index.html")
         )
     app.router.add_get("/", index)
 
