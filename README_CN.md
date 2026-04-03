@@ -53,10 +53,11 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 
 | 配置                | Pipeline                                                     | 说明                   |
 | ------------------- | ------------------------------------------------------------ | ---------------------- |
-| `demo`              | ASR → LLM → TTS                                              | 最小对话               |
-| `unity_chan`        | ASR → LLM → DataQuery → TTS                                  | 对话 + RAG 动作匹配    |
-| `unity_chan_webrtc` | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter | WebRTC 帧级流式传输    |
-| `unity_chan_smpl`   | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive             | SMPLH 动作生成（并行） |
+| `demo`                | ASR → LLM → TTS                                                       | 最小对话               |
+| `unity_chan_default`  | ASR → LLM → DataQuery → TTS                                           | 对话 + RAG 动作匹配    |
+| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter          | WebRTC 帧级流式传输    |
+| `unity_chan_smpl`     | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive                      | SMPLH 动作生成（并行） |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber 弹幕直播        |
 
 ## 节点类型
 

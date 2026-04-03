@@ -53,10 +53,11 @@ Each service runs in its own conda environment. Replace any service with any Ope
 
 | Config              | Pipeline                                                     | Description                           |
 | ------------------- | ------------------------------------------------------------ | ------------------------------------- |
-| `demo`              | ASR → LLM → TTS                                              | Minimal conversation                  |
-| `unity_chan`        | ASR → LLM → DataQuery → TTS                                  | Conversation with RAG action matching |
-| `unity_chan_webrtc` | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter | WebRTC frame-level streaming          |
-| `unity_chan_smpl`   | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive             | SMPLH motion generation (parallel)    |
+| `demo`                | ASR → LLM → TTS                                                       | Minimal conversation                  |
+| `unity_chan_default`  | ASR → LLM → DataQuery → TTS                                           | Conversation with RAG action matching |
+| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter          | WebRTC frame-level streaming          |
+| `unity_chan_smpl`     | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive                      | SMPLH motion generation (parallel)    |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber danmaku livestream             |
 
 ## Node Types
 
