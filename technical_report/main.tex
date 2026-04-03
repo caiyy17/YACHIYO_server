@@ -738,9 +738,23 @@ Multi-turn history is persisted per client. Character personality is defined in 
 
 Each inter-node queue accepts an optional \texttt{max\_queue\_size} parameter. When a producer attempts to enqueue into a full queue, the \texttt{put()} call blocks until the consumer drains a slot. The send queue supports a separate \texttt{send\_queue\_max\_size} for the same purpose.
 
+\subsection{BaseProcessingStep}
+
+Every pipeline node extends \texttt{BaseProcessingStep}, which implements the core execution loop described in Section~\ref{sec:pipeline}. Each instance runs in a dedicated thread and provides:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
+    \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
+    \item \textbf{Signal handling}: each node declares a \texttt{catch\_signal\_set}; signals not in this set are forwarded immediately without waiting behind data messages (Section~\ref{sec:signals}).
+    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancellation}).
+    \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
+\end{enumerate}
+
+Subclasses override a single \texttt{process()} method containing the node-specific logic. The base class handles all pipeline mechanics, so module authors need not reason about routing, ordering, or cancellation.
+
 \subsection{SpanProcessingStep}
 
-Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{vad\_start} and \texttt{vad\_end}). The \texttt{SpanProcessingStep} base class provides: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{vad\_start} and \texttt{vad\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
 
 \subsection{Connection Lifecycle}
 
