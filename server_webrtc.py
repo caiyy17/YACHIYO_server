@@ -92,6 +92,7 @@ VIDEO_CLOCK_RATE = 90000  # RTP clock rate for video (fixed by RTP spec)
 CANCEL_TIMESTAMP_OFFSET = -0.15
 
 logger = logging.getLogger("server_webrtc")
+stats_logger = logging.getLogger("webrtc_stats")
 
 
 # ============================================================
@@ -134,7 +135,7 @@ class GroupDispatcher:
             except Empty:
                 # No group available — fill with empty data
                 self._fill_empty()
-                return
+                return False
 
             # Discard cancelled groups
             if msg.get("timestamp", float("inf")) < cancel_timestamp:
@@ -177,7 +178,7 @@ class GroupDispatcher:
                     self._data_buffer.append(d)
 
             if has_media:
-                return
+                return True
             # Signal-only message — continue to next
 
     def _fill_empty(self):
@@ -215,21 +216,35 @@ class OutputAudioTrack(MediaStreamTrack):
     """Consumes audio frames from GroupDispatcher at audio_fps."""
     kind = "audio"
 
-    def __init__(self, dispatcher, sample_rate, audio_samples):
+    def __init__(self, dispatcher, sample_rate, audio_samples, client_id=""):
         super().__init__()
         self._dispatcher = dispatcher
         self._timestamp = 0
         self._sample_rate = sample_rate
         self._audio_samples = audio_samples
         self._time_base = fractions.Fraction(1, sample_rate)
+        self._client_id = client_id
+        # Stats (log every 10s)
+        self._stats_interval = sample_rate * 10  # 480000 samples = 500 frames
+        self._max_jitter_ms = 0.0
+        self._empty_count = 0
+        self._frame_count = 0
 
     async def recv(self):
         if self._dispatcher.start_time is None:
             self._dispatcher.start_time = time.time()
 
-        wait = self._dispatcher.start_time + (self._timestamp / self._sample_rate) - time.time()
+        target = self._dispatcher.start_time + (self._timestamp / self._sample_rate)
+        wait = target - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
+
+        jitter_ms = (time.time() - target) * 1000
+        if abs(jitter_ms) > abs(self._max_jitter_ms):
+            self._max_jitter_ms = jitter_ms
+        self._frame_count += 1
+        if not self._dispatcher._audio_buffer:
+            self._empty_count += 1
 
         pcm = self._dispatcher.get_audio()
         frame = av.AudioFrame(format="s16", layout="mono", samples=self._audio_samples)
@@ -238,6 +253,19 @@ class OutputAudioTrack(MediaStreamTrack):
         frame.time_base = self._time_base
         frame.planes[0].update(pcm.tobytes())
         self._timestamp += self._audio_samples
+
+        if self._timestamp % self._stats_interval == 0:
+            elapsed = time.time() - self._dispatcher.start_time
+            stats_logger.info(
+                f"audio_out client={self._client_id} "
+                f"t={elapsed:.1f}s frames={self._timestamp // self._audio_samples} "
+                f"buf_empty={self._empty_count}/{self._frame_count} "
+                f"jitter_max={self._max_jitter_ms:.1f}ms"
+            )
+            self._max_jitter_ms = 0.0
+            self._empty_count = 0
+            self._frame_count = 0
+
         return frame
 
 
@@ -245,7 +273,7 @@ class OutputVideoTrack(MediaStreamTrack):
     """Consumes video frames from GroupDispatcher at video_fps."""
     kind = "video"
 
-    def __init__(self, dispatcher, video_fps, video_width, video_height):
+    def __init__(self, dispatcher, video_fps, video_width, video_height, client_id=""):
         super().__init__()
         self._dispatcher = dispatcher
         self._timestamp = 0
@@ -257,6 +285,12 @@ class OutputVideoTrack(MediaStreamTrack):
         self._cached_b64 = None
         self._cached_frame = None
         self._idle_frame = self._make_black_frame()
+        self._client_id = client_id
+        # Stats (log every 10s)
+        self._stats_interval = VIDEO_CLOCK_RATE * 10  # 900000 ticks = 300 frames
+        self._max_jitter_ms = 0.0
+        self._idle_count = 0
+        self._frame_count = 0
 
     def _make_black_frame(self):
         y = np.full((self._video_height, self._video_width), 16, dtype=np.uint8)
@@ -288,19 +322,39 @@ class OutputVideoTrack(MediaStreamTrack):
         if self._dispatcher.start_time is None:
             self._dispatcher.start_time = time.time()
 
-        wait = self._dispatcher.start_time + (self._timestamp / VIDEO_CLOCK_RATE) - time.time()
+        target = self._dispatcher.start_time + (self._timestamp / VIDEO_CLOCK_RATE)
+        wait = target - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
+
+        jitter_ms = (time.time() - target) * 1000
+        if abs(jitter_ms) > abs(self._max_jitter_ms):
+            self._max_jitter_ms = jitter_ms
+        self._frame_count += 1
 
         b64 = self._dispatcher.get_video()
         if b64 is not None:
             frame = self._decode_image(b64)
         else:
             frame = self._idle_frame
+            self._idle_count += 1
 
         frame.pts = self._timestamp
         frame.time_base = self._time_base
         self._timestamp += self._ts_increment
+
+        if self._timestamp % self._stats_interval == 0:
+            elapsed = time.time() - self._dispatcher.start_time
+            stats_logger.info(
+                f"video_out client={self._client_id} "
+                f"t={elapsed:.1f}s frames={self._timestamp // self._ts_increment} "
+                f"idle={self._idle_count}/{self._frame_count} "
+                f"jitter_max={self._max_jitter_ms:.1f}ms"
+            )
+            self._max_jitter_ms = 0.0
+            self._idle_count = 0
+            self._frame_count = 0
+
         return frame
 
 
@@ -404,27 +458,59 @@ class WebRTCSession:
         buffering = True
         buffering_deadline = dispatcher.start_time + self.startup_buffer * self.group_period * 5
 
+        # Stats
+        _si = 100  # log every 100 groups (~10s)
+        _empty = 0
+        _max_jitter_ms = 0.0
+        _max_qsize = 0
+
         while self.connected:
             target = dispatcher.start_time + group_index * self.group_period - self.consumer_offset
             wait = target - time.time()
             if wait > 0:
                 await asyncio.sleep(wait)
 
+            jitter_ms = (time.time() - target) * 1000
+            if abs(jitter_ms) > abs(_max_jitter_ms):
+                _max_jitter_ms = jitter_ms
+            qs = self.group_queue.qsize()
+            if qs > _max_qsize:
+                _max_qsize = qs
+
             if buffering:
-                if (self.group_queue.qsize() >= self.startup_buffer
+                if (qs >= self.startup_buffer
                         or time.time() > buffering_deadline):
                     buffering = False
                     logger.info(
                         f"[{self.client_id}] Jitter buffer primed "
-                        f"({self.group_queue.qsize()} groups)"
+                        f"({qs} groups)"
                     )
                 else:
                     dispatcher._fill_empty()
+                    _empty += 1
                     group_index += 1
                     continue
 
-            dispatcher.fill_next_group(self.cancel_timestamp)
+            got_media = dispatcher.fill_next_group(self.cancel_timestamp)
+            if not got_media:
+                _empty += 1
             group_index += 1
+
+            if group_index % _si == 0:
+                elapsed = time.time() - dispatcher.start_time
+                stats_logger.info(
+                    f"consumer client={self.client_id} "
+                    f"t={elapsed:.1f}s idx={group_index} "
+                    f"qsize={qs} qsize_max={_max_qsize} "
+                    f"abuf={len(dispatcher._audio_buffer)} "
+                    f"vbuf={len(dispatcher._video_buffer)} "
+                    f"dbuf={len(dispatcher._data_buffer)} "
+                    f"empty={_empty}/{_si} "
+                    f"jitter_max={_max_jitter_ms:.1f}ms"
+                )
+                _empty = 0
+                _max_jitter_ms = 0.0
+                _max_qsize = 0
 
     async def _dispatch_data(self, dispatcher):
         """Consume data frames from dispatcher at data_fps.
@@ -459,9 +545,9 @@ class WebRTCSession:
             video_per_group=self.video_per_group,
             data_per_group=self.data_per_group,
         )
-        out_audio = OutputAudioTrack(dispatcher, self.sample_rate, self.audio_samples)
+        out_audio = OutputAudioTrack(dispatcher, self.sample_rate, self.audio_samples, self.client_id)
         out_video = OutputVideoTrack(dispatcher, self.video_fps,
-                                     self.video_width, self.video_height)
+                                     self.video_width, self.video_height, self.client_id)
         self.pc.addTrack(out_audio)
         self.pc.addTrack(out_video)
 
@@ -594,12 +680,30 @@ class WebRTCSession:
 
         group_index = 0
 
+        # Stats
+        _si = 100  # log every 100 groups (~10s)
+        _max_jitter_ms = 0.0
+        _audio_match = 0     # exact PTS match
+        _audio_silence = 0   # silence fills (gap/empty/future)
+        _audio_stale = 0     # stale frames discarded
+        _video_fill = 0      # video slots filled with last frame
+        _video_real = 0      # real video frames used
+        _a_margin_min_ms = float('inf')   # min(latest_audio_pts - audio_pts_end) in ms
+        _a_margin_max_ms = float('-inf')
+        _v_margin_min_ms = float('inf')
+        _v_margin_max_ms = float('-inf')
+
         while self.connected:
-            # Absolute timing with offset — frames get assembler_offset to arrive
-            target = wall_origin + group_index * self.group_period + self.assembler_offset
+            # Wait for group to complete before processing:
+            # (group_index+1)*period = group end time, +offset = extra margin
+            target = wall_origin + (group_index + 1) * self.group_period + self.assembler_offset
             wait = target - time.time()
             if wait > 0:
                 await asyncio.sleep(wait)
+
+            jitter_ms = (time.time() - target) * 1000
+            if abs(jitter_ms) > abs(_max_jitter_ms):
+                _max_jitter_ms = jitter_ms
 
             # PTS ranges for this group
             audio_pts_start = audio_pts_origin + group_index * group_audio_span
@@ -607,33 +711,56 @@ class WebRTCSession:
             video_pts_start = video_pts_origin + group_index * group_video_span
             video_pts_end = video_pts_start + group_video_span
 
-            # === Audio: take frames in PTS range, fill gaps with silence ===
+            # Measure margin before processing (save for post-process correction)
+            a_m = None
+            v_m = None
+            margin_upper_ms = (self.group_period + self.assembler_offset) * 1000  # 150ms
+            a_target_margin = int(self.assembler_offset * self.sample_rate)       # 2400 samples
+            v_target_margin = int(self.assembler_offset * VIDEO_CLOCK_RATE)       # 4500 ticks
+            saved_a_latest = self._input_audio_buffer[-1][0] if self._input_audio_buffer else None
+            saved_v_latest = self._input_video_buffer[-1][0] if self._input_video_buffer else None
+            if saved_a_latest is not None:
+                a_m = (saved_a_latest - audio_pts_end) / self.sample_rate * 1000
+                _a_margin_min_ms = min(_a_margin_min_ms, a_m)
+                _a_margin_max_ms = max(_a_margin_max_ms, a_m)
+            if saved_v_latest is not None:
+                v_m = (saved_v_latest - video_pts_end) / VIDEO_CLOCK_RATE * 1000
+                _v_margin_min_ms = min(_v_margin_min_ms, v_m)
+                _v_margin_max_ms = max(_v_margin_max_ms, v_m)
+
+            # Log abnormal ticks
+            if (a_m is not None and a_m <= 0) or (v_m is not None and v_m <= 0) \
+                    or not self._input_audio_buffer or not self._input_video_buffer:
+                elapsed_tick = time.time() - wall_origin
+                stats_logger.info(
+                    f"ABNORMAL client={self.client_id} "
+                    f"t={elapsed_tick:.2f}s idx={group_index} "
+                    f"a_m={f'{a_m:.1f}' if a_m is not None else 'n/a'}ms "
+                    f"v_m={f'{v_m:.1f}' if v_m is not None else 'n/a'}ms "
+                    f"abuf={len(self._input_audio_buffer)} "
+                    f"vbuf={len(self._input_video_buffer)}"
+                )
+
+            # === Audio: discard stale, take in range, fill silence ===
             audio_group = []
-            expected_pts = audio_pts_start
-            while expected_pts < audio_pts_end:
-                if self._input_audio_buffer:
-                    pts, b64 = self._input_audio_buffer[0]
-                    if pts < expected_pts:
-                        # Stale frame (before this group), discard
-                        self._input_audio_buffer.popleft()
-                        continue
-                    if pts == expected_pts:
-                        # Exact match — use it
-                        self._input_audio_buffer.popleft()
-                        audio_group.append(b64)
-                        expected_pts += self.audio_samples
-                    elif pts > expected_pts and pts < audio_pts_end:
-                        # Gap — fill silence up to this frame's PTS
-                        audio_group.append(silence_b64)
-                        expected_pts += self.audio_samples
-                    else:
-                        # Frame belongs to future group — fill silence
-                        audio_group.append(silence_b64)
-                        expected_pts += self.audio_samples
+            while self._input_audio_buffer:
+                pts, _ = self._input_audio_buffer[0]
+                if pts < audio_pts_start:
+                    self._input_audio_buffer.popleft()
+                    _audio_stale += 1
                 else:
-                    # Buffer empty — fill silence
-                    audio_group.append(silence_b64)
-                    expected_pts += self.audio_samples
+                    break
+            while len(audio_group) < self.audio_per_group and self._input_audio_buffer:
+                pts, b64 = self._input_audio_buffer[0]
+                if pts < audio_pts_end:
+                    self._input_audio_buffer.popleft()
+                    audio_group.append(b64)
+                    _audio_match += 1
+                else:
+                    break
+            while len(audio_group) < self.audio_per_group:
+                audio_group.append(silence_b64)
+                _audio_silence += 1
 
             # === Video: take frames in PTS range, fill with last frame ===
             video_group = []
@@ -652,12 +779,14 @@ class WebRTCSession:
                     self._input_video_buffer.popleft()
                     video_group.append(b64)
                     self._last_video_frame = b64
+                    _video_real += 1
                 else:
                     break
 
             # Fill missing with last received frame
             while len(video_group) < self.video_per_group and self._last_video_frame:
                 video_group.append(self._last_video_frame)
+                _video_fill += 1
 
             # === Data: take data_per_group items (no PTS, arrival order) ===
             data_group = []
@@ -689,7 +818,57 @@ class WebRTCSession:
                 msg["data"] = data_group
                 await self.ws.send(json.dumps(msg))
 
+            # Post-process correction: adjust origin for next tick
+            if saved_a_latest is not None and (a_m <= 0 or a_m >= margin_upper_ms):
+                shift = audio_pts_end - saved_a_latest + a_target_margin
+                audio_pts_origin -= shift
+                logger.info(
+                    f"[{self.client_id}] Audio PTS corrected: "
+                    f"margin={a_m:.1f}ms, shift={-shift}, "
+                    f"abuf_was={len(self._input_audio_buffer) if saved_a_latest else 0}"
+                )
+            if saved_v_latest is not None and (v_m <= 0 or v_m >= margin_upper_ms):
+                shift = video_pts_end - saved_v_latest + v_target_margin
+                video_pts_origin -= shift
+                logger.info(
+                    f"[{self.client_id}] Video PTS corrected: "
+                    f"margin={v_m:.1f}ms, shift={-shift}, "
+                    f"vbuf_was={len(self._input_video_buffer) if saved_v_latest else 0}"
+                )
+
             group_index += 1
+
+            # Periodic stats
+            if group_index % _si == 0:
+                elapsed = time.time() - wall_origin
+                # A/V sync: latest audio vs latest video in ms from their origins
+                av_gap_str = "n/a"
+                if self._input_audio_buffer and self._input_video_buffer:
+                    a_latest_ms = (self._input_audio_buffer[-1][0] - audio_pts_origin) / self.sample_rate * 1000
+                    v_latest_ms = (self._input_video_buffer[-1][0] - video_pts_origin) / VIDEO_CLOCK_RATE * 1000
+                    av_gap_str = f"{a_latest_ms - v_latest_ms:.1f}"
+                stats_logger.info(
+                    f"assembler client={self.client_id} "
+                    f"t={elapsed:.1f}s idx={group_index} "
+                    f"in_abuf={len(self._input_audio_buffer)} "
+                    f"in_vbuf={len(self._input_video_buffer)} "
+                    f"audio_match={_audio_match} silence={_audio_silence} stale={_audio_stale} "
+                    f"video_real={_video_real} video_fill={_video_fill} "
+                    f"a_margin=[{_a_margin_min_ms:.1f},{_a_margin_max_ms:.1f}]ms "
+                    f"v_margin=[{_v_margin_min_ms:.1f},{_v_margin_max_ms:.1f}]ms "
+                    f"av_gap={av_gap_str}ms "
+                    f"jitter_max={_max_jitter_ms:.1f}ms"
+                )
+                _max_jitter_ms = 0.0
+                _audio_match = 0
+                _audio_silence = 0
+                _audio_stale = 0
+                _video_real = 0
+                _video_fill = 0
+                _a_margin_min_ms = float('inf')
+                _a_margin_max_ms = float('-inf')
+                _v_margin_min_ms = float('inf')
+                _v_margin_max_ms = float('-inf')
 
     def _notify_client(self, signal, message=""):
         """Send a signal to client via DataChannel (best-effort)."""
@@ -843,6 +1022,12 @@ def setup_logger():
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    # Stats logger: writes to file for long-session analysis
+    stats_logger.setLevel(logging.INFO)
+    stats_logger.propagate = False
+    fh = logging.FileHandler("webrtc_stats.log", mode="w")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    stats_logger.addHandler(fh)
 
 
 def main():

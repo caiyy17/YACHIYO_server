@@ -120,12 +120,14 @@ function createCanvasVideoTrack(w, h, fps) {
   ctx.fillStyle = '#888';
   ctx.fillRect(0, 0, w, h);
   const stream = canvas.captureStream(fps);
-  // Update canvas periodically to keep frames flowing
+  canvasStream = stream;
   canvasInterval = setInterval(() => {
-    ctx.fillStyle = connected ? '#aaa' : '#888';
+    const r = Math.random() * 255 | 0;
+    const g = Math.random() * 255 | 0;
+    const b = Math.random() * 255 | 0;
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(0, 0, w, h);
   }, 1000 / fps);
-  canvasStream = stream;
   return stream.getVideoTracks()[0];
 }
 

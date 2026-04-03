@@ -65,7 +65,7 @@
                 "output_vars": [{ "output_name": "result", "target": "7_action" }],
                 "duration": 5.0,
                 "seed": -1,
-                "cfg_scale": 5.0,
+                "cfg_scale": 2.0,
                 "use_prompt_engineering": true,
                 "post_process": true,
                 "next_nodes": [11]

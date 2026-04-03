@@ -67,6 +67,10 @@ class FrameSplitterStep(BaseProcessingStep):
         self._group_buffer = deque()
         self._clock_running = False
 
+        # Stats counters (reset every 100 groups in _run_clock)
+        self._stats_silence = 0
+        self._stats_content = 0
+
         # Catch connection_start signal from WebRTC server
         self.catch_signal_set = {"connection_start"}
 
@@ -143,6 +147,12 @@ class FrameSplitterStep(BaseProcessingStep):
         clock_start = time.time()
         group_index = 0
 
+        # Stats
+        _si = 100  # log every 100 groups (~10s)
+        _max_jitter_ms = 0.0
+        self._stats_silence = 0
+        self._stats_content = 0
+
         while self._clock_running:
             if self.kill_event.is_set():
                 return
@@ -175,11 +185,28 @@ class FrameSplitterStep(BaseProcessingStep):
             if remaining > 0:
                 time.sleep(remaining)
 
+            jitter_ms = (time.time() - next_tick) * 1000
+            if abs(jitter_ms) > abs(_max_jitter_ms):
+                _max_jitter_ms = jitter_ms
+
             # Step 3: Send the media group
             if group_to_send is not None:
                 self.output_queue.put(group_to_send)
 
             group_index += 1
+
+            if group_index % _si == 0:
+                elapsed = time.time() - clock_start
+                self.logger.info(
+                    f"STATS:splitter t={elapsed:.1f}s idx={group_index} "
+                    f"gbuf={len(self._group_buffer)} "
+                    f"qout={self.output_queue.qsize()} "
+                    f"content={self._stats_content} silence={self._stats_silence} "
+                    f"jitter_max={_max_jitter_ms:.1f}ms"
+                )
+                _max_jitter_ms = 0.0
+                self._stats_silence = 0
+                self._stats_content = 0
 
     def _fill_buffer(self):
         """Fill buffer when empty. Standard input flow: read from input_queue,
@@ -231,6 +258,7 @@ class FrameSplitterStep(BaseProcessingStep):
     def _fill_default(self):
         """Fill buffer with default content when no input available.
         Currently fills one silence group. current_timestamp stays None."""
+        self._stats_silence += 1
         frame_data = {}
         self.add_output(frame_data, "audio", self._silence_audio)
         self.add_output(frame_data, "video",
@@ -278,6 +306,7 @@ class FrameSplitterStep(BaseProcessingStep):
             self._group_buffer.append(("group", json.dumps(frame_data)))
             group_count += 1
 
+        self._stats_content += group_count
         duration = len(pcm_frames) * self.frame_samples / self.sample_rate
         self.logger.info(
             f"Buffered {group_count} groups ({duration:.2f}s), "

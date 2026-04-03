@@ -2,14 +2,17 @@
     "api_base": "custom_api",
     "api_key": "CUSTOM_KEY",
     "extra": {
-        "temperature": 0.6,
-        "top_p": 0.95,
-        "max_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "max_tokens": 512,
         "extra_body": {
+            "repetition_penalty": 1.05,
+            "top_k": 20,
+            "min_p": 0,
             "chat_template_kwargs": {
-                "thinking": false
+                "enable_thinking": false
             }
         }
     },
-    "model_name": "moonshotai/Kimi-K2.5"
+    "model_name": "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
 }
