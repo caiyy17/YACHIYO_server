@@ -32,7 +32,7 @@ Client (WebSocket / WebRTC)
 server_fastapi.py (port 8910)          Pipeline server
   │
   v
-  Q_in -> [Node 0] -> Q_1 -> [Node 1] -> Q_2 -> ... -> Q_n -> send_queue -> Client
+  Q_in -> [Node 1] -> Q_1 -> [Node 2] -> Q_2 -> ... -> Q_n -> send_queue -> Client
 ```
 
 Each client gets an isolated pipeline instance (threads + queues). Compute-heavy models are shared standalone HTTP services.
@@ -54,9 +54,9 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | Config              | Pipeline                                                     | Description                           |
 | ------------------- | ------------------------------------------------------------ | ------------------------------------- |
 | `demo`                | ASR → LLM → TTS                                                       | Minimal conversation                  |
-| `unity_chan_default`  | ASR → LLM → DataQuery → TTS                                           | Conversation with RAG action matching |
-| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter          | WebRTC frame-level streaming          |
-| `unity_chan_smpl`     | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive                      | SMPLH motion generation (parallel)    |
+| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                           | Conversation with RAG expression + action matching |
+| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → DataQuery → TTS → FrameSplitter          | WebRTC frame-level streaming          |
+| `unity_chan_smpl`     | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive          | SMPLH motion generation (parallel)    |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber danmaku livestream             |
 
 ## Node Types
@@ -66,7 +66,8 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | `webrtc_audio_collector` | `audio_collector`                   | Assembles WebRTC audio frames between vad_start/vad_end into WAV     |
 | `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                             |
 | `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction |
-| `data_query_link`        | `call_data_query_link`              | RAG-based action matching via BGE embedding                          |
+| `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                        |
+| `danmaku_buffer_vtuber`  | `call_danmaku_buffer_vtuber`        | Buffers and selects danmaku (live comments) for VTuber responses     |
 | `motion_generation`      | `call_motion_generation`            | Text-to-motion via HY-Motion API, returns SMPLH params               |
 | `tts_openai`             | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                             |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups |
@@ -82,6 +83,14 @@ POST /unregister/                   Cleanup
 ```
 
 WebRTC: `POST /offer/{client_id}` on port 15168 for SDP exchange, then communicate via audio/video tracks and DataChannel. Browser test client available at `http://<server>:15168/`.
+
+## Web UI
+
+```bash
+cd webui && uvicorn web_ui:app --host 0.0.0.0 --port 8001
+```
+
+Open `http://localhost:8001` for client management, config viewing, and log monitoring. The visual pipeline editor is available at `http://localhost:8001/pipeline-editor`.
 
 ## Documentation
 

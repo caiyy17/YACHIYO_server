@@ -32,7 +32,7 @@ python server_webrtc.py --port 15168 --main-server http://localhost:8910
 server_fastapi.py（端口 8910）          Pipeline 服务器
   │
   v
-  Q_in -> [节点 0] -> Q_1 -> [节点 1] -> Q_2 -> ... -> Q_n -> send_queue -> 客户端
+  Q_in -> [节点 1] -> Q_1 -> [节点 2] -> Q_2 -> ... -> Q_n -> send_queue -> 客户端
 ```
 
 每个客户端拥有独立的 pipeline 实例（线程 + 队列）。计算密集型模型作为共享的独立 HTTP 服务运行。
@@ -54,9 +54,9 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | 配置                | Pipeline                                                     | 说明                   |
 | ------------------- | ------------------------------------------------------------ | ---------------------- |
 | `demo`                | ASR → LLM → TTS                                                       | 最小对话               |
-| `unity_chan_default`  | ASR → LLM → DataQuery → TTS                                           | 对话 + RAG 动作匹配    |
-| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → TTS → FrameSplitter          | WebRTC 帧级流式传输    |
-| `unity_chan_smpl`     | ASR → LLM → Dispatch → MotionGen ∥ TTS → Receive                      | SMPLH 动作生成（并行） |
+| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                           | 对话 + RAG 表情/动作匹配    |
+| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → DataQuery → TTS → FrameSplitter          | WebRTC 帧级流式传输    |
+| `unity_chan_smpl`     | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive          | SMPLH 动作生成（并行） |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber 弹幕直播        |
 
 ## 节点类型
@@ -66,7 +66,8 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `webrtc_audio_collector` | `audio_collector`                   | 在 vad_start/vad_end 之间收集 WebRTC 音频帧合成 WAV  |
 | `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                    |
 | `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取 |
-| `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 动作匹配                   |
+| `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                   |
+| `danmaku_buffer_vtuber`  | `call_danmaku_buffer_vtuber`        | 缓冲和筛选弹幕用于 VTuber 回复                       |
 | `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成 SMPLH 动作参数               |
 | `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                    |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组              |
@@ -82,6 +83,14 @@ POST /unregister/                   清理
 ```
 
 WebRTC：在端口 15168 上 `POST /offer/{client_id}` 进行 SDP 交换，之后通过 audio/video track 和 DataChannel 通信。浏览器测试客户端：`http://<服务器>:15168/`。
+
+## Web UI
+
+```bash
+cd webui && uvicorn web_ui:app --host 0.0.0.0 --port 8001
+```
+
+访问 `http://localhost:8001` 进行客户端管理、配置查看和日志监控。可视化 pipeline 编辑器位于 `http://localhost:8001/pipeline-editor`。
 
 ## 文档
 

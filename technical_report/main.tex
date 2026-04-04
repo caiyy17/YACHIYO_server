@@ -461,11 +461,11 @@ The same pipeline framework supports multiple configurations without code change
         \toprule
         \textbf{Config} & \textbf{Pipeline} \\
         \midrule
-        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ TTS \\
-        Conversation (WebRTC) & AudioCollector $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ TTS $\rightarrow$ FrameSplitter \\
-        Conversation (cloud) & ASR\textsuperscript{cloud} $\rightarrow$ LLM\textsuperscript{cloud} $\rightarrow$ RAG $\rightarrow$ TTS\textsuperscript{cloud} \\
-        Motion generation & ASR $\rightarrow$ LLM $\rightarrow$ MotionGen $\rightarrow$ TTS \\
-        Motion gen.\ (parallel) & ASR $\rightarrow$ LLM $\rightarrow$ Dispatch $\rightarrow$ MotionGen $\|$ TTS $\rightarrow$ Receive \\
+        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS \\
+        Conversation (WebRTC) & AudioCollector $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS $\rightarrow$ FrameSplitter \\
+        Conversation (cloud) & ASR\textsuperscript{cloud} $\rightarrow$ LLM\textsuperscript{cloud} $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS\textsuperscript{cloud} \\
+        Motion gen.\ (parallel) & ASR $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ Dispatch $\rightarrow$ MotionGen $\|$ TTS $\rightarrow$ Receive \\
+        VTuber livestream & DanmakuBuffer $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ Dispatch $\rightarrow$ MotionGen $\|$ TTS $\rightarrow$ Receive \\
         \bottomrule
     \end{tabular}
 \end{table}
