@@ -5,13 +5,25 @@
             "function": "frame_splitter",
             "config": {
                 "input_vars": [
-                    {"input_name": "audio_data", "source": "audio_data"}
+                    {
+                        "input_name": "audio_data",
+                        "source": "audio_data"
+                    }
                 ],
                 "pass_vars": [],
                 "output_vars": [
-                    {"output_name": "audio", "target": "audio"},
-                    {"output_name": "video", "target": "video"},
-                    {"output_name": "data", "target": "data"}
+                    {
+                        "output_name": "audio",
+                        "target": "audio"
+                    },
+                    {
+                        "output_name": "video",
+                        "target": "video"
+                    },
+                    {
+                        "output_name": "data",
+                        "target": "data"
+                    }
                 ],
                 "next_nodes": [],
                 "sample_rate": 48000,

@@ -1,12 +1,17 @@
 """
 Dispatcher node: splits one message into parallel branch messages.
 
+Uses standard input_vars/output_vars/pass_vars:
+    input_vars:  fields to dispatch (renamed from upstream)
+    output_vars: maps input names to target names for branches
+    pass_vars:   metadata forwarded to receiver via dispatch_start
+
 Config:
     next_nodes: [branch_0_id, branch_1_id, ..., receiver_id]
         The last entry is always the receiver node.
     dispatch_vars: [
-        ["field_a", "field_b"],   # fields for branch 0
-        ["field_c"],              # fields for branch 1
+        ["output_name_a"],   # output_names for branch 0
+        ["output_name_b"],   # output_names for branch 1
     ]
 
 Emit order:
@@ -35,10 +40,6 @@ class DispatcherStep(BaseProcessingStep):
                 f"!= branch count ({len(self.branch_nodes)})"
             )
 
-    def extract_input_data(self, data):
-        """Pass all fields through."""
-        return dict(data)
-
     def process(self, data, pass_data={}):
         self.logger.info(
             f"dispatching to branches {self.branch_nodes}, "
@@ -56,9 +57,9 @@ class DispatcherStep(BaseProcessingStep):
         # 2. Branch messages in REVERSE order (later node first)
         for i in reversed(range(len(self.branch_nodes))):
             msg = {}
-            for field in self.dispatch_vars[i]:
-                if field in data:
-                    msg[field] = data[field]
+            for output_name in self.dispatch_vars[i]:
+                if output_name in data:
+                    self.add_output(msg, output_name, data[output_name])
             self.output_to_queue(msg, ts_only, destination_index=i)
 
         # 3. End signal -> receiver

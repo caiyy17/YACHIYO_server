@@ -17,12 +17,14 @@
                         "target": "1_text"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    2
+                ],
                 "model": "qwen_asr"
             }
         },
         {
-            "node_id": 3,
+            "node_id": 2,
             "function": "call_openai_llm",
             "config": {
                 "input_vars": [
@@ -35,18 +37,20 @@
                 "output_vars": [
                     {
                         "output_name": "text",
-                        "target": "3_text"
+                        "target": "2_text"
                     },
                     {
                         "output_name": "action",
-                        "target": "3_action"
+                        "target": "2_action"
                     },
                     {
                         "output_name": "expression",
-                        "target": "3_expression"
+                        "target": "2_expression"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    3
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -73,41 +77,103 @@
             }
         },
         {
-            "node_id": 4,
+            "node_id": 3,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "3_expression" }],
-                "pass_vars": [
-                    { "source": "3_text", "target": "4_text" },
-                    { "source": "3_action", "target": "4_action" },
-                    { "source": "3_expression", "target": "4_expression_hint" }
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "2_expression"
+                    }
                 ],
-                "output_vars": [{ "output_name": "result", "target": "4_expression" }],
+                "pass_vars": [
+                    {
+                        "source": "2_text",
+                        "target": "3_text"
+                    },
+                    {
+                        "source": "2_action",
+                        "target": "3_action"
+                    },
+                    {
+                        "source": "2_expression",
+                        "target": "3_expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "3_expression"
+                    }
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [5]
+                "next_nodes": [
+                    4
+                ]
+            }
+        },
+        {
+            "node_id": 4,
+            "function": "call_dispatcher",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "text",
+                        "source": "3_text"
+                    },
+                    {
+                        "input_name": "action",
+                        "source": "3_action"
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "source": "3_text",
+                        "target": "4_text"
+                    },
+                    {
+                        "source": "3_action",
+                        "target": "4_action_hint"
+                    },
+                    {
+                        "source": "3_expression",
+                        "target": "4_expression"
+                    },
+                    {
+                        "source": "3_expression_hint",
+                        "target": "4_expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "text",
+                        "target": "4_audio_text"
+                    },
+                    {
+                        "output_name": "action",
+                        "target": "4_action"
+                    }
+                ],
+                "next_nodes": [
+                    5,
+                    6,
+                    7
+                ],
+                "dispatch_vars": [
+                    [
+                        "action"
+                    ],
+                    [
+                        "text"
+                    ]
+                ]
             }
         },
         {
             "node_id": 5,
-            "function": "call_dispatcher",
-            "config": {
-                "input_vars": [],
-                "pass_vars": [
-                    { "source": "4_text", "target": "text" },
-                    { "source": "4_action", "target": "action_hint" },
-                    { "source": "4_expression", "target": "expression" },
-                    { "source": "4_expression_hint", "target": "expression_hint" }
-                ],
-                "output_vars": [],
-                "next_nodes": [7, 9, 11],
-                "dispatch_vars": [["4_action"], ["4_text"]]
-            }
-        },
-        {
-            "node_id": 7,
             "function": "call_motion_generation",
             "config": {
                 "input_vars": [
@@ -120,52 +186,82 @@
                 "output_vars": [
                     {
                         "output_name": "result",
-                        "target": "7_action"
+                        "target": "5_action"
                     }
                 ],
                 "duration": 5.0,
-                "seed": -1,
+                "seed": 42,
                 "cfg_scale": 2.0,
                 "use_prompt_engineering": true,
                 "post_process": true,
-                "next_nodes": [11]
+                "next_nodes": [
+                    7
+                ]
             }
         },
         {
-            "node_id": 9,
+            "node_id": 6,
             "function": "call_openai_tts",
             "config": {
                 "input_vars": [
                     {
                         "input_name": "text",
-                        "source": "4_text"
+                        "source": "4_audio_text"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "target": "9_audio"
+                        "target": "6_audio"
                     }
                 ],
-                "next_nodes": [11],
+                "next_nodes": [
+                    7
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
         },
         {
-            "node_id": 11,
+            "node_id": 7,
             "function": "call_receiver",
             "config": {
-                "input_vars": [],
-                "pass_vars": [],
+                "input_vars": [
+                    {
+                        "input_name": "audio",
+                        "source": "6_audio"
+                    },
+                    {
+                        "input_name": "action",
+                        "source": "5_action"
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "source": "4_text",
+                        "target": "text"
+                    },
+                    {
+                        "source": "4_action_hint",
+                        "target": "action_hint"
+                    },
+                    {
+                        "source": "4_expression",
+                        "target": "expression"
+                    },
+                    {
+                        "source": "4_expression_hint",
+                        "target": "expression_hint"
+                    }
+                ],
                 "output_vars": [
                     {
-                        "output_name": "9_audio",
+                        "output_name": "audio",
                         "target": "audio_data"
                     },
                     {
-                        "output_name": "7_action",
+                        "output_name": "action",
                         "target": "action"
                     }
                 ],

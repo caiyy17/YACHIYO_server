@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YACHIYO Pipeline Editor</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  background: #f0f0f0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #000;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+#toolbar button {
+  background: #fff;
+  color: #000;
+  border: none;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#toolbar button:hover { background: #ddd; }
+
+#toolbar label {
+  background: #fff;
+  color: #000;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#toolbar label:hover { background: #ddd; }
+
+#config-name {
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+  padding: 3px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  width: 200px;
+}
+
+#toolbar .sep { color: #555; margin: 0 4px; }
+
+/* ── Canvas wrapper ── */
+#canvas-wrapper {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+  background: #fff;
+}
+
+#canvas {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+  /* actual size set by JS */
+}
+
+/* SVG overlay */
+#svg-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+#svg-overlay path { pointer-events: stroke; cursor: pointer; }
+
+/* ── Node cards ── */
+.node-card {
+  position: absolute;
+  width: 240px;
+  background: #fff;
+  border: 1.5px solid #000;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  z-index: 1;
+}
+
+.node-header {
+  background: #000;
+  color: #fff;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: ns-resize;
+}
+.node-header .node-id-label { font-size: 11px; white-space: nowrap; }
+.node-func-select {
+  flex: 1;
+  background: #222;
+  color: #fff;
+  border: none;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.node-func-select option { background: #222; }
+.node-delete {
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.node-delete:hover { color: #f66; }
+
+.node-body {
+  padding: 6px 0;
+}
+
+/* Port sections */
+.port-section {
+  padding: 2px 0 4px;
+}
+.port-section-title {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  padding: 0 8px 2px;
+  letter-spacing: 0.5px;
+}
+
+.port-row {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  position: relative;
+}
+.port-row.input-row { flex-direction: row; padding-right: 8px; }
+.port-row.output-row { flex-direction: row; padding-left: 8px; }
+.port-row.pass-row { padding-left: 0; padding-right: 0; }
+
+/* Port circles */
+.port-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid #000;
+  flex-shrink: 0;
+  cursor: crosshair;
+  position: relative;
+  z-index: 10;
+}
+.port-dot:hover { background: #ddd; }
+.port-dot.active { background: #000; }
+
+/* Input port dot sits on the left edge */
+.port-row.input-row .port-dot {
+  margin-left: -6px;
+}
+/* Output port dot sits on the right edge */
+.port-row.output-row .port-dot {
+  margin-right: -6px;
+}
+/* Pass left dot */
+.port-row.pass-row .port-dot.pass-in {
+  margin-left: -6px;
+}
+/* Pass right dot */
+.port-row.pass-row .port-dot.pass-out {
+  margin-right: -6px;
+}
+
+.port-label {
+  font-size: 11px;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.port-source-input {
+  flex: 1;
+  border: none;
+  border-bottom: 1px solid #ccc;
+  font-family: inherit;
+  font-size: 11px;
+  color: #555;
+  padding: 0 2px;
+  background: transparent;
+  min-width: 0;
+}
+.port-source-input:focus { outline: none; border-bottom-color: #000; }
+
+/* pass row: left dot + arrow + right dot, spanning full width */
+.port-row.pass-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 0;
+}
+.pass-label-left, .pass-label-right {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 85px;
+  padding: 0 2px;
+}
+.pass-arrow { font-size: 10px; color: #888; flex-shrink: 0; }
+
+.port-delete {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.port-delete:hover { color: #f00; }
+
+/* Add port buttons */
+.add-btns {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid #eee;
+  flex-wrap: wrap;
+}
+.add-btn {
+  background: none;
+  border: 1px solid #aaa;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  cursor: pointer;
+  color: #555;
+}
+.add-btn:hover { background: #f5f5f5; border-color: #000; color: #000; }
+
+/* Extra config section */
+.config-section {
+  border-top: 1px solid #eee;
+  padding: 4px 0;
+}
+.config-section-title {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  padding: 0 8px 2px;
+  letter-spacing: 0.5px;
+}
+.config-param {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 1px 8px;
+}
+.config-key {
+  border: none;
+  border-bottom: 1px solid #eee;
+  font-family: inherit;
+  font-size: 11px;
+  color: #333;
+  width: 70px;
+  flex-shrink: 0;
+  background: transparent;
+}
+.config-key:focus { outline: none; border-bottom-color: #000; }
+.config-colon { color: #888; padding: 0 2px; font-size: 11px; flex-shrink: 0; }
+.config-val {
+  flex: 1;
+  border: none;
+  border-bottom: 1px solid #eee;
+  font-family: inherit;
+  font-size: 11px;
+  color: #333;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  min-height: 16px;
+  line-height: 1.3;
+}
+.config-val:focus { outline: none; border-bottom-color: #000; }
+
+/* Wire drag preview */
+#wire-preview {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 3;
+}
+
+/* Connection highlight */
+path.selected { stroke: #f00 !important; }
+
+/* Notification */
+#notify {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  background: #000;
+  color: #fff;
+  padding: 6px 14px;
+  font-size: 12px;
+  display: none;
+  z-index: 999;
+}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <label for="file-input">Load JSON</label>
+  <input type="file" id="file-input" accept=".json" style="display:none">
+  <button id="btn-save">Save JSON</button>
+  <span class="sep">|</span>
+  <button id="btn-add-node">+ Add Node</button>
+  <button id="btn-del-node">- Delete Node</button>
+  <span class="sep">|</span>
+  <input id="config-name" type="text" placeholder="pipeline name" value="untitled">
+</div>
+
+<div id="canvas-wrapper">
+  <div id="canvas">
+    <svg id="svg-overlay"></svg>
+    <svg id="wire-preview"></svg>
+  </div>
+</div>
+
+<div id="notify"></div>
+
+<script>
+// ─────────────────────────────────────────────
+//  Constants & State
+// ─────────────────────────────────────────────
+const FUNCTIONS = [
+  'audio_collector',
+  'call_danmaku_buffer_vtuber',
+  'call_data_query_link',
+  'call_dispatcher',
+  'call_motion_generation',
+  'call_openai_asr',
+  'call_openai_llm',
+  'call_openai_tts',
+  'call_receiver',
+  'default',
+  'frame_splitter',
+  'call_memory_manager_vtuber',
+];
+
+const NODE_W = 240;
+const NODE_GAP_X = 60;
+const NODE_GAP_Y = 40;
+const CANVAS_PAD = 40;
+
+// State
+let nodes = [];       // [{id, fn, inputs, outputs, passes, extraConfig, el, x, y}]
+let connections = []; // [{id, fromNodeId, fromPortType, fromPortIdx, toNodeId, toPortType, toPortIdx, el}]
+let nextConnId = 1;
+let selectedConn = null;
+
+// Wire drag state
+let dragging = null; // {fromNodeId, fromPortType, fromPortIdx, startX, startY}
+
+// ─────────────────────────────────────────────
+//  Utilities
+// ─────────────────────────────────────────────
+function notify(msg, ms = 2000) {
+  const el = document.getElementById('notify');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.display = 'none'; }, ms);
+}
+
+function getMaxNodeId() {
+  if (!nodes.length) return 0;
+  return Math.max(...nodes.map(n => n.id));
+}
+
+function getNodeById(id) {
+  return nodes.find(n => n.id === id);
+}
+
+// ─────────────────────────────────────────────
+//  Canvas sizing
+// ─────────────────────────────────────────────
+function updateCanvasSize() {
+  let maxX = 800, maxY = 600;
+  nodes.forEach(n => {
+    const rect = n.el.getBoundingClientRect();
+    const h = n.el.offsetHeight;
+    maxX = Math.max(maxX, n.x + NODE_W + CANVAS_PAD);
+    maxY = Math.max(maxY, n.y + h + CANVAS_PAD);
+  });
+  const canvas = document.getElementById('canvas');
+  canvas.style.width = maxX + 'px';
+  canvas.style.height = maxY + 'px';
+  const svg = document.getElementById('svg-overlay');
+  svg.setAttribute('width', maxX);
+  svg.setAttribute('height', maxY);
+  const wp = document.getElementById('wire-preview');
+  wp.setAttribute('width', maxX);
+  wp.setAttribute('height', maxY);
+}
+
+// ─────────────────────────────────────────────
+//  Port position helpers
+// ─────────────────────────────────────────────
+// Returns {x, y} in canvas coordinates for a port dot
+function getPortPos(nodeId, portType, portIdx) {
+  const node = getNodeById(nodeId);
+  if (!node) return null;
+  const dots = getPortDots(node.el, portType);
+  if (!dots || portIdx >= dots.length) return null;
+  const dot = dots[portIdx];
+  const canvasRect = document.getElementById('canvas').getBoundingClientRect();
+  const wrapperRect = document.getElementById('canvas-wrapper').getBoundingClientRect();
+  const dotRect = dot.getBoundingClientRect();
+  const wrapper = document.getElementById('canvas-wrapper');
+  const x = dotRect.left - wrapperRect.left + wrapper.scrollLeft + dotRect.width / 2;
+  const y = dotRect.top - wrapperRect.top + wrapper.scrollTop + dotRect.height / 2;
+  return { x, y };
+}
+
+function getPortDots(cardEl, portType) {
+  if (portType === 'input') return Array.from(cardEl.querySelectorAll('.port-row.input-row .port-dot'));
+  if (portType === 'output') return Array.from(cardEl.querySelectorAll('.port-row.output-row .port-dot'));
+  if (portType === 'pass-in') return Array.from(cardEl.querySelectorAll('.port-row.pass-row .port-dot.pass-in'));
+  if (portType === 'pass-out') return Array.from(cardEl.querySelectorAll('.port-row.pass-row .port-dot.pass-out'));
+  return [];
+}
+
+// ─────────────────────────────────────────────
+//  SVG Bezier helpers
+// ─────────────────────────────────────────────
+function bezierPath(x1, y1, x2, y2) {
+  return `M ${x1} ${y1} L ${x2} ${y2}`;
+}
+
+// ─────────────────────────────────────────────
+//  Connection rendering
+// ─────────────────────────────────────────────
+function renderConnections() {
+  const svg = document.getElementById('svg-overlay');
+  // Remove old paths
+  Array.from(svg.querySelectorAll('path')).forEach(p => p.remove());
+
+  connections.forEach(conn => {
+    const fromPos = getPortPos(conn.fromNodeId, conn.fromPortType, conn.fromPortIdx);
+    const toPos   = getPortPos(conn.toNodeId,   conn.toPortType,   conn.toPortIdx);
+    if (!fromPos || !toPos) return;
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', bezierPath(fromPos.x, fromPos.y, toPos.x, toPos.y));
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', conn === selectedConn ? '#f00' : '#000');
+    path.setAttribute('stroke-width', '1.5');
+    if (conn.fromPortType === 'pass-out') {
+      path.setAttribute('stroke-dasharray', '5,3');
+    }
+    path.style.pointerEvents = 'stroke';
+    path.style.cursor = 'pointer';
+    path.dataset.connId = conn.id;
+    path.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectConnection(conn);
+    });
+    svg.appendChild(path);
+    conn.el = path;
+  });
+  updateCanvasSize();
+}
+
+function selectConnection(conn) {
+  selectedConn = conn;
+  renderConnections();
+}
+
+function deleteSelectedConnection() {
+  if (!selectedConn) return;
+  removeConnection(selectedConn);
+  selectedConn = null;
+  renderConnections();
+}
+
+function removeConnection(conn) {
+  connections = connections.filter(c => c !== conn);
+  // Clear source on disconnected port
+  const toNode = getNodeById(conn.toNodeId);
+  if (toNode) {
+    if (conn.toPortType === 'input' && toNode.inputs[conn.toPortIdx]) {
+      toNode.inputs[conn.toPortIdx].source = '';
+    } else if (conn.toPortType === 'pass-in' && toNode.passes[conn.toPortIdx]) {
+      toNode.passes[conn.toPortIdx].source = '';
+    }
+    rebuildNodeBody(toNode);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Node creation
+// ─────────────────────────────────────────────
+function createNode(options = {}) {
+  const id = options.id != null ? options.id : (getMaxNodeId() + 1);
+  const fn = options.fn || FUNCTIONS[0];
+  const inputs = options.inputs || [];   // [{name, source}]
+  const outputs = options.outputs || []; // [{name, target}]
+  const passes = options.passes || [];   // [{source, target}]
+  const extraConfig = options.extraConfig || {}; // {key: value}
+  const x = options.x || CANVAS_PAD;
+  const y = options.y || CANVAS_PAD;
+
+  const nodeObj = { id, fn, inputs, outputs, passes, extraConfig, x, y, el: null };
+  nodes.push(nodeObj);
+
+  // Column background stripe
+  const hue = (id * 47) % 360;
+  const colBg = document.createElement('div');
+  colBg.className = 'col-bg';
+  const colLeft = x - NODE_GAP_X / 2;
+  const colWidth = NODE_W + NODE_GAP_X;
+  colBg.style.cssText = `position:absolute;left:${colLeft}px;top:0;width:${colWidth}px;height:100%;background:hsl(${hue},40%,88%);z-index:0;pointer-events:none;`;
+  document.getElementById('canvas').appendChild(colBg);
+
+  nodeObj.el = buildNodeCard(nodeObj);
+  nodeObj.el.style.left = x + 'px';
+  nodeObj.el.style.top  = y + 'px';
+  document.getElementById('canvas').appendChild(nodeObj.el);
+  updateCanvasSize();
+  return nodeObj;
+}
+
+// ─────────────────────────────────────────────
+//  Node card DOM builder
+// ─────────────────────────────────────────────
+function buildNodeCard(nodeObj) {
+  const card = document.createElement('div');
+  card.className = 'node-card';
+  card.dataset.nodeId = nodeObj.id;
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'node-header';
+
+  const idLabel = document.createElement('span');
+  idLabel.className = 'node-id-label';
+  idLabel.textContent = `[${nodeObj.id}]`;
+
+  const sel = document.createElement('select');
+  sel.className = 'node-func-select';
+  FUNCTIONS.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    if (f === nodeObj.fn) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => {
+    nodeObj.fn = sel.value;
+  });
+
+  header.appendChild(idLabel);
+  header.appendChild(sel);
+  card.appendChild(header);
+
+  // Vertical-only drag within column
+  let dragStartY = 0, dragStartTop = 0;
+  header.addEventListener('mousedown', (e) => {
+    if (e.target === sel) return;
+    e.preventDefault();
+    dragStartY = e.clientY;
+    dragStartTop = parseInt(card.style.top) || 0;
+    const onMove = (ev) => {
+      const dy = ev.clientY - dragStartY;
+      card.style.top = Math.max(0, dragStartTop + dy) + 'px';
+      renderConnections();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      nodeObj.y = parseInt(card.style.top) || 0;
+      updateCanvasSize();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  // Body
+  const body = document.createElement('div');
+  body.className = 'node-body';
+  card.appendChild(body);
+
+  // Rebuild body contents
+  rebuildNodeBody(nodeObj, body);
+
+  return card;
+}
+
+function rebuildNodeBody(nodeObj, body) {
+  if (!body) body = nodeObj.el.querySelector('.node-body');
+  body.innerHTML = '';
+
+  // INPUTS section
+  const inputsSec = document.createElement('div');
+  inputsSec.className = 'port-section';
+  const inputsTitle = document.createElement('div');
+  inputsTitle.className = 'port-section-title';
+  inputsTitle.textContent = 'Inputs';
+  inputsSec.appendChild(inputsTitle);
+
+  nodeObj.inputs.forEach((inp, idx) => {
+    inputsSec.appendChild(buildInputRow(nodeObj, inp, idx));
+  });
+  body.appendChild(inputsSec);
+
+  // OUTPUTS section
+  const outputsSec = document.createElement('div');
+  outputsSec.className = 'port-section';
+  const outputsTitle = document.createElement('div');
+  outputsTitle.className = 'port-section-title';
+  outputsTitle.textContent = 'Outputs';
+  outputsSec.appendChild(outputsTitle);
+
+  nodeObj.outputs.forEach((out, idx) => {
+    outputsSec.appendChild(buildOutputRow(nodeObj, out, idx));
+  });
+  body.appendChild(outputsSec);
+
+  // PASS section
+  const passSec = document.createElement('div');
+  passSec.className = 'port-section';
+  const passTitle = document.createElement('div');
+  passTitle.className = 'port-section-title';
+  passTitle.textContent = 'Pass';
+  passSec.appendChild(passTitle);
+
+  nodeObj.passes.forEach((pv, idx) => {
+    passSec.appendChild(buildPassRow(nodeObj, pv, idx));
+  });
+  body.appendChild(passSec);
+
+  // Add buttons
+  const addBtns = document.createElement('div');
+  addBtns.className = 'add-btns';
+
+  const addInBtn = document.createElement('button');
+  addInBtn.className = 'add-btn';
+  addInBtn.textContent = '+ input';
+  addInBtn.addEventListener('click', () => {
+    nodeObj.inputs.push({ name: 'in', source: '' });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  const addOutBtn = document.createElement('button');
+  addOutBtn.className = 'add-btn';
+  addOutBtn.textContent = '+ output';
+  addOutBtn.addEventListener('click', () => {
+    const name = 'out';
+    nodeObj.outputs.push({ name, target: `${nodeObj.id}_${name}` });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  const addPassBtn = document.createElement('button');
+  addPassBtn.className = 'add-btn';
+  addPassBtn.textContent = '+ pass';
+  addPassBtn.addEventListener('click', () => {
+    nodeObj.passes.push({ source: '', target: `${nodeObj.id}_pass` });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  addBtns.appendChild(addInBtn);
+  addBtns.appendChild(addOutBtn);
+  addBtns.appendChild(addPassBtn);
+  body.appendChild(addBtns);
+
+  // Extra config
+  const cfgSec = document.createElement('div');
+  cfgSec.className = 'config-section';
+  const cfgTitle = document.createElement('div');
+  cfgTitle.className = 'config-section-title';
+  cfgTitle.textContent = 'Config';
+  cfgSec.appendChild(cfgTitle);
+
+  Object.entries(nodeObj.extraConfig).forEach(([k, v]) => {
+    cfgSec.appendChild(buildConfigRow(nodeObj, k, v));
+  });
+
+  const addCfgBtn = document.createElement('button');
+  addCfgBtn.className = 'add-btn';
+  addCfgBtn.style.margin = '2px 8px';
+  addCfgBtn.textContent = '+ param';
+  addCfgBtn.addEventListener('click', () => {
+    const key = 'key';
+    nodeObj.extraConfig[key] = '';
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+  cfgSec.appendChild(addCfgBtn);
+  body.appendChild(cfgSec);
+}
+
+function buildInputRow(nodeObj, inp, idx) {
+  const row = document.createElement('div');
+  row.className = 'port-row input-row';
+
+  const dot = document.createElement('div');
+  dot.className = 'port-dot';
+  dot.title = 'Input port – drag from output to connect';
+  setupPortDotEvents(dot, nodeObj, 'input', idx);
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'port-label';
+  nameInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:70px;font-size:11px;font-family:inherit;';
+  nameInput.value = inp.name;
+  nameInput.addEventListener('change', () => {
+    inp.name = nameInput.value;
+  });
+  nameInput.addEventListener('mousedown', e => e.stopPropagation());
+
+  const sourceInp = document.createElement('input');
+  sourceInp.className = 'port-source-input';
+  sourceInp.placeholder = '';
+  sourceInp.value = inp.source || '';
+  sourceInp.disabled = true;
+  sourceInp.style.opacity = '0.6';
+  sourceInp.addEventListener('mousedown', e => e.stopPropagation());
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'port-delete';
+  delBtn.textContent = '✕';
+  delBtn.addEventListener('click', () => {
+    // Remove connected connections
+    connections = connections.filter(c => !(c.toNodeId === nodeObj.id && c.toPortType === 'input' && c.toPortIdx === idx));
+    nodeObj.inputs.splice(idx, 1);
+    // Fix indices
+    connections.forEach(c => {
+      if (c.toNodeId === nodeObj.id && c.toPortType === 'input' && c.toPortIdx > idx) c.toPortIdx--;
+    });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  row.appendChild(dot);
+  row.appendChild(sourceInp);
+  row.appendChild(nameInput);
+  row.appendChild(delBtn);
+  return row;
+}
+
+function buildOutputRow(nodeObj, out, idx) {
+  const row = document.createElement('div');
+  row.className = 'port-row output-row';
+
+  const dot = document.createElement('div');
+  dot.className = 'port-dot';
+  dot.title = 'Output port – drag to connect';
+  dot.style.marginLeft = 'auto';
+  setupPortDotEvents(dot, nodeObj, 'output', idx);
+
+  const nameInput = document.createElement('input');
+  nameInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:60px;font-size:11px;font-family:inherit;text-align:right;';
+  nameInput.value = out.name;
+  nameInput.addEventListener('change', () => {
+    out.name = nameInput.value;
+  });
+  nameInput.addEventListener('mousedown', e => e.stopPropagation());
+
+  const targetInput = document.createElement('input');
+  targetInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:75px;font-size:10px;font-family:inherit;color:#888;text-align:right;';
+  targetInput.value = out.target || `${nodeObj.id}_${out.name}`;
+  targetInput.addEventListener('change', () => {
+    out.target = targetInput.value;
+    // Update all downstream connections that reference this output
+    connections.forEach(conn => {
+      if (conn.fromNodeId === nodeObj.id && conn.fromPortType === 'output' && conn.fromPortIdx === idx) {
+        updatePortSources(conn);
+        const toNode = getNodeById(conn.toNodeId);
+        if (toNode) rebuildNodeBody(toNode);
+      }
+    });
+    renderConnections();
+  });
+  targetInput.addEventListener('mousedown', e => e.stopPropagation());
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'port-delete';
+  delBtn.textContent = '✕';
+  delBtn.addEventListener('click', () => {
+    connections = connections.filter(c => !(c.fromNodeId === nodeObj.id && c.fromPortType === 'output' && c.fromPortIdx === idx));
+    nodeObj.outputs.splice(idx, 1);
+    connections.forEach(c => {
+      if (c.fromNodeId === nodeObj.id && c.fromPortType === 'output' && c.fromPortIdx > idx) c.fromPortIdx--;
+    });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  row.appendChild(delBtn);
+  row.appendChild(nameInput);
+  row.appendChild(targetInput);
+  row.appendChild(dot);
+  return row;
+}
+
+function buildPassRow(nodeObj, pv, idx) {
+  const row = document.createElement('div');
+  row.className = 'port-row pass-row';
+
+  // Left dot (receives from upstream output)
+  const dotIn = document.createElement('div');
+  dotIn.className = 'port-dot pass-in';
+  dotIn.title = 'Pass-in port – drag from output to connect';
+  setupPortDotEvents(dotIn, nodeObj, 'pass-in', idx);
+
+  const srcLabel = document.createElement('input');
+  srcLabel.className = 'pass-label-left';
+  srcLabel.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;font-size:10px;font-family:inherit;color:#888;width:70px;';
+  srcLabel.value = pv.source || '';
+  srcLabel.placeholder = '';
+  srcLabel.disabled = true;
+  srcLabel.style.opacity = '0.6';
+  srcLabel.addEventListener('mousedown', e => e.stopPropagation());
+
+  const arrow = document.createElement('span');
+  arrow.className = 'pass-arrow';
+  arrow.textContent = '→';
+
+  const tgtLabel = document.createElement('input');
+  tgtLabel.className = 'pass-label-right';
+  tgtLabel.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;font-size:10px;font-family:inherit;width:70px;';
+  tgtLabel.value = pv.target || '';
+  tgtLabel.placeholder = 'target';
+  tgtLabel.addEventListener('change', () => {
+    pv.target = tgtLabel.value;
+    // Update downstream connections referencing this pass-out
+    connections.forEach(conn => {
+      if (conn.fromNodeId === nodeObj.id && conn.fromPortType === 'pass-out' && conn.fromPortIdx === idx) {
+        updatePortSources(conn);
+        const toNode = getNodeById(conn.toNodeId);
+        if (toNode) rebuildNodeBody(toNode);
+      }
+    });
+    renderConnections();
+  });
+  tgtLabel.addEventListener('mousedown', e => e.stopPropagation());
+
+  // Right dot (pass-out: connects to downstream inputs)
+  const dotOut = document.createElement('div');
+  dotOut.className = 'port-dot pass-out';
+  dotOut.title = 'Pass-out port – drag to downstream input';
+  setupPortDotEvents(dotOut, nodeObj, 'pass-out', idx);
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'port-delete';
+  delBtn.textContent = '✕';
+  delBtn.addEventListener('click', () => {
+    connections = connections.filter(c => !(
+      (c.toNodeId === nodeObj.id && c.toPortType === 'pass-in' && c.toPortIdx === idx) ||
+      (c.fromNodeId === nodeObj.id && c.fromPortType === 'pass-out' && c.fromPortIdx === idx)
+    ));
+    nodeObj.passes.splice(idx, 1);
+    connections.forEach(c => {
+      if (c.toNodeId === nodeObj.id && c.toPortType === 'pass-in' && c.toPortIdx > idx) c.toPortIdx--;
+      if (c.fromNodeId === nodeObj.id && c.fromPortType === 'pass-out' && c.fromPortIdx > idx) c.fromPortIdx--;
+    });
+    rebuildNodeBody(nodeObj);
+    renderConnections();
+  });
+
+  row.appendChild(dotIn);
+  row.appendChild(srcLabel);
+  row.appendChild(arrow);
+  row.appendChild(tgtLabel);
+  row.appendChild(delBtn);
+  dotOut.style.marginLeft = 'auto';
+  row.appendChild(dotOut);
+  return row;
+}
+
+function buildConfigRow(nodeObj, key, value) {
+  const row = document.createElement('div');
+  row.className = 'config-param';
+
+  const keyInp = document.createElement('input');
+  keyInp.className = 'config-key';
+  keyInp.value = key;
+  keyInp.addEventListener('mousedown', e => e.stopPropagation());
+
+  const colon = document.createElement('span');
+  colon.className = 'config-colon';
+  colon.textContent = ':';
+
+  const valStr = typeof value === 'string' ? value : JSON.stringify(value);
+  const valInp = document.createElement('textarea');
+  valInp.className = 'config-val';
+  valInp.value = valStr;
+  valInp.rows = 1;
+  valInp.addEventListener('input', () => {
+    // Auto-grow
+    valInp.style.height = 'auto';
+    valInp.style.height = valInp.scrollHeight + 'px';
+  });
+  valInp.addEventListener('mousedown', e => e.stopPropagation());
+
+  // On key rename: remove old key, add new
+  keyInp.addEventListener('change', () => {
+    const oldKey = key;
+    const newKey = keyInp.value;
+    if (oldKey !== newKey) {
+      const val = nodeObj.extraConfig[oldKey];
+      delete nodeObj.extraConfig[oldKey];
+      nodeObj.extraConfig[newKey] = val;
+      key = newKey;
+    }
+  });
+  valInp.addEventListener('change', () => {
+    const k = keyInp.value;
+    try {
+      nodeObj.extraConfig[k] = JSON.parse(valInp.value);
+    } catch {
+      nodeObj.extraConfig[k] = valInp.value;
+    }
+  });
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'port-delete';
+  delBtn.textContent = '✕';
+  delBtn.addEventListener('click', () => {
+    delete nodeObj.extraConfig[keyInp.value];
+    rebuildNodeBody(nodeObj);
+  });
+
+  // Initialize value
+  valInp.addEventListener('mousedown', e => e.stopPropagation());
+  setTimeout(() => {
+    valInp.style.height = 'auto';
+    valInp.style.height = valInp.scrollHeight + 'px';
+  }, 0);
+
+  row.appendChild(keyInp);
+  row.appendChild(colon);
+  row.appendChild(valInp);
+  row.appendChild(delBtn);
+  return row;
+}
+
+// ─────────────────────────────────────────────
+//  Port event setup (wire dragging)
+// ─────────────────────────────────────────────
+function setupPortDotEvents(dot, nodeObj, portType, portIdx) {
+  dot.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const wrapper = document.getElementById('canvas-wrapper');
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const dotRect = dot.getBoundingClientRect();
+    const sx = dotRect.left - wrapperRect.left + wrapper.scrollLeft + dotRect.width / 2;
+    const sy = dotRect.top  - wrapperRect.top  + wrapper.scrollTop  + dotRect.height / 2;
+
+    dragging = {
+      fromNodeId: nodeObj.id,
+      fromPortType: portType,
+      fromPortIdx: portIdx,
+      startX: sx,
+      startY: sy,
+    };
+    dot.classList.add('active');
+    document.addEventListener('mousemove', onWireDrag);
+    document.addEventListener('mouseup', onWireDrop);
+  });
+}
+
+function onWireDrag(e) {
+  if (!dragging) return;
+  const wrapper = document.getElementById('canvas-wrapper');
+  const wrapperRect = wrapper.getBoundingClientRect();
+  const mx = e.clientX - wrapperRect.left + wrapper.scrollLeft;
+  const my = e.clientY - wrapperRect.top  + wrapper.scrollTop;
+
+  const svg = document.getElementById('wire-preview');
+  svg.innerHTML = '';
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', bezierPath(dragging.startX, dragging.startY, mx, my));
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', '#888');
+  path.setAttribute('stroke-width', '1.5');
+  path.setAttribute('stroke-dasharray', '4,3');
+  svg.appendChild(path);
+}
+
+function onWireDrop(e) {
+  if (!dragging) return;
+  document.removeEventListener('mousemove', onWireDrag);
+  document.removeEventListener('mouseup', onWireDrop);
+  document.getElementById('wire-preview').innerHTML = '';
+
+  // Clear active dot
+  const fromNode = getNodeById(dragging.fromNodeId);
+  if (fromNode) {
+    const dots = getPortDots(fromNode.el, dragging.fromPortType);
+    if (dots[dragging.fromPortIdx]) dots[dragging.fromPortIdx].classList.remove('active');
+  }
+
+  // Hit-test: which port dot is at mouse position?
+  const target = document.elementFromPoint(e.clientX, e.clientY);
+  if (target && target.classList.contains('port-dot')) {
+    // Determine target node and port
+    const targetCard = target.closest('.node-card');
+    if (!targetCard) { dragging = null; return; }
+    const targetNodeId = parseInt(targetCard.dataset.nodeId);
+    const targetNode = getNodeById(targetNodeId);
+    if (!targetNode || targetNodeId === dragging.fromNodeId) { dragging = null; return; }
+
+    let toPortType = null, toPortIdx = -1;
+    if (target.classList.contains('pass-in')) toPortType = 'pass-in';
+    else if (target.classList.contains('pass-out')) toPortType = 'pass-out';
+    else if (target.closest('.port-row.input-row')) toPortType = 'input';
+    else if (target.closest('.port-row.output-row')) toPortType = 'output';
+
+    if (!toPortType) { dragging = null; return; }
+
+    // Find index
+    const dots = getPortDots(targetNode.el, toPortType);
+    toPortIdx = Array.from(dots).indexOf(target);
+    if (toPortIdx < 0) { dragging = null; return; }
+
+    // Validate connection direction:
+    // output → input, output → pass-in, pass-out → input, pass-out → pass-in
+    const from = dragging.fromPortType;
+    const to = toPortType;
+    const validPairs = [
+      ['output', 'input'],
+      ['output', 'pass-in'],
+      ['pass-out', 'input'],
+      ['pass-out', 'pass-in'],
+    ];
+    const valid = validPairs.some(([f, t]) => f === from && t === to);
+    if (!valid) {
+      notify('Invalid connection direction');
+      dragging = null;
+      return;
+    }
+
+    // Remove existing connection to same target port (one input per port)
+    if (to === 'input' || to === 'pass-in') {
+      connections = connections.filter(c => !(c.toNodeId === targetNodeId && c.toPortType === to && c.toPortIdx === toPortIdx));
+    }
+
+    // Create connection
+    const conn = {
+      id: nextConnId++,
+      fromNodeId: dragging.fromNodeId,
+      fromPortType: from,
+      fromPortIdx: dragging.fromPortIdx,
+      toNodeId: targetNodeId,
+      toPortType: to,
+      toPortIdx: toPortIdx,
+      el: null,
+    };
+    connections.push(conn);
+
+    // Update source values
+    updatePortSources(conn);
+    renderConnections();
+    rebuildNodeBody(targetNode);
+    renderConnections();
+  }
+
+  dragging = null;
+}
+
+// When connection is made, update source fields
+function updatePortSources(conn) {
+  const fromNode = getNodeById(conn.fromNodeId);
+  const toNode   = getNodeById(conn.toNodeId);
+  if (!fromNode || !toNode) return;
+
+  let sourceValue = '';
+  if (conn.fromPortType === 'output') {
+    sourceValue = fromNode.outputs[conn.fromPortIdx]?.target || '';
+  } else if (conn.fromPortType === 'pass-out') {
+    sourceValue = fromNode.passes[conn.fromPortIdx]?.target || '';
+  }
+
+  if (conn.toPortType === 'input') {
+    if (toNode.inputs[conn.toPortIdx]) {
+      toNode.inputs[conn.toPortIdx].source = sourceValue;
+    }
+  } else if (conn.toPortType === 'pass-in') {
+    if (toNode.passes[conn.toPortIdx]) {
+      toNode.passes[conn.toPortIdx].source = sourceValue;
+    }
+  }
+}
+
+// Node dragging removed: layout is column-based (auto-positioned by loadPipeline / createNode).
+
+// ─────────────────────────────────────────────
+//  Node deletion
+// ─────────────────────────────────────────────
+function deleteNode(nodeObj) {
+  connections = connections.filter(c => c.fromNodeId !== nodeObj.id && c.toNodeId !== nodeObj.id);
+  // Clear source on disconnected ports
+  connections.forEach(c => {
+    // no-op: connections to this node already removed
+  });
+  nodes = nodes.filter(n => n !== nodeObj);
+  nodeObj.el.remove();
+  // Rebuild remaining nodes to update disabled states
+  nodes.forEach(n => rebuildNodeBody(n));
+  renderConnections();
+  updateCanvasSize();
+}
+
+// ─────────────────────────────────────────────
+//  Keyboard: Delete key removes selected connection
+// ─────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    dragging = null;
+    document.getElementById('wire-preview').innerHTML = '';
+    document.removeEventListener('mousemove', onWireDrag);
+    document.removeEventListener('mouseup', onWireDrop);
+  }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    deleteSelectedConnection();
+  }
+});
+
+// Click on canvas deselects
+document.getElementById('canvas').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('canvas') || e.target === document.getElementById('svg-overlay')) {
+    selectedConn = null;
+    renderConnections();
+  }
+});
+
+// ─────────────────────────────────────────────
+//  Save JSON
+// ─────────────────────────────────────────────
+function exportJSON() {
+  const pipeline = nodes.map(nodeObj => {
+    // Derive next_nodes from outgoing connections (output port to any input/pass-in)
+    const nextSet = new Set();
+    connections.forEach(conn => {
+      if (conn.fromNodeId === nodeObj.id) {
+        nextSet.add(conn.toNodeId);
+      }
+    });
+    const next_nodes = Array.from(nextSet);
+
+    // Parse extra config values
+    const extras = {};
+    Object.entries(nodeObj.extraConfig).forEach(([k, v]) => {
+      if (typeof v === 'string') {
+        try { extras[k] = JSON.parse(v); } catch { extras[k] = v; }
+      } else {
+        extras[k] = v;
+      }
+    });
+
+    const config = {
+      input_vars: nodeObj.inputs.map(inp => ({ input_name: inp.name, source: inp.source })),
+      pass_vars: nodeObj.passes.map(pv => ({ source: pv.source, target: pv.target })),
+      output_vars: nodeObj.outputs.map(out => ({ output_name: out.name, target: out.target })),
+      next_nodes,
+      ...extras,
+    };
+
+    return { node_id: nodeObj.id, function: nodeObj.fn, config };
+  });
+
+  return { pipeline };
+}
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  const data = exportJSON();
+  const name = document.getElementById('config-name').value || 'pipeline';
+  const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  notify('JSON saved');
+});
+
+// ─────────────────────────────────────────────
+//  Load JSON
+// ─────────────────────────────────────────────
+document.getElementById('file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      loadPipeline(data);
+      const name = file.name.replace(/\.json$/, '');
+      document.getElementById('config-name').value = name;
+      notify('Loaded: ' + file.name);
+    } catch (err) {
+      notify('Error parsing JSON: ' + err.message, 4000);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = ''; // reset so same file can be reloaded
+});
+
+function loadPipeline(data) {
+  // Clear existing
+  nodes.forEach(n => n.el.remove());
+  nodes = [];
+  connections = [];
+  selectedConn = null;
+  nextConnId = 1;
+  document.getElementById('svg-overlay').innerHTML = '';
+  // Remove old column backgrounds
+  document.querySelectorAll('.col-bg').forEach(el => el.remove());
+
+  const pipeline = data.pipeline || [];
+
+  // Build lookup: target_value → {nodeId, portType, portIdx}
+  // This is built after we create all nodes
+  const nodeDataMap = {}; // nodeId → raw node data
+
+  pipeline.forEach(item => {
+    nodeDataMap[item.node_id] = item;
+  });
+
+  // Topological sort for layout
+  const sorted = topoSort(pipeline);
+
+  // Column position = node_id (empty IDs are empty columns)
+
+  // Create nodes
+  pipeline.forEach((item) => {
+    const x = CANVAS_PAD + item.node_id * (NODE_W + NODE_GAP_X);
+    const y = CANVAS_PAD;
+
+    const cfg = item.config || {};
+    const inputs  = (cfg.input_vars  || []).map(iv => ({ name: iv.input_name, source: iv.source }));
+    const outputs = (cfg.output_vars || []).map(ov => ({ name: ov.output_name, target: ov.target }));
+    const passes  = (cfg.pass_vars   || []).map(pv => ({ source: pv.source, target: pv.target }));
+
+    // Extra config = everything except reserved keys
+    const reserved = new Set(['input_vars', 'output_vars', 'pass_vars', 'next_nodes']);
+    const extraConfig = {};
+    Object.entries(cfg).forEach(([k, v]) => {
+      if (!reserved.has(k)) extraConfig[k] = v;
+    });
+
+    createNode({ id: item.node_id, fn: item.function, inputs, outputs, passes, extraConfig, x, y });
+  });
+
+  // Build target → {nodeId, portType('output'|'pass-out'), portIdx}
+  // output_vars targets take priority: register them first, then only add pass_vars
+  // targets that don't already exist (avoids collision when both share the same target value).
+  const targetLookup = {};
+  // Find node configs to check next_nodes
+  const nodeConfigMap = {};
+  (data.pipeline || []).forEach(item => { nodeConfigMap[item.node_id] = item.config; });
+  nodes.forEach(nodeObj => {
+    // Skip terminal nodes (next_nodes=[]) — their outputs go to client, not pipeline
+    const cfg = nodeConfigMap[nodeObj.id] || {};
+    if ((cfg.next_nodes || []).length === 0) return;
+    nodeObj.outputs.forEach((out, idx) => {
+      if (out.target) targetLookup[out.target] = { nodeId: nodeObj.id, portType: 'output', portIdx: idx };
+    });
+  });
+  nodes.forEach(nodeObj => {
+    nodeObj.passes.forEach((pv, idx) => {
+      if (pv.target && !targetLookup.hasOwnProperty(pv.target)) {
+        targetLookup[pv.target] = { nodeId: nodeObj.id, portType: 'pass-out', portIdx: idx };
+      }
+    });
+  });
+
+  // Create connections from input_vars.source
+  nodes.forEach(toNode => {
+    toNode.inputs.forEach((inp, toIdx) => {
+      const src = inp.source;
+      if (src && targetLookup[src]) {
+        const { nodeId: fromNodeId, portType: fromPortType, portIdx: fromPortIdx } = targetLookup[src];
+        connections.push({
+          id: nextConnId++,
+          fromNodeId, fromPortType, fromPortIdx,
+          toNodeId: toNode.id, toPortType: 'input', toPortIdx: toIdx,
+          el: null,
+        });
+      }
+    });
+    // Create connections from pass_vars.source
+    toNode.passes.forEach((pv, toIdx) => {
+      const src = pv.source;
+      if (src && targetLookup[src]) {
+        const { nodeId: fromNodeId, portType: fromPortType, portIdx: fromPortIdx } = targetLookup[src];
+        connections.push({
+          id: nextConnId++,
+          fromNodeId, fromPortType, fromPortIdx,
+          toNodeId: toNode.id, toPortType: 'pass-in', toPortIdx: toIdx,
+          el: null,
+        });
+      }
+    });
+  });
+
+  // Re-render node bodies now that connections exist (updates disabled state on source fields)
+  nodes.forEach(n => rebuildNodeBody(n));
+  renderConnections();
+  updateCanvasSize();
+}
+
+function topoSort(pipeline) {
+  // Simple Kahn's algorithm
+  const idMap = {};
+  pipeline.forEach(item => { idMap[item.node_id] = item; });
+  const inDeg = {};
+  pipeline.forEach(item => { inDeg[item.node_id] = 0; });
+  pipeline.forEach(item => {
+    (item.config.next_nodes || []).forEach(nid => {
+      inDeg[nid] = (inDeg[nid] || 0) + 1;
+    });
+  });
+  const queue = pipeline.filter(item => inDeg[item.node_id] === 0);
+  const result = [];
+  while (queue.length) {
+    const item = queue.shift();
+    result.push(item);
+    (item.config.next_nodes || []).forEach(nid => {
+      inDeg[nid]--;
+      if (inDeg[nid] === 0 && idMap[nid]) queue.push(idMap[nid]);
+    });
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────
+//  Add Node button
+// ─────────────────────────────────────────────
+document.getElementById('btn-add-node').addEventListener('click', () => {
+  const idStr = prompt('Enter node ID (integer):');
+  if (idStr === null) return;
+  const newId = parseInt(idStr, 10);
+  if (isNaN(newId) || newId < 0) { alert('Invalid ID'); return; }
+  if (nodes.some(n => n.id === newId)) { alert('ID already exists'); return; }
+  const x = CANVAS_PAD + newId * (NODE_W + NODE_GAP_X);
+  const y = CANVAS_PAD;
+  createNode({ id: newId, x, y });
+  updateCanvasSize();
+});
+
+document.getElementById('btn-del-node').addEventListener('click', () => {
+  const idStr = prompt('Enter node ID to delete:');
+  if (idStr === null) return;
+  const id = parseInt(idStr, 10);
+  const node = getNodeById(id);
+  if (!node) { alert('Node not found'); return; }
+  deleteNode(node);
+});
+
+// ─────────────────────────────────────────────
+//  Re-render on scroll (port positions shift)
+// ─────────────────────────────────────────────
+document.getElementById('canvas-wrapper').addEventListener('scroll', () => {
+  renderConnections();
+});
+
+// ─────────────────────────────────────────────
+//  Init: start with empty canvas
+// ─────────────────────────────────────────────
+updateCanvasSize();
+</script>
+</body>
+</html>

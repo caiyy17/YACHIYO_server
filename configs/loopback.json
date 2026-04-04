@@ -1,14 +1,23 @@
 {
     "pipeline": [
         {
-            "node_id": 0,
+            "node_id": 1,
             "function": "default",
             "config": {
                 "input_vars": [],
                 "pass_vars": [
-                    {"source": "audio", "target": "audio"},
-                    {"source": "video", "target": "video"},
-                    {"source": "data", "target": "data"}
+                    {
+                        "source": "audio",
+                        "target": "audio"
+                    },
+                    {
+                        "source": "video",
+                        "target": "video"
+                    },
+                    {
+                        "source": "data",
+                        "target": "data"
+                    }
                 ],
                 "output_vars": [],
                 "next_nodes": []

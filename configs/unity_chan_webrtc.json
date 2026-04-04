@@ -1,7 +1,7 @@
 {
     "pipeline": [
         {
-            "node_id": 0,
+            "node_id": 1,
             "function": "audio_collector",
             "config": {
                 "input_vars": [
@@ -14,31 +14,35 @@
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "target": "audio_file"
+                        "target": "1_audio_file"
                     }
                 ],
-                "next_nodes": [1],
+                "next_nodes": [
+                    2
+                ],
                 "sample_rate": 48000
             }
         },
         {
-            "node_id": 1,
+            "node_id": 2,
             "function": "call_openai_asr",
             "config": {
                 "input_vars": [
                     {
                         "input_name": "audio_file",
-                        "source": "audio_file"
+                        "source": "1_audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
                         "output_name": "result",
-                        "target": "1_text"
+                        "target": "2_text"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -49,7 +53,7 @@
                 "input_vars": [
                     {
                         "input_name": "prompt",
-                        "source": "1_text"
+                        "source": "2_text"
                     }
                 ],
                 "pass_vars": [],
@@ -67,7 +71,9 @@
                         "target": "3_expression"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -97,37 +103,82 @@
             "node_id": 4,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "3_expression" }],
-                "pass_vars": [
-                    { "source": "3_text", "target": "4_text" },
-                    { "source": "3_action", "target": "4_action" },
-                    { "source": "3_expression", "target": "4_expression_hint" }
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "3_expression"
+                    }
                 ],
-                "output_vars": [{ "output_name": "result", "target": "4_expression" }],
+                "pass_vars": [
+                    {
+                        "source": "3_text",
+                        "target": "4_text"
+                    },
+                    {
+                        "source": "3_action",
+                        "target": "4_action"
+                    },
+                    {
+                        "source": "3_expression",
+                        "target": "4_expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "4_expression"
+                    }
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [5]
+                "next_nodes": [
+                    5
+                ]
             }
         },
         {
             "node_id": 5,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "4_action" }],
-                "pass_vars": [
-                    { "source": "4_text", "target": "5_text" },
-                    { "source": "4_expression", "target": "5_expression" },
-                    { "source": "4_expression_hint", "target": "5_expression_hint" },
-                    { "source": "4_action", "target": "5_action_hint" }
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "4_action"
+                    }
                 ],
-                "output_vars": [{ "output_name": "result", "target": "5_action" }],
+                "pass_vars": [
+                    {
+                        "source": "4_text",
+                        "target": "5_text"
+                    },
+                    {
+                        "source": "4_expression",
+                        "target": "5_expression"
+                    },
+                    {
+                        "source": "4_expression_hint",
+                        "target": "5_expression_hint"
+                    },
+                    {
+                        "source": "4_action",
+                        "target": "5_action_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "5_action"
+                    }
+                ],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [6]
+                "next_nodes": [
+                    6
+                ]
             }
         },
         {
@@ -143,32 +194,34 @@
                 "pass_vars": [
                     {
                         "source": "5_text",
-                        "target": "text"
+                        "target": "6_text"
                     },
                     {
                         "source": "5_action",
-                        "target": "action"
+                        "target": "6_action"
                     },
                     {
                         "source": "5_action_hint",
-                        "target": "action_hint"
+                        "target": "6_action_hint"
                     },
                     {
                         "source": "5_expression",
-                        "target": "expression"
+                        "target": "6_expression"
                     },
                     {
                         "source": "5_expression_hint",
-                        "target": "expression_hint"
+                        "target": "6_expression_hint"
                     }
                 ],
                 "output_vars": [
                     {
                         "output_name": "audio_file",
-                        "target": "audio_data"
+                        "target": "6_audio_data"
                     }
                 ],
-                "next_nodes": [7],
+                "next_nodes": [
+                    7
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
@@ -180,28 +233,28 @@
                 "input_vars": [
                     {
                         "input_name": "audio_data",
-                        "source": "audio_data"
+                        "source": "6_audio_data"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "source": "text",
+                        "source": "6_text",
                         "target": "text"
                     },
                     {
-                        "source": "action",
+                        "source": "6_action",
                         "target": "action"
                     },
                     {
-                        "source": "action_hint",
+                        "source": "6_action_hint",
                         "target": "action_hint"
                     },
                     {
-                        "source": "expression",
+                        "source": "6_expression",
                         "target": "expression"
                     },
                     {
-                        "source": "expression_hint",
+                        "source": "6_expression_hint",
                         "target": "expression_hint"
                     }
                 ],

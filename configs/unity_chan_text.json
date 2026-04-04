@@ -1,19 +1,40 @@
 {
     "pipeline": [
         {
-            "node_id": 3,
+            "node_id": 1,
             "function": "call_openai_llm",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "text" }],
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "text"
+                    }
+                ],
                 "pass_vars": [],
                 "output_vars": [
-                    { "output_name": "text", "target": "3_text" },
-                    { "output_name": "action", "target": "3_action" },
-                    { "output_name": "expression", "target": "3_expression" }
+                    {
+                        "output_name": "text",
+                        "target": "1_text"
+                    },
+                    {
+                        "output_name": "action",
+                        "target": "1_action"
+                    },
+                    {
+                        "output_name": "expression",
+                        "target": "1_expression"
+                    }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    2
+                ],
                 "history_mode": "tavern",
-                "lorebooks": [{ "name": "unity_chan", "offset": 0 }],
+                "lorebooks": [
+                    {
+                        "name": "unity_chan",
+                        "offset": 0
+                    }
+                ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
@@ -21,41 +42,90 @@
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
-                    "action": { "start_mark": "[", "end_mark": "]" },
-                    "expression": { "start_mark": "(", "end_mark": ")" }
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
+                    }
                 }
             }
         },
         {
-            "node_id": 4,
+            "node_id": 2,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "3_expression" }],
-                "pass_vars": [
-                    { "source": "3_text", "target": "4_text" },
-                    { "source": "3_action", "target": "4_action" },
-                    { "source": "3_expression", "target": "4_expression_hint" }
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "1_expression"
+                    }
                 ],
-                "output_vars": [{ "output_name": "result", "target": "4_expression" }],
+                "pass_vars": [
+                    {
+                        "source": "1_text",
+                        "target": "2_text"
+                    },
+                    {
+                        "source": "1_action",
+                        "target": "2_action"
+                    },
+                    {
+                        "source": "1_expression",
+                        "target": "2_expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "2_expression"
+                    }
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [5]
+                "next_nodes": [
+                    3
+                ]
             }
         },
         {
-            "node_id": 5,
+            "node_id": 3,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "4_action" }],
-                "pass_vars": [
-                    { "source": "4_text", "target": "text" },
-                    { "source": "4_expression", "target": "expression" },
-                    { "source": "4_expression_hint", "target": "expression_hint" },
-                    { "source": "4_action", "target": "action_hint" }
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "2_action"
+                    }
                 ],
-                "output_vars": [{ "output_name": "result", "target": "action" }],
+                "pass_vars": [
+                    {
+                        "source": "2_text",
+                        "target": "text"
+                    },
+                    {
+                        "source": "2_expression",
+                        "target": "expression"
+                    },
+                    {
+                        "source": "2_expression_hint",
+                        "target": "expression_hint"
+                    },
+                    {
+                        "source": "2_action",
+                        "target": "action_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "result",
+                        "target": "action"
+                    }
+                ],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,

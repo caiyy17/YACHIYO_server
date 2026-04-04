@@ -58,7 +58,7 @@ async def transcriptions(
     raw_text = result.get("text", "")
 
     # Parse: "language Chinese<asr_text>actual text" -> standard format
-    match = re.match(r"language\s+(\w+)<asr_text>(.+)", raw_text, re.DOTALL)
+    match = re.match(r"language\s+(\w+)<asr_text>(.*)", raw_text, re.DOTALL)
     if match:
         lang = match.group(1).lower()
         text = match.group(2).strip()

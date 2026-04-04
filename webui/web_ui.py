@@ -28,6 +28,13 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/pipeline-editor", response_class=HTMLResponse)
+async def pipeline_editor():
+    editor_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline_editor.html")
+    with open(editor_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
+
+
 @app.get("/favicon.ico")
 async def favicon():
     return JSONResponse(content={"message": "Favicon not found"}, status_code=404)

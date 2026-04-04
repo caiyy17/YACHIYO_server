@@ -17,12 +17,14 @@
                         "target": "1_text"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    2
+                ],
                 "model": "openai"
             }
         },
         {
-            "node_id": 3,
+            "node_id": 2,
             "function": "call_openai_llm",
             "config": {
                 "input_vars": [
@@ -35,10 +37,12 @@
                 "output_vars": [
                     {
                         "output_name": "text",
-                        "target": "3_text"
+                        "target": "2_text"
                     }
                 ],
-                "next_nodes": [6],
+                "next_nodes": [
+                    3
+                ],
                 "system_prompt": "This is a system prompt.",
                 "reset_history": true,
                 "history_length": 30,
@@ -48,18 +52,18 @@
             }
         },
         {
-            "node_id": 6,
+            "node_id": 3,
             "function": "call_openai_tts",
             "config": {
                 "input_vars": [
                     {
                         "input_name": "text",
-                        "source": "3_text"
+                        "source": "2_text"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "source": "3_text",
+                        "source": "2_text",
                         "target": "text"
                     }
                 ],

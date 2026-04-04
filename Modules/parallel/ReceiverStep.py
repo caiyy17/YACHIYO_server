@@ -1,11 +1,16 @@
 """
 Receiver node: collects parallel branch outputs and merges them.
 
+Uses standard input_vars/output_vars:
+    input_vars:  declares expected branch outputs (extract_input_data
+                 renames them on each arriving branch message)
+    output_vars: maps collected field names to final output names
+
 Catches signals dispatch_start and dispatch_end.
-Between start and end, accumulates all arriving data as branch outputs.
+Between start and end, accumulates extracted branch data.
 On end:
-  - Branch outputs go through add_output (output_vars mapping applied)
-  - Base layer from start signal serves as pass_data (forwarded via add_pass_data)
+  - Merged branch data goes through add_output (output_vars mapping)
+  - Base layer from start signal serves as pass_data
 
 Messages arriving when not collecting are forwarded unchanged.
 FIFO guarantees groups never interleave.
@@ -19,34 +24,42 @@ class ReceiverStep(BaseProcessingStep):
         self.catch_signal_set = {"dispatch_start", "dispatch_end"}
         self.current_group = None
 
-    def extract_input_data(self, data):
-        """Pass all fields through."""
-        return dict(data)
-
     def process(self, data, pass_data={}):
         signal = data.get("signal", "")
 
         # Start signal: begin collecting, store pass_data as base layer
+        # (caught signals bypass extract, so apply pass_vars manually)
         if signal == "dispatch_start":
-            base = {
-                k: v for k, v in data.items()
-                if k not in ("signal", "timestamp", "destination")
-            }
+            pass_vars = self.config.get("pass_vars", [])
+            if pass_vars:
+                base = {}
+                for pv in pass_vars:
+                    if pv["source"] in data:
+                        base[pv["target"]] = data[pv["source"]]
+            else:
+                base = {
+                    k: v for k, v in data.items()
+                    if k not in ("signal", "timestamp", "destination")
+                }
             self.current_group = {"base": base, "branches": []}
             self.logger.info("dispatch_start")
             return
 
-        # End signal: output branch results with base as pass_data
+        # End signal: output merged branch results with base as pass_data
         if signal == "dispatch_end":
             if self.current_group is not None:
                 n = len(self.current_group["branches"])
                 self.logger.info(f"dispatch_end, merging {n} branches")
 
-                # Branch outputs through add_output (applies output_vars mapping)
-                output_data = {}
+                # Merge all branch data (already renamed by extract_input_data)
+                merged = {}
                 for branch_data in self.current_group["branches"]:
-                    for key, value in branch_data.items():
-                        self.add_output(output_data, key, value)
+                    merged.update(branch_data)
+
+                # Apply output_vars mapping
+                output_data = {}
+                for key, value in merged.items():
+                    self.add_output(output_data, key, value)
 
                 # Base layer (from start signal) as pass_data
                 base_pass = dict(self.current_group["base"])
@@ -57,6 +70,8 @@ class ReceiverStep(BaseProcessingStep):
             return
 
         # Collecting: accumulate branch output
+        # (normal messages go through extract_input_data in base run loop,
+        #  so field names are already renamed via input_vars)
         if self.current_group is not None:
             branch_data = {
                 k: v for k, v in data.items()
@@ -68,7 +83,7 @@ class ReceiverStep(BaseProcessingStep):
             )
             return
 
-        # Not collecting: forward unchanged
+        # Not collecting: forward unchanged with output_vars mapping
         output_data = {}
         for key, value in data.items():
             if key not in ("signal", "timestamp", "destination"):

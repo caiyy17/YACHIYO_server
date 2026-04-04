@@ -1,19 +1,38 @@
 {
     "pipeline": [
         {
-            "node_id": 3,
+            "node_id": 1,
             "function": "call_openai_llm",
             "config": {
-                "input_vars": [{ "input_name": "prompt", "source": "text" }],
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "text"
+                    }
+                ],
                 "pass_vars": [],
                 "output_vars": [
-                    { "output_name": "text", "target": "text" },
-                    { "output_name": "action", "target": "action" },
-                    { "output_name": "expression", "target": "expression" }
+                    {
+                        "output_name": "text",
+                        "target": "text"
+                    },
+                    {
+                        "output_name": "action",
+                        "target": "action"
+                    },
+                    {
+                        "output_name": "expression",
+                        "target": "expression"
+                    }
                 ],
                 "next_nodes": [],
                 "history_mode": "tavern",
-                "lorebooks": [{ "name": "sora", "offset": 0 }],
+                "lorebooks": [
+                    {
+                        "name": "sora",
+                        "offset": 0
+                    }
+                ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
@@ -21,10 +40,19 @@
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
-                    "action": { "start_mark": "[", "end_mark": "]" },
-                    "expression": { "start_mark": "(", "end_mark": ")" }
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
+                    }
                 },
-                "tool_names": ["get_weather", "web_search"],
+                "tool_names": [
+                    "get_weather",
+                    "web_search"
+                ],
                 "vars": {
                     "location": "Tokyo"
                 }
