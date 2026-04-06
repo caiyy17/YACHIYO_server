@@ -92,7 +92,9 @@ document.getElementById('webrtcServer').value = '';
 let pc = null;
 let dc = null;
 let localStream = null;
+let cameraStream = null;
 let canvasStream = null;
+let resampleRAF = null;
 let connected = false;
 
 const logEl = document.getElementById('log');
@@ -111,16 +113,66 @@ function generateClientId() {
   return crypto.randomUUID();
 }
 
-// Generate dummy video track from canvas
-async function createPlaceholderVideoTrack(w, h, fps) {
-  // Load a pre-generated placeholder video, loop it, captureStream
-  const video = document.createElement('video');
-  video.src = `/static/placeholder_${w}x${h}.webm`;
-  video.loop = true;
-  video.muted = true;
-  await video.play();
-  canvasStream = video.captureStream();
+// Resample a video source to target fps via canvas
+// Uses rAF in foreground, setInterval in background (rAF pauses when tab hidden)
+let resampleTimer = null;
+let resampleSource = null;
+let resampleCtx = null;
+
+function startResample(source, w, h, fps) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  resampleCtx = canvas.getContext('2d');
+  resampleSource = source;
+
+  function draw() {
+    resampleCtx.drawImage(resampleSource, 0, 0, w, h);
+  }
+  function rafLoop() {
+    draw();
+    resampleRAF = requestAnimationFrame(rafLoop);
+  }
+
+  function onVisibility() {
+    if (document.hidden) {
+      // Tab hidden: stop rAF, start interval (throttled to ~1fps by browser, but
+      // captureStream still outputs at target fps with repeated frames)
+      if (resampleRAF) { cancelAnimationFrame(resampleRAF); resampleRAF = null; }
+      if (!resampleTimer) resampleTimer = setInterval(draw, 1000 / fps);
+    } else {
+      // Tab visible: stop interval, resume rAF
+      if (resampleTimer) { clearInterval(resampleTimer); resampleTimer = null; }
+      if (!resampleRAF) rafLoop();
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibility);
+
+  rafLoop();
+  canvasStream = canvas.captureStream(fps);
   return canvasStream.getVideoTracks()[0];
+}
+
+// Camera with canvas resample; placeholder fallback if no camera
+async function getVideoTrack(w, h, fps) {
+  const video = document.createElement('video');
+  video.muted = true;
+
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } }
+    });
+    const s = cameraStream.getVideoTracks()[0].getSettings();
+    log(`Camera: ${s.width}x${s.height} @ ${s.frameRate}fps -> resample to ${fps}fps`);
+    video.srcObject = cameraStream;
+  } catch(e) {
+    log(`WARNING: Camera unavailable (${e.message}), using placeholder`);
+    video.src = `/static/placeholder_${w}x${h}.webm`;
+    video.loop = true;
+  }
+
+  await video.play();
+  return startResample(video, w, h, fps);
 }
 
 async function connect() {
@@ -156,10 +208,10 @@ async function connect() {
     log('Microphone acquired');
   } catch(e) { log(`Mic error: ${e.message}`); return; }
 
-  // Create PeerConnection with placeholder video (30fps guaranteed)
+  // Create PeerConnection
   pc = new RTCPeerConnection();
   pc.addTrack(localStream.getAudioTracks()[0], localStream);
-  pc.addTrack(await createPlaceholderVideoTrack(1280, 720, 30));
+  pc.addTrack(await getVideoTrack(1280, 720, 30));
 
   // DataChannel
   dc = pc.createDataChannel('client-signals', {ordered: true});
@@ -241,7 +293,10 @@ async function connect() {
 async function disconnect() {
   connected = false;
   if (pc) { pc.close(); pc = null; }
+  if (resampleRAF) { cancelAnimationFrame(resampleRAF); resampleRAF = null; }
+  if (resampleTimer) { clearInterval(resampleTimer); resampleTimer = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   if (canvasStream) { canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
 
   const mainServer = document.getElementById('mainServer').value;

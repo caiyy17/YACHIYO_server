@@ -281,11 +281,17 @@ class ClientConnection:
         self.initialized = False
         self.log_info(f"Dispose: Client {self.client_id} disposed")
 
-    async def wait_for_threads(self):
-        while True:
+    async def wait_for_threads(self, timeout=35):
+        """Wait for threads to exit. Timeout should exceed the longest HTTP timeout
+        in any module (e.g. MotionGeneration 30s) to allow graceful exit."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
             if not any(t.is_alive() for t in self.threads):
-                break
+                return
             await asyncio.sleep(TIME_INTERVAL)
+        alive = [t.name for t in self.threads if t.is_alive()]
+        if alive:
+            self.log_info(f"Dispose: threads still alive after {timeout}s: {alive}")
 
     async def close(self):
         if self.connected:
