@@ -8,7 +8,7 @@ from collections import deque
 from math import gcd
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from ..base.BaseProcessingStep import BaseProcessingStep
 
@@ -16,6 +16,16 @@ WEBRTC_SAMPLE_RATE = 48000
 FRAME_SAMPLES = 960  # 20ms at 48kHz
 VIDEO_FPS = 30
 DATA_FPS = 20
+
+# Frame background colors (RGB)
+IDLE_COLOR = (173, 216, 230)   # light blue
+SPEAK_COLOR = (144, 238, 144)  # light green
+
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "DejaVuSans-Bold.ttf",
+]
 
 
 class FrameSplitterStep(BaseProcessingStep):
@@ -54,16 +64,23 @@ class FrameSplitterStep(BaseProcessingStep):
         self._group_period = self.audio_per_group * self.frame_samples / self.sample_rate
         group_ms = self._group_period * 1000
 
-        # Pre-generate reusable frames
-        self._idle_frame_b64 = self._make_jpeg_b64(173, 216, 230)      # light blue: idle
-        self._speaking_frame_b64 = self._make_jpeg_b64(144, 238, 144)  # light green: speaking
+        # Pre-create background templates and font for per-frame numbered overlay
+        # (frames are rendered with the current counter at SEND time, not generation
+        # time, so cancel-clearing the buffer never leaves gaps in the emitted seq.)
+        self._idle_base = Image.new("RGB", (self.video_width, self.video_height), IDLE_COLOR)
+        self._speak_base = Image.new("RGB", (self.video_width, self.video_height), SPEAK_COLOR)
+        font_size = max(40, min(self.video_width, self.video_height) // 8)
+        self._font = self._load_font(font_size)
+        self._video_frame_counter = 0
+
         self._silence_audio = [
             base64.b64encode(
                 np.zeros(self.frame_samples, dtype=np.int16).tobytes()
             ).decode("ascii")
         ] * self.audio_per_group
 
-        # Internal buffer: only media groups ("group", json_str)
+        # Internal buffer: ("group", dict-with-video-markers) or ("signal", json_str)
+        # Video markers are strings "idle"/"speak"; JPEGs are rendered on pop.
         self._group_buffer = deque()
         self._clock_running = False
 
@@ -81,12 +98,46 @@ class FrameSplitterStep(BaseProcessingStep):
             f"clock-driven output (paused until connection_start)"
         )
 
-    def _make_jpeg_b64(self, r, g, b):
-        """Generate a solid color JPEG frame, base64 encoded."""
-        img = Image.new("RGB", (self.video_width, self.video_height), (r, g, b))
+    def _load_font(self, size):
+        for path in FONT_CANDIDATES:
+            try:
+                return ImageFont.truetype(path, size)
+            except (OSError, IOError):
+                continue
+        return ImageFont.load_default()
+
+    def _render_jpeg_b64(self, kind, frame_num):
+        """Render a numbered frame. kind in {"idle","speak"}.
+        ~1-2ms per frame at 1280x720 on a modern CPU; called lazily at send time."""
+        base = self._speak_base if kind == "speak" else self._idle_base
+        img = base.copy()
+        draw = ImageDraw.Draw(img)
+        text = f"#{frame_num}"
+        # Center the text
+        bbox = draw.textbbox((0, 0), text, font=self._font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (self.video_width - tw) // 2 - bbox[0]
+        y = (self.video_height - th) // 2 - bbox[1]
+        # Black outline (4-direction) + white fill for visibility on any background
+        for dx, dy in ((-3, 0), (3, 0), (0, -3), (0, 3)):
+            draw.text((x + dx, y + dy), text, fill=(0, 0, 0), font=self._font)
+        draw.text((x, y), text, fill=(255, 255, 255), font=self._font)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def _render_group_videos(self, group_dict):
+        """Replace "idle"/"speak" markers with numbered JPEG frames, incrementing
+        the counter once per frame. Called at pop time so cancel never wastes ids."""
+        for target in self.output_dict.get("video", []):
+            markers = group_dict.get(target)
+            if not isinstance(markers, list):
+                continue
+            rendered = []
+            for marker in markers:
+                rendered.append(self._render_jpeg_b64(marker, self._video_frame_counter))
+                self._video_frame_counter += 1
+            group_dict[target] = rendered
 
     # ── Clock-driven run loop (overrides BaseProcessingStep.run) ──
 
@@ -146,6 +197,8 @@ class FrameSplitterStep(BaseProcessingStep):
         """Run the 100ms clock loop until connection_stop or kill."""
         clock_start = time.time()
         group_index = 0
+        # Reset frame counter per connection so numbering starts from 0
+        self._video_frame_counter = 0
 
         # Stats
         _si = 100  # log every 100 groups (~10s)
@@ -173,11 +226,13 @@ class FrameSplitterStep(BaseProcessingStep):
                 if not self._group_buffer:
                     break  # _fill_default should have filled, safety
 
-                entry_type, data_json = self._group_buffer.popleft()
+                entry_type, entry = self._group_buffer.popleft()
                 if entry_type == "signal":
-                    self.output_queue.put(data_json)  # forward signal immediately
+                    self.output_queue.put(entry)  # forward signal immediately (json str)
                     continue
-                group_to_send = data_json
+                # Media group: entry is a dict with "idle"/"speak" markers; render now
+                self._render_group_videos(entry)
+                group_to_send = json.dumps(entry)
 
             # Wait for tick (absolute time, no drift)
             next_tick = clock_start + group_index * self._group_period
@@ -261,11 +316,10 @@ class FrameSplitterStep(BaseProcessingStep):
         self._stats_silence += 1
         frame_data = {}
         self.add_output(frame_data, "audio", self._silence_audio)
-        self.add_output(frame_data, "video",
-                        [self._idle_frame_b64] * self.video_per_group)
+        self.add_output(frame_data, "video", ["idle"] * self.video_per_group)
         self.add_output(frame_data, "data", [None] * self.data_per_group)
         self.add_destination(frame_data)
-        self._group_buffer.append(("group", json.dumps(frame_data)))
+        self._group_buffer.append(("group", frame_data))
 
     def _split_to_buffer(self, data, pass_data):
         """Split TTS audio into groups and append to internal buffer."""
@@ -291,7 +345,7 @@ class FrameSplitterStep(BaseProcessingStep):
                 base64.b64encode(f.tobytes()).decode("ascii")
                 for f in group_audio
             ]
-            video_list = [self._speaking_frame_b64] * self.video_per_group
+            video_list = ["speak"] * self.video_per_group
 
             data_list = [None] * self.data_per_group
             if group_count == 0 and meta:
@@ -303,7 +357,7 @@ class FrameSplitterStep(BaseProcessingStep):
             self.add_output(frame_data, "data", data_list)
             self.add_destination(frame_data)
 
-            self._group_buffer.append(("group", json.dumps(frame_data)))
+            self._group_buffer.append(("group", frame_data))
             group_count += 1
 
         self._stats_content += group_count
