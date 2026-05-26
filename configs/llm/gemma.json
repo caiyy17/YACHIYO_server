@@ -1,0 +1,10 @@
+{
+    "api_base": "custom_api",
+    "api_key": "CUSTOM_KEY",
+    "extra": {
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "max_tokens": 4096
+    },
+    "model_name": "gemma-4-31B-it"
+}

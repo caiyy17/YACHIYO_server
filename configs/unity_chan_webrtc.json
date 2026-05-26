@@ -17,7 +17,9 @@
                         "target": "1_audio_file"
                     }
                 ],
-                "next_nodes": [2],
+                "next_nodes": [
+                    2
+                ],
                 "sample_rate": 48000
             }
         },
@@ -38,7 +40,9 @@
                         "target": "2_text"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -67,7 +71,9 @@
                         "target": "3_expression"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -127,7 +133,9 @@
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [5]
+                "next_nodes": [
+                    5
+                ]
             }
         },
         {
@@ -168,7 +176,9 @@
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [6]
+                "next_nodes": [
+                    6
+                ]
             }
         },
         {
@@ -209,7 +219,9 @@
                         "target": "6_audio_data"
                     }
                 ],
-                "next_nodes": [7],
+                "next_nodes": [
+                    7
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }

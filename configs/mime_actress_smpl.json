@@ -61,7 +61,7 @@
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 10,
-                "model": "dev_llm",
+                "model": "gpt",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 20,
                 "extra_info": {

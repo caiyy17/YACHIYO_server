@@ -13,6 +13,7 @@ pydub
 # WebRTC (optional, for frame-level streaming mode)
 aiortc
 aiohttp
+aiohttp_cors
 Pillow
 av
 

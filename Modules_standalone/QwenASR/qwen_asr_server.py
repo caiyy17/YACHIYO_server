@@ -103,24 +103,25 @@ if __name__ == "__main__":
         "--port", str(args.backend_port),
     ])
 
-    # Wait for backend
-    for i in range(60):
+    # Wait for backend (block until ready; fail fast if subprocess dies)
+    elapsed = 0
+    while True:
         time.sleep(2)
+        elapsed += 2
+        if backend.poll() is not None:
+            print(f"Backend exited prematurely with code {backend.returncode}")
+            sys.exit(1)
         try:
             r = httpx.get(f"{BACKEND_URL}/v1/models", timeout=2)
             if r.status_code == 200:
                 data = r.json()
                 MODEL_NAME = data["data"][0]["id"]
-                print(f"Backend ready: {MODEL_NAME}")
+                print(f"Backend ready: {MODEL_NAME} ({elapsed}s)")
                 break
         except:
             pass
-        if i % 5 == 0:
-            print(f"  waiting... ({(i+1)*2}s)")
-    else:
-        print("Backend failed to start!")
-        backend.kill()
-        sys.exit(1)
+        if elapsed % 10 == 0:
+            print(f"  waiting... ({elapsed}s)")
 
     # Start proxy
     print(f"Starting proxy on {args.host}:{args.port} -> {BACKEND_URL}")

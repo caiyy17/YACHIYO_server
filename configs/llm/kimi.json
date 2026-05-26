@@ -2,7 +2,7 @@
     "api_base": "custom_api",
     "api_key": "CUSTOM_KEY",
     "extra": {
-        "temperature": 1.0,
+        "temperature": 0.9,
         "top_p": 0.95,
         "max_tokens": 4096,
         "extra_body": {

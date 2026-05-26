@@ -40,7 +40,7 @@ Service address is configured in `configs/settings/settings.json`:
 ```json
 {
     "llm": {
-        "qwen_api": "http://127.0.0.1:8000/v1"
+        "custom_api": "http://127.0.0.1:8000/v1"
     }
 }
 ```
