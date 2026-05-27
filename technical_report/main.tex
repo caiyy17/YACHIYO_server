@@ -552,7 +552,13 @@ OpenClaw.
 \end{thebibliography}
 
 % ============================================================
+\newpage
 \appendix
+\begin{center}
+    {\LARGE\bfseries Appendix}
+\end{center}
+\vspace{1.5em}
+
 \section{Proof: DAG Linearization}
 \label{app:proof}
 
@@ -713,20 +719,19 @@ The Unity client mirrors the server's pipeline design: modules (VAD, recording, 
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[State machine. Four states: Idle, Ready, Listening, Answering. Transitions: Idle $\xrightarrow{\text{ready\_start}}$ Ready $\xrightarrow{\text{listening\_start}}$ Listening $\xrightarrow{\text{listening\_end}}$ Answering $\xrightarrow{\text{answering\_end}}$ Ready. Dashed arrow: any state $\xrightarrow{\text{cancel}}$ Idle.]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[State machine. Three states: Idle, Listening, Answering. Transitions: Idle $\xrightarrow{\text{listening\_start}}$ Listening $\xrightarrow{\text{listening\_end}}$ Answering $\xrightarrow{\text{answering\_end}}$ Idle. Barge-in: Answering $\xrightarrow{\text{listening\_start}}$ Listening. Dashed arrow: any state $\xrightarrow{\text{cancel}}$ Idle.]}\vspace{2em}}}
     \caption{Client-side state machine governing agent behavior.}
     \label{fig:state_machine}
 \end{figure}
 
-A four-state machine governs the interaction flow:
+A three-state machine governs the interaction flow:
 \begin{itemize}[nosep]
-    \item \textbf{Idle}: character plays idle animation, awaiting activation.
-    \item \textbf{Ready}: pre-listening countdown; times out to Idle if no input arrives.
-    \item \textbf{Listening}: dual-threshold VAD detects speech; audio is recorded and sent to the server.
-    \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. Barge-in returns to Listening.
+    \item \textbf{Idle}: character plays idle animation, awaiting a \texttt{listening\_start} activation.
+    \item \textbf{Listening}: dual-threshold VAD detects speech; audio is recorded and sent to the server. On \texttt{listening\_end} it advances to Answering.
+    \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. On \texttt{answering\_end} it returns to Idle; a barge-in (\texttt{listening\_start}) interrupts playback and returns to Listening.
 \end{itemize}
 
-The state machine is purely client-side; the server does not track client state. For motion generation pipelines, the client includes a SMPLH motion player that converts received joint parameters into real-time skeletal animation via per-frame interpolation.
+The state machine is purely client-side; the server does not track client state. For motion generation pipelines, the client includes an SMPL-H motion player that retargets received joint parameters onto the character skeleton, playing back a frame buffer at the motion's native framerate with crossfade blending between motions.
 
 \subsection{LLM Workflow}
 
@@ -746,7 +751,7 @@ Every pipeline node extends \texttt{BaseProcessingStep}, which implements the co
     \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
     \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
     \item \textbf{Signal handling}: each node declares a \texttt{catch\_signal\_set}; signals not in this set are forwarded immediately without waiting behind data messages (Section~\ref{sec:signals}).
-    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancellation}).
+    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
     \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
 \end{enumerate}
 
