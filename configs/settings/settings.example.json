@@ -3,7 +3,8 @@
         "qwen_asr_api": "http://127.0.0.1:8010/v1"
     },
     "llm": {
-        "custom_api": "http://127.0.0.1:8000/v1"
+        "custom_api": "http://127.0.0.1:8000/v1",
+        "lina_api": "https://YOUR_PUBLIC_LINA_LLM_HOST/v1"
     },
     "tts": {
         "qwen_tts_api": "http://127.0.0.1:8011/v1"

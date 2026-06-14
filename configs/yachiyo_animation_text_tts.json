@@ -1,0 +1,131 @@
+{
+    "pipeline": [
+        {
+            "node_id": 1,
+            "function": "call_openai_llm",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "prompt",
+                        "source": "text"
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "output_name": "text",
+                        "target": "1_text"
+                    },
+                    {
+                        "output_name": "action",
+                        "target": "1_action"
+                    },
+                    {
+                        "output_name": "expression",
+                        "target": "1_expression"
+                    },
+                    {
+                        "output_name": "sentence_index",
+                        "target": "1_sentence_index"
+                    },
+                    {
+                        "output_name": "gesture_plan",
+                        "target": "1_gesture_plan"
+                    }
+                ],
+                "next_nodes": [
+                    2
+                ],
+                "history_mode": "simple",
+                "system_prompt": "正常回复正文，不要在正文里写动作、表情、旁白或舞台提示。最后另起一行输出隐藏动作计划：[gestures: JSON数组]。动作只允许：left_scratch_head、left_cheek_on_hand、flip_book、head_tilt、write、nod、shake_head、think。只在确实需要动作时输出，不确定就输出空数组。每条对象格式为 {\"action\":\"动作ID\",\"sentence_index\":0,\"start_ratio\":0.20,\"end_ratio\":0.65}。sentence_index 按 TTS 分片从 0 开始；长句遇到 、：，。？！:,.?! 或换行可能形成新分片。ratio 是该分片语音内部位置。",
+                "reset_history": true,
+                "history_length": 6,
+                "model": "qwen",
+                "gesture_plan_mode": true,
+                "max_gesture_items": 4,
+                "gesture_default_expression": "默认",
+                "punctuations": "、：，。？！:,.?!\n\t",
+                "sentence_length_threshold": 5,
+                "extra_info": {
+                    "action": {
+                        "start_mark": "[",
+                        "end_mark": "]"
+                    },
+                    "expression": {
+                        "start_mark": "(",
+                        "end_mark": ")"
+                    }
+                },
+                "tool_names": []
+            }
+        },
+        {
+            "node_id": 2,
+            "function": "call_openai_tts",
+            "config": {
+                "input_vars": [
+                    {
+                        "input_name": "text",
+                        "source": "1_text"
+                    },
+                    {
+                        "input_name": "sentence_index",
+                        "source": "1_sentence_index"
+                    },
+                    {
+                        "input_name": "gesture_plan",
+                        "source": "1_gesture_plan"
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "source": "1_text",
+                        "target": "text"
+                    },
+                    {
+                        "source": "1_action",
+                        "target": "action_hint"
+                    },
+                    {
+                        "source": "1_expression",
+                        "target": "expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "output_name": "audio_file",
+                        "target": "audio_data"
+                    },
+                    {
+                        "output_name": "audio_start_ms",
+                        "target": "audio_start_ms"
+                    },
+                    {
+                        "output_name": "audio_end_ms",
+                        "target": "audio_end_ms"
+                    },
+                    {
+                        "output_name": "audio_duration_ms",
+                        "target": "audio_duration_ms"
+                    },
+                    {
+                        "output_name": "gesture_events",
+                        "target": "gesture_events"
+                    },
+                    {
+                        "output_name": "gesture_timeline",
+                        "target": "gesture_timeline"
+                    },
+                    {
+                        "output_name": "audio_total_ms",
+                        "target": "audio_total_ms"
+                    }
+                ],
+                "next_nodes": [],
+                "model": "qwen_tts",
+                "voice": "test_cn",
+                "emit_audio_timeline": true
+            }
+        }
+    ]
+}

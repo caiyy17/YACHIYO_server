@@ -4,6 +4,7 @@ from ..llm_base.LLMStep import SimpleHistory, BaseLLMCaller, LLMStep
 from ..llm_utils.TavernHistory import TavernHistory
 from ..llm_utils.StreamCutter import StreamCutter
 from ..llm_utils.ToolsCaller import ToolsCaller
+from ..llm_utils.GesturePlan import add_gesture_compat_fields, parse_gestures_tag
 
 
 class OpenaiCaller(BaseLLMCaller):
@@ -20,6 +21,7 @@ class OpenaiCaller(BaseLLMCaller):
         self.client = self.create_client()
         self.cutter = StreamCutter(self.config)
         self.toolsCaller = ToolsCaller(self.config, self.logger)
+        self.gesture_plan_mode = self.config.get("gesture_plan_mode", False)
 
     def cancel(self, cancel_message):
         super().cancel(cancel_message)
@@ -81,7 +83,85 @@ class OpenaiCaller(BaseLLMCaller):
         )
         return result
 
+    def split_visible_response(self, text, gesture_plan):
+        cutter_config = dict(self.config)
+        cutter_config["extra_info"] = {}
+        cutter = StreamCutter(cutter_config)
+        sentence_index = 0
+        for char in text:
+            for response in cutter.cut(char):
+                if response.get("text", "").strip() == "":
+                    continue
+                response["sentence_index"] = sentence_index
+                response["gesture_plan"] = gesture_plan
+                self.add_compat_fields(response, gesture_plan, sentence_index)
+                sentence_index += 1
+                yield response
+        for response in cutter.cut_last():
+            if response.get("text", "").strip() == "":
+                continue
+            response["sentence_index"] = sentence_index
+            response["gesture_plan"] = gesture_plan
+            self.add_compat_fields(response, gesture_plan, sentence_index)
+            yield response
+
+    def add_compat_fields(self, response, gesture_plan, sentence_index):
+        add_gesture_compat_fields(
+            response,
+            gesture_plan,
+            sentence_index,
+            self.config.get("gesture_default_expression", "默认"),
+        )
+
+    def generate_result_with_gesture_plan(self, history, allow_tools=True):
+        result = self.create_stream(history, allow_tools=allow_tools)
+        has_tool_call = False
+        raw_text = ""
+        self.toolsCaller.reset()
+
+        for chunk in result:
+            delta = chunk.choices[0].delta
+            yield None
+
+            tool_calls = delta.tool_calls
+            if tool_calls is not None:
+                has_tool_call = True
+                tool_call = tool_calls[0]
+                self.toolsCaller.update_tool_call(tool_call)
+
+            text = delta.content
+            if text is None or has_tool_call:
+                continue
+            raw_text += text
+
+        if has_tool_call:
+            tool_calls_list = self.toolsCaller.tool_calls_list()
+            results = self.toolsCaller.tool_calls_result()
+            if len(tool_calls_list) > 0 and len(results) > 0:
+                self.logger.info(
+                    f"Tool calls: {tool_calls_list}, Results: {results}"
+                )
+                yield {
+                    "tool_calls": tool_calls_list,
+                    "results": results,
+                }
+            return
+
+        visible_text, gesture_plan = parse_gestures_tag(
+            raw_text,
+            max_items=self.config.get("max_gesture_items", 4),
+        )
+        for response in self.split_visible_response(visible_text, gesture_plan):
+            yield response
+
     def generate_result(self, history, allow_tools=True):
+        if self.gesture_plan_mode:
+            yield from self.generate_result_with_gesture_plan(
+                history,
+                allow_tools=allow_tools,
+            )
+            return
+
         result = self.create_stream(history, allow_tools=allow_tools)
         has_tool_call = False
         self.toolsCaller.reset()
