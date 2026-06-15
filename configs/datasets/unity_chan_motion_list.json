@@ -1,29 +1,44 @@
 {
     "data": [
         {
-            "comment": "站立不动",
-            "keys": ["站立不动", "站着", "静静站着"],
-            "values": ["idle"]
+            "comment": "左手挠头",
+            "keys": ["left_scratch_head", "左手挠头", "挠头", "困惑挠头", "想不明白", "不好意思"],
+            "values": ["left_scratch_head"]
         },
         {
-            "comment": "双手向前伸放松",
-            "keys": ["双手向前伸放松", "伸懒腰", "伸展放松"],
-            "values": ["stretch"]
+            "comment": "左手托腮，手架在桌子上",
+            "keys": ["left_cheek_on_hand", "左手托腮，手架在桌子上", "左手托腮", "托腮", "手架在桌子上", "撑着脸", "认真听"],
+            "values": ["left_cheek_on_hand"]
         },
         {
-            "comment": "左右旋转身体放松",
-            "keys": ["左右旋转身体放松", "转转身体", "扭扭腰放松"],
-            "values": ["twist"]
+            "comment": "翻书",
+            "keys": ["flip_book", "翻书", "翻页", "看资料", "查资料", "换一页"],
+            "values": ["flip_book"]
         },
         {
-            "comment": "打招呼",
-            "keys": ["打招呼", "挥手", "挥手打招呼"],
-            "values": ["greet"]
+            "comment": "歪头",
+            "keys": ["head_tilt", "歪头", "偏头", "侧头", "疑惑歪头", "好奇"],
+            "values": ["head_tilt"]
         },
         {
-            "comment": "身体前倾沮丧",
-            "keys": ["身体前倾沮丧", "垂头丧气", "沮丧低头"],
-            "values": ["slump"]
+            "comment": "写字",
+            "keys": ["write", "写字", "记录", "记下来", "列要点", "做笔记"],
+            "values": ["write"]
+        },
+        {
+            "comment": "点头",
+            "keys": ["nod", "点头", "同意", "肯定", "确认", "明白"],
+            "values": ["nod"]
+        },
+        {
+            "comment": "摇头",
+            "keys": ["shake_head", "摇头", "不同意", "否定", "拒绝", "不行"],
+            "values": ["shake_head"]
+        },
+        {
+            "comment": "思考",
+            "keys": ["think", "思考", "想一想", "琢磨", "沉思", "考虑"],
+            "values": ["think"]
         }
     ]
 }

@@ -1,0 +1,15 @@
+{
+    "api_base": "lina_api",
+    "api_key": "LINA_API_KEY",
+    "extra": {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "max_tokens": 512,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": false
+            }
+        }
+    },
+    "model_name": "lina"
+}

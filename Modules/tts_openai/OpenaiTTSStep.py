@@ -89,4 +89,5 @@ class OpenaiTTSCaller:
 
 class OpenaiTTSStep(TTSStep):
     def custom_init(self):
+        self.init_timeline_config()
         self.tts_caller = OpenaiTTSCaller(self.config, self.logger)
