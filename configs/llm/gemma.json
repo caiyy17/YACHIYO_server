@@ -6,5 +6,5 @@
         "top_p": 0.95,
         "max_tokens": 4096
     },
-    "model_name": "gemma-4-31B-it"
+    "model_name": "gemma-4-31b-it"
 }

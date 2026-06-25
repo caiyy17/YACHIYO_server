@@ -17,9 +17,7 @@
                         "target": "1_text"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ],
+                "next_nodes": [2],
                 "model": "qwen_asr"
             }
         },
@@ -48,9 +46,7 @@
                         "target": "2_expression"
                     }
                 ],
-                "next_nodes": [
-                    3
-                ],
+                "next_nodes": [3],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -74,10 +70,7 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": [
-                    "get_weather",
-                    "web_search"
-                ]
+                "tool_names": ["get_weather", "web_search"]
             }
         },
         {
@@ -114,9 +107,7 @@
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [
-                    4
-                ]
+                "next_nodes": [4]
             }
         },
         {
@@ -157,9 +148,7 @@
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [
-                    5
-                ]
+                "next_nodes": [5]
             }
         },
         {

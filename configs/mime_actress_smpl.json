@@ -17,9 +17,7 @@
                         "target": "1_text"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ],
+                "next_nodes": [2],
                 "model": "qwen_asr"
             }
         },
@@ -48,9 +46,7 @@
                         "target": "2_expression"
                     }
                 ],
-                "next_nodes": [
-                    3
-                ],
+                "next_nodes": [3],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -61,7 +57,7 @@
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 10,
-                "model": "gpt",
+                "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 20,
                 "extra_info": {
@@ -110,9 +106,7 @@
                 "type": "BGE",
                 "k": 5,
                 "score_threshold": 0.6,
-                "next_nodes": [
-                    4
-                ]
+                "next_nodes": [4]
             }
         },
         {
@@ -157,19 +151,8 @@
                         "target": "4_action"
                     }
                 ],
-                "next_nodes": [
-                    5,
-                    6,
-                    7
-                ],
-                "dispatch_vars": [
-                    [
-                        "action"
-                    ],
-                    [
-                        "text"
-                    ]
-                ]
+                "next_nodes": [5, 6, 7],
+                "dispatch_vars": [["action"], ["text"]]
             }
         },
         {
@@ -196,9 +179,7 @@
                 "constraint_cfg": 0.5,
                 "continuous": true,
                 "history_size": 5,
-                "next_nodes": [
-                    7
-                ]
+                "next_nodes": [7]
             }
         },
         {
@@ -218,9 +199,7 @@
                         "target": "6_audio"
                     }
                 ],
-                "next_nodes": [
-                    7
-                ],
+                "next_nodes": [7],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
@@ -267,9 +246,7 @@
                         "target": "action"
                     }
                 ],
-                "next_nodes": [
-                    8
-                ]
+                "next_nodes": [8]
             }
         },
         {
