@@ -90,7 +90,8 @@
                         "start_mark": "(",
                         "end_mark": ")"
                     }
-                }
+                },
+                "tool_names": ["get_weather", "web_search"]
             }
         },
         {

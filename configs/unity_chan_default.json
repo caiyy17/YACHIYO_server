@@ -57,7 +57,7 @@
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
-                "model": "gpt",
+                "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
                 "sentence_length_threshold": 5,
                 "extra_info": {
