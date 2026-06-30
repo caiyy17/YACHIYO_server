@@ -5,6 +5,7 @@ import numpy as np
 import requests
 
 from ..data_query_base.DataQueryStep import DataQueryStep
+from .smplh_to_humanoid import smplh_to_humanoid
 from utils.settings import get_setting
 
 addr_motion = get_setting("motion_generation", "addr_motion")
@@ -38,6 +39,10 @@ class MotionGenerationCaller:
         self.use_prompt_engineering = self.config.get("use_prompt_engineering", False)
         self.post_process = self.config.get("post_process", True)
         self.character = self.config.get("character", "")
+
+        # When true, convert the SMPL-H result to the engine-native humanoid format before
+        # returning (what HumanoidMotionPlayer consumes). Set false in config to keep raw SMPL-H.
+        self.humanoid_output = bool(self.config.get("humanoid_output", True))
 
         self.continuous = bool(self.config.get("continuous", False))
         self.history_size = int(self.config.get("history_size", SEAM_FRAMES))
@@ -97,7 +102,7 @@ class MotionGenerationCaller:
             if self.continuous and "error" not in result:
                 result = self._update_history_and_truncate(result)
 
-            return result
+            return self._to_humanoid(result) if self.humanoid_output else result
         except Exception as e:
             self.logger.error(f"Failed to call motion generation: {e}")
             return ""
@@ -145,6 +150,26 @@ class MotionGenerationCaller:
         result["num_frames"] = int(out_poses.shape[0])
         return result
 
+    def _to_humanoid(self, result):
+        """Convert a SMPL-H result dict (poses/trans/betas) to the humanoid format the
+        Unity HumanoidMotionPlayer consumes. History is kept in SMPL-H space upstream;
+        this only transforms the emitted output. Errors / non-dict pass through unchanged."""
+        if not isinstance(result, dict) or "error" in result or "poses" not in result:
+            return result
+        ps = result.get("poses_shape")
+        n = int(ps[0]) if ps else int(result.get("num_frames", 0))
+        poses = _b64_decode_f32(result["poses"], result["poses_shape"])
+        trans = _b64_decode_f32(result["trans"], result["trans_shape"])
+        h = smplh_to_humanoid(
+            poses, trans, n,
+            framerate=result.get("framerate", FRAMERATE),
+            prompt=result.get("prompt", ""),
+            is_continuation=result.get("is_continuation", False),
+        )
+        if "duration_s" in result:
+            h["duration_s"] = result["duration_s"]
+        return h
+
     def flush(self):
         """Emit the held-back frames as a final segment, then clear history.
         Returns None if there is nothing to flush."""
@@ -165,7 +190,7 @@ class MotionGenerationCaller:
             "duration_s": n / float(FRAMERATE),
         }
         self.reset_history()
-        return result
+        return self._to_humanoid(result) if self.humanoid_output else result
 
 
 class MotionGenerationStep(DataQueryStep):
