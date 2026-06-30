@@ -68,7 +68,7 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取 |
 | `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                   |
 | `danmaku_buffer_vtuber`  | `call_danmaku_buffer_vtuber`        | 缓冲和筛选弹幕用于 VTuber 回复                       |
-| `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成 SMPLH 动作参数               |
+| `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成动作；默认返回 Unity humanoid 格式（可选原始 SMPL-H） |
 | `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                    |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组              |
 | `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                |
