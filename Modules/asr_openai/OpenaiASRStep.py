@@ -14,8 +14,8 @@ class OpenaiASRCaller:
 
     def _create_client(self):
         config_name = self.config.get("model", "openai")
-        with open(f"configs/asr/{config_name}.json", "r") as f:
-            self.model_config = json.load(f)
+        with open("configs/settings/asr.json", "r") as f:
+            self.model_config = json.load(f)[config_name]
         self.logger.info(f"ASR Model Config: {self.model_config}")
 
         from openai import OpenAI

@@ -1,0 +1,15 @@
+{
+    "openai": {
+        "api_base": "",
+        "api_key": "OPENAI_KEY",
+        "extra": {},
+        "model_name": "whisper-1"
+    },
+    "qwen_asr": {
+        "api_base": "qwen_asr_api",
+        "api_key": "",
+        "hotwords": "",
+        "extra": {},
+        "model_name": "Qwen/Qwen3-ASR-1.7B"
+    }
+}

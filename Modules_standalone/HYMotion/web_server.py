@@ -438,11 +438,11 @@ def _build_fastapi_app():
     @app.post("/api/generate_json")
     async def api_generate_json(request: Request):
         # Unified motion request schema:
-        #   text, character, duration, is_continuation, history{...},
+        #   model, text, character, duration, is_continuation, history{...},
         #   seed, use_prompt_engineering, post_process, cfg_scale, constraint_cfg
         # HY-Motion reads only the subset its pipeline supports and ignores the rest:
-        #   - character / constraint_cfg : not used by this model
-        #   - is_continuation / history  : HY-Motion has no continuation; always generates fresh
+        #   - model / character / constraint_cfg : not read by this handler
+        #   - is_continuation / history          : HY-Motion has no continuation; always generates fresh
         body = await request.json()
         try:
             result = generate_json(

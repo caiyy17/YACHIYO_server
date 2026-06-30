@@ -1,7 +1,0 @@
-{
-    "api_base": "",
-    "api_key": "OPENAI_KEY",
-    "voice": "alloy",
-    "extra": {},
-    "model_name": "tts-1"
-}

@@ -5,7 +5,7 @@ import requests
 
 from ..data_query_base.DataQueryStep import DataQueryStep
 from utils.settings import get_setting
-addr_data_query = get_setting("data_query", "addr_data_query")
+addr_data_query = get_setting("data_query", "data_api")
 datasets_path = get_setting("data_query", "datasets_path")
 
 

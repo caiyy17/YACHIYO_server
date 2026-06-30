@@ -47,9 +47,31 @@ python custom/web_server.py --model_path ckpts/tencent/HY-Motion-1.0 --port 7861
 ## API
 
 - `POST /api/generate_json` — Generate motion from text
-    - Input: JSON `{"text": "waving hello", "duration": 5.0, "seed": -1, "cfg_scale": 5.0, "use_prompt_engineering": true, "post_process": true}`
-    - Output: JSON with SMPLH params (poses, trans, betas as base64 float arrays), frame count, and `_profile` timing data
-- `POST /api/generate_json_stream` — Same as above, SSE streaming
+    - Input: unified motion request JSON. This server uses `text`, `duration`, `seed`,
+      `cfg_scale`, `use_prompt_engineering`, `post_process`; other fields of the shared
+      schema (`model`, `character`, `constraint_cfg`, `is_continuation`, `history`) are
+      accepted but ignored.
+
+        ```json
+        {"text": "waving hello", "duration": 5.0, "seed": -1,
+         "cfg_scale": 5.0, "use_prompt_engineering": true, "post_process": true}
+        ```
+    - Output: JSON with SMPLH params nested under `motion` (base64 float32 arrays + shapes,
+      frame count, framerate, duration), plus the rewritten `prompt` and `_profile` timing.
+
+        ```json
+        {
+          "motion": {
+            "num_frames": 150, "framerate": 30, "duration": 5.0,
+            "poses": "<base64 f32>", "poses_shape": [150, 156],
+            "trans": "<base64 f32>", "trans_shape": [150, 3],
+            "betas": "<base64 f32>", "betas_shape": [10]
+          },
+          "prompt": "...",
+          "_profile": {}
+        }
+        ```
+- `POST /api/generate_json_stream` — Same input, SSE streaming
 
 ## Files
 
@@ -63,7 +85,7 @@ Service address is configured in `configs/settings/settings.json`:
 ```json
 {
     "motion_generation": {
-        "addr_motion": "http://localhost:7861"
+        "motion_api": "http://localhost:7861"
     }
 }
 ```

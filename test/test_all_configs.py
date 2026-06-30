@@ -19,14 +19,9 @@ TTS_API = "http://127.0.0.1:8011/v1"
 # Fields that must be present and non-empty in the final collected output
 CONFIGS = {
     # Text-only configs
-    "dev_text": {
-        "input_type": "text",
-        "expected_streaming": ["text"],  # streamed via SoS/text/EoS
-        "expected_final": ["action", "expression", "action_hint", "expression_hint"],
-    },
     "unity_chan_text": {
         "input_type": "text",
-        "expected_streaming": ["text"],
+        "expected_streaming": ["text"],  # streamed via SoS/text/EoS
         "expected_final": ["action", "expression", "action_hint", "expression_hint"],
     },
     # Audio input configs (ASR → LLM → ... → TTS)
@@ -35,23 +30,11 @@ CONFIGS = {
         "expected_streaming": ["text"],
         "expected_final": ["audio_data", "text"],
     },
-    "dev_default": {
-        "input_type": "audio",
-        "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "text", "action", "action_hint",
-                          "expression", "expression_hint"],
-    },
     "unity_chan_default": {
         "input_type": "audio",
         "expected_streaming": ["text"],
         "expected_final": ["audio_data", "text", "action", "action_hint",
                           "expression", "expression_hint"],
-    },
-    "dev_smpl": {
-        "input_type": "audio",
-        "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "action",
-                          "text", "action_hint", "expression"],
     },
     "unity_chan_smpl": {
         "input_type": "audio",
@@ -59,13 +42,8 @@ CONFIGS = {
         "expected_final": ["audio_data", "action",
                           "text", "action_hint", "expression"],
     },
-    # Vtuber configs (danmaku input)
-    "dev_vtuber": {
-        "input_type": "danmaku",
-        "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "action"],
-    },
-    "unity_chan_vtuber": {
+    # Vtuber config (danmaku input)
+    "unity_chan_live": {
         "input_type": "danmaku",
         "expected_streaming": ["text"],
         "expected_final": ["audio_data", "action"],

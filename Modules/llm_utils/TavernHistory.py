@@ -5,7 +5,7 @@ import requests
 
 from .SimpleHistory import SimpleHistory
 from utils.settings import get_setting
-addr_data_query = get_setting("data_query", "addr_data_query")
+addr_data_query = get_setting("data_query", "data_api")
 
 
 class Database:

@@ -1,7 +1,0 @@
-{
-    "api_base": "qwen_asr_api",
-    "api_key": "",
-    "hotwords": "",
-    "extra": {},
-    "model_name": "Qwen/Qwen3-ASR-1.7B"
-}

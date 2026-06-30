@@ -27,8 +27,8 @@ class OpenaiCaller(BaseLLMCaller):
 
     def create_client(self):
         config_name = self.config.get("model", "gpt")
-        with open(f"configs/llm/{config_name}.json", "r") as f:
-            self.model_config = json.load(f)
+        with open("configs/settings/llm.json", "r") as f:
+            self.model_config = json.load(f)[config_name]
         self.logger.info(f"Model Config: {self.model_config}")
 
         from openai import OpenAI

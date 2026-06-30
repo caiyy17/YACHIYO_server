@@ -199,7 +199,8 @@
                     }
                 ],
                 "duration": 5.0,
-                "next_nodes": [7]
+                "next_nodes": [7],
+                "model": "hy_motion"
             }
         },
         {

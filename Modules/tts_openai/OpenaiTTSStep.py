@@ -19,8 +19,8 @@ class OpenaiTTSCaller:
 
     def _create_client(self):
         config_name = self.config.get("model", "openai")
-        with open(f"configs/tts/{config_name}.json", "r") as f:
-            self.model_config = json.load(f)
+        with open("configs/settings/tts.json", "r") as f:
+            self.model_config = json.load(f)[config_name]
         self.logger.info(f"TTS Model Config: {self.model_config}")
 
         from openai import OpenAI

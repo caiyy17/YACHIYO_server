@@ -34,15 +34,17 @@ class MotionGenerationCaller:
         self.config = config
         self.logger = logger
 
-        # Motion model config (configs/motion/<model>.json): api_base + model_name + extra.
-        # extra (seed / use_prompt_engineering / post_process / cfg_scale / constraint_cfg) is
-        # forwarded verbatim to the backend, so swapping models = swapping this config file.
+        # Motion model config (configs/settings/motion.json, keyed by model name):
+        # api_base + model_name + extra. extra (seed / use_prompt_engineering / post_process /
+        # cfg_scale / constraint_cfg) is forwarded verbatim to the backend, so swapping models
+        # = swapping the entry / its extra.
         model_name = self.config.get("model", "hy_motion")
-        with open(f"configs/motion/{model_name}.json") as f:
-            self.model_config = json.load(f)
+        with open("configs/settings/motion.json") as f:
+            self.model_config = json.load(f)[model_name]
         self.logger.info(f"Motion Model Config: {self.model_config}")
-        api_base = self.model_config.get("api_base", "") or "addr_motion"
+        api_base = self.model_config.get("api_base", "") or "motion_api"
         self.addr_motion = get_setting("motion_generation", api_base)
+        self.model_name = self.model_config.get("model_name", model_name)
         self.extra = self.model_config.get("extra", {})
 
         # Top-level request semantics (from pipeline node config)
@@ -68,6 +70,7 @@ class MotionGenerationCaller:
     def call(self, prompt):
         try:
             body = {
+                "model": self.model_name,
                 "text": prompt,
                 "character": self.character,
                 "duration": self.duration,
