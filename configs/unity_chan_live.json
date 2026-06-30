@@ -194,13 +194,11 @@
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "output_name": "motion",
                         "target": "5_action"
                     }
                 ],
                 "duration": 5.0,
-                "use_prompt_engineering": true,
-                "post_process": true,
                 "next_nodes": [7]
             }
         },

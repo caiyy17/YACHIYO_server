@@ -75,28 +75,23 @@ def _mirror(q):                                # X-mirror: SMPL world -> Unity d
     return (q[0], -q[1], -q[2], q[3])
 
 
-def smplh_to_humanoid(poses, trans, num_frames, framerate=30,
-                      prompt="", is_continuation=False, extra=None):
-    """
+def smplh_to_humanoid(poses, trans, num_frames, framerate=30):
+    """Convert SMPL-H motion to humanoid motion.
+
     poses: n*156 axis-angle (numpy [n,156] or flat/nested list)
     trans: n*3 root translation (numpy [n,3] or flat/nested list)
-    Returns the humanoid-format dict (HumanoidMotionPlayer schema).
+    Returns the humanoid-format motion dict (HumanoidMotionPlayer schema).
     """
     n = int(num_frames)
     out = {
         "num_frames": n,
         "framerate": int(framerate) if framerate else 30,
-        "prompt": prompt,
-        "is_continuation": bool(is_continuation),
         "root_xz": [],
         "root_vel_y": [0.0] * n,
         "root_vel_yaw": [0.0] * n,
         "hips_pos": [],
         "joints": {name: [] for name in BONES},
     }
-    if extra:
-        for k, v in extra.items():
-            out.setdefault(k, v)
     if n <= 0:
         return out
 

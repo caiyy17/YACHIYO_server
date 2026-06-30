@@ -5,7 +5,8 @@ Provides:
   - Web UI: text input, duration slider, seed, CFG scale → download SMPLH NPZ
   - Prompt rewriting + automatic duration estimation (via --prompt_engineering_host)
   - REST API:
-      POST /api/generate_json  — returns SMPL params as JSON (base64-encoded float arrays)
+      POST /api/generate_json  — returns JSON {motion: {SMPL-H params as base64 float
+                                 arrays, num_frames, framerate, duration}, prompt, _profile}
       POST /api/generate       — (auto-exposed by Gradio, returns NPZ files)
 
 Usage:
@@ -301,16 +302,21 @@ def generate_json(
             print(f"  {k}: {v}")
     print(f"{'='*60}\n")
 
+    num_frames = int(smpl_data["num_frames"])
+    framerate = 30
     return {
+        "motion": {
+            "num_frames": num_frames,
+            "framerate": framerate,
+            "duration": num_frames / framerate,
+            "poses": _encode_float_array(smpl_data["poses"]),
+            "poses_shape": list(smpl_data["poses"].shape),
+            "trans": _encode_float_array(smpl_data["trans"]),
+            "trans_shape": list(smpl_data["trans"].shape),
+            "betas": _encode_float_array(smpl_data["betas"]),
+            "betas_shape": list(smpl_data["betas"].shape),
+        },
         "prompt": prompt,
-        "num_frames": int(smpl_data["num_frames"]),
-        "framerate": 30,
-        "poses": _encode_float_array(smpl_data["poses"]),
-        "poses_shape": list(smpl_data["poses"].shape),
-        "trans": _encode_float_array(smpl_data["trans"]),
-        "trans_shape": list(smpl_data["trans"].shape),
-        "betas": _encode_float_array(smpl_data["betas"]),
-        "betas_shape": list(smpl_data["betas"].shape),
         "_profile": _profile,
     }
 
@@ -431,6 +437,12 @@ def _build_fastapi_app():
 
     @app.post("/api/generate_json")
     async def api_generate_json(request: Request):
+        # Unified motion request schema:
+        #   text, character, duration, is_continuation, history{...},
+        #   seed, use_prompt_engineering, post_process, cfg_scale, constraint_cfg
+        # HY-Motion reads only the subset its pipeline supports and ignores the rest:
+        #   - character / constraint_cfg : not used by this model
+        #   - is_continuation / history  : HY-Motion has no continuation; always generates fresh
         body = await request.json()
         try:
             result = generate_json(

@@ -1,18 +1,17 @@
 import base64
-import random
+import json
 
 import numpy as np
 import requests
 
-from ..data_query_base.DataQueryStep import DataQueryStep
+from ..motion_base.MotionStep import MotionStep
 from .smplh_to_humanoid import smplh_to_humanoid
 from utils.settings import get_setting
 
-addr_motion = get_setting("motion_generation", "addr_motion")
-
-# API protocol: continuation requests blend the last 5 history frames with the
-# first 5 returned frames. history_size must be >= 5.
-SEAM_FRAMES = 5
+# Continuous mode: after each request, the last `history_size` frames of the returned
+# motion are kept and sent back as continuation context on the next request, so the
+# backend can generate a smoothly connected follow-up. The returned motion itself is
+# always passed downstream unchanged.
 FRAMERATE = 30
 
 
@@ -34,10 +33,20 @@ class MotionGenerationCaller:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
+
+        # Motion model config (configs/motion/<model>.json): api_base + model_name + extra.
+        # extra (seed / use_prompt_engineering / post_process / cfg_scale / constraint_cfg) is
+        # forwarded verbatim to the backend, so swapping models = swapping this config file.
+        model_name = self.config.get("model", "hy_motion")
+        with open(f"configs/motion/{model_name}.json") as f:
+            self.model_config = json.load(f)
+        self.logger.info(f"Motion Model Config: {self.model_config}")
+        api_base = self.model_config.get("api_base", "") or "addr_motion"
+        self.addr_motion = get_setting("motion_generation", api_base)
+        self.extra = self.model_config.get("extra", {})
+
+        # Top-level request semantics (from pipeline node config)
         self.duration = self.config.get("duration", 0)
-        self.seed = self.config.get("seed", 42)
-        self.use_prompt_engineering = self.config.get("use_prompt_engineering", False)
-        self.post_process = self.config.get("post_process", True)
         self.character = self.config.get("character", "")
 
         # When true, convert the SMPL-H result to the engine-native humanoid format before
@@ -45,13 +54,7 @@ class MotionGenerationCaller:
         self.humanoid_output = bool(self.config.get("humanoid_output", True))
 
         self.continuous = bool(self.config.get("continuous", False))
-        self.history_size = int(self.config.get("history_size", SEAM_FRAMES))
-        if self.history_size < SEAM_FRAMES:
-            self.logger.error(
-                f"history_size must be >= {SEAM_FRAMES}, "
-                f"got {self.history_size}, clamping"
-            )
-            self.history_size = SEAM_FRAMES
+        self.history_size = max(1, int(self.config.get("history_size", 5)))
         self.reset_history()
 
     def reset_history(self):
@@ -63,26 +66,21 @@ class MotionGenerationCaller:
         return self.history_poses is not None
 
     def call(self, prompt):
-        seed = self.seed if self.seed >= 0 else random.randint(0, 2**32 - 1)
         try:
             body = {
                 "text": prompt,
-                "duration": self.duration,
-                "seed": seed,
-                "use_prompt_engineering": self.use_prompt_engineering,
-                "post_process": self.post_process,
                 "character": self.character,
+                "duration": self.duration,
+                "is_continuation": False,
             }
-            if "cfg_scale" in self.config:
-                body["cfg_scale"] = self.config["cfg_scale"]
-            if "constraint_cfg" in self.config:
-                body["constraint_cfg"] = self.config["constraint_cfg"]
+            # extra (seed / use_prompt_engineering / post_process / cfg_scale /
+            # constraint_cfg) is forwarded verbatim from the motion model config.
+            body.update(self.extra)
 
             if self.continuous and self._has_history():
-                n = int(self.history_poses.shape[0])
                 body["is_continuation"] = True
-                body["n"] = n
                 body["history"] = {
+                    "num_frames": int(self.history_poses.shape[0]),
                     "poses": _b64_encode_f32(self.history_poses),
                     "poses_shape": list(self.history_poses.shape),
                     "trans": _b64_encode_f32(self.history_trans),
@@ -92,128 +90,54 @@ class MotionGenerationCaller:
                 }
 
             response = requests.post(
-                addr_motion + "/api/generate_json",
+                self.addr_motion + "/api/generate_json",
                 json=body,
                 timeout=10,
             )
             response.raise_for_status()
             result = response.json()
 
-            if self.continuous and "error" not in result:
-                result = self._update_history_and_truncate(result)
+            if self.continuous and isinstance(result, dict) and "error" not in result:
+                self._save_history(result)
 
-            return self._to_humanoid(result) if self.humanoid_output else result
+            if self.humanoid_output:
+                return self._to_humanoid(result)
+            # raw path: emit only the motion payload (num_frames/framerate/duration + SMPL-H)
+            if isinstance(result, dict) and "motion" in result:
+                return result["motion"]
+            return result
         except Exception as e:
             self.logger.error(f"Failed to call motion generation: {e}")
             return ""
 
-    def _update_history_and_truncate(self, result):
-        """Splice returned frames onto held history, save last N as new history,
-        and return the rest as the result."""
+    def _save_history(self, result):
+        """Keep the last `history_size` frames of the returned motion as continuation
+        context for the next request. Does NOT modify the returned motion."""
         N = self.history_size
-        poses = _b64_decode_f32(result["poses"], result["poses_shape"])
-        trans = _b64_decode_f32(result["trans"], result["trans_shape"])
-        betas = _b64_decode_f32(result["betas"], result["betas_shape"])
-
-        if self._has_history():
-            # API's first SEAM_FRAMES replace the last SEAM_FRAMES of held history.
-            full_poses = np.concatenate(
-                [self.history_poses[: N - SEAM_FRAMES], poses], axis=0
-            )
-            full_trans = np.concatenate(
-                [self.history_trans[: N - SEAM_FRAMES], trans], axis=0
-            )
-        else:
-            full_poses = poses
-            full_trans = trans
-
-        total = full_poses.shape[0]
-        if total <= N:
-            new_history_poses = full_poses.copy()
-            new_history_trans = full_trans.copy()
-            out_poses = full_poses[:0]
-            out_trans = full_trans[:0]
-        else:
-            new_history_poses = full_poses[-N:].copy()
-            new_history_trans = full_trans[-N:].copy()
-            out_poses = full_poses[:-N]
-            out_trans = full_trans[:-N]
-
-        self.history_poses = new_history_poses
-        self.history_trans = new_history_trans
-        self.history_betas = betas
-
-        result["poses"] = _b64_encode_f32(out_poses)
-        result["poses_shape"] = list(out_poses.shape)
-        result["trans"] = _b64_encode_f32(out_trans)
-        result["trans_shape"] = list(out_trans.shape)
-        result["num_frames"] = int(out_poses.shape[0])
-        return result
+        m = result["motion"]
+        self.history_poses = _b64_decode_f32(m["poses"], m["poses_shape"])[-N:].copy()
+        self.history_trans = _b64_decode_f32(m["trans"], m["trans_shape"])[-N:].copy()
+        self.history_betas = _b64_decode_f32(m["betas"], m["betas_shape"]).copy()
 
     def _to_humanoid(self, result):
-        """Convert a SMPL-H result dict (poses/trans/betas) to the humanoid format the
-        Unity HumanoidMotionPlayer consumes. History is kept in SMPL-H space upstream;
-        this only transforms the emitted output. Errors / non-dict pass through unchanged."""
-        if not isinstance(result, dict) or "error" in result or "poses" not in result:
+        """Convert the returned SMPL-H motion (result["motion"]) to the humanoid format
+        the Unity HumanoidMotionPlayer consumes. Continuation history is stored separately
+        in SMPL-H space (see _save_history). Errors / non-dict pass through unchanged."""
+        if not isinstance(result, dict) or "error" in result or "motion" not in result:
             return result
-        ps = result.get("poses_shape")
-        n = int(ps[0]) if ps else int(result.get("num_frames", 0))
-        poses = _b64_decode_f32(result["poses"], result["poses_shape"])
-        trans = _b64_decode_f32(result["trans"], result["trans_shape"])
-        h = smplh_to_humanoid(
-            poses, trans, n,
-            framerate=result.get("framerate", FRAMERATE),
-            prompt=result.get("prompt", ""),
-            is_continuation=result.get("is_continuation", False),
-        )
-        if "duration_s" in result:
-            h["duration_s"] = result["duration_s"]
+        m = result["motion"]
+        ps = m.get("poses_shape")
+        n = int(ps[0]) if ps else int(m.get("num_frames", 0))
+        poses = _b64_decode_f32(m["poses"], m["poses_shape"])
+        trans = _b64_decode_f32(m["trans"], m["trans_shape"])
+        h = smplh_to_humanoid(poses, trans, n, framerate=m.get("framerate", FRAMERATE))
+        if "duration" in m:
+            h["duration"] = m["duration"]
         return h
 
-    def flush(self):
-        """Emit the held-back frames as a final segment, then clear history.
-        Returns None if there is nothing to flush."""
-        if not self.continuous or not self._has_history():
-            return None
-        n = int(self.history_poses.shape[0])
-        result = {
-            "poses": _b64_encode_f32(self.history_poses),
-            "poses_shape": list(self.history_poses.shape),
-            "trans": _b64_encode_f32(self.history_trans),
-            "trans_shape": list(self.history_trans.shape),
-            "betas": _b64_encode_f32(self.history_betas),
-            "betas_shape": list(self.history_betas.shape),
-            "num_frames": n,
-            "framerate": FRAMERATE,
-            "is_continuation": False,
-            "prompt": "",
-            "duration_s": n / float(FRAMERATE),
-        }
-        self.reset_history()
-        return self._to_humanoid(result) if self.humanoid_output else result
 
-
-class MotionGenerationStep(DataQueryStep):
+class MotionGenerationStep(MotionStep):
     def custom_init(self):
-        self.data_query_caller = MotionGenerationCaller(self.config, self.logger)
-        if self.data_query_caller.continuous:
-            self.catch_signal_set = {"SoS", "EoS"}
-
-    def custom_cancel(self, cancel_message):
-        self.data_query_caller.reset_history()
-
-    def process(self, data, pass_data={}):
-        signal = data.get("signal", "")
-        if signal == "SoS":
-            self.data_query_caller.reset_history()
-            self.output_to_queue({"signal": "SoS"}, pass_data)
-            return
-        if signal == "EoS":
-            flushed = self.data_query_caller.flush()
-            if flushed is not None:
-                output_data = {}
-                self.add_output(output_data, "result", flushed)
-                self.output_to_queue(output_data, pass_data)
-            self.output_to_queue({"signal": "EoS"}, pass_data)
-            return
-        super().process(data, pass_data)
+        self.motion_caller = MotionGenerationCaller(self.config, self.logger)
+        if self.motion_caller.continuous:
+            self.catch_signal_set = {"SoS"}
