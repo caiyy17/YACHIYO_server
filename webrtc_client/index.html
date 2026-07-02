@@ -83,11 +83,14 @@ video { width: 100%; background: #000; display: block; }
 </div>
 
 <script>
-// Auto-fill server URLs based on current host
+// Auto-fill defaults based on current host
 const host = window.location.hostname || 'localhost';
 document.getElementById('mainServer').value = `http://${host}:8910`;
-// Offer uses same origin (page is served from webrtc server)
-document.getElementById('webrtcServer').value = '';
+// The page is served by the webrtc server itself, so its origin is the
+// webrtc server (works for localhost, LAN IPs and tunnels alike).
+document.getElementById('webrtcServer').value =
+  window.location.origin.startsWith('http') ? window.location.origin : `http://${host}:15168`;
+document.getElementById('clientId').value = generateClientId();
 
 let pc = null;
 let dc = null;
@@ -110,7 +113,9 @@ function setStatus(text, ok) {
 }
 
 function generateClientId() {
-  return crypto.randomUUID();
+  // NOT crypto.randomUUID(): that requires a secure context (https/localhost)
+  // and throws when the page is opened over plain http on a LAN IP.
+  return 'web-' + Math.random().toString(36).slice(2, 10);
 }
 
 // Resample a video source to target fps via canvas
@@ -326,21 +331,21 @@ function sendSignal(signal) {
 
 function sendCancel() { sendSignal('cancel'); }
 
-// Talk button: press=vad_start, release=vad_end
+// Talk button: press=recording_start, release=recording_end
 const talkBtn = document.getElementById('talkBtn');
 function talkStart(e) {
   e.preventDefault();
   if (talkBtn.disabled) return;
   talkBtn.classList.add('active');
   talkBtn.textContent = 'Speaking...';
-  sendSignal('vad_start');
+  sendSignal('recording_start');
 }
 function talkEnd(e) {
   e.preventDefault();
   if (talkBtn.disabled) return;
   talkBtn.classList.remove('active');
   talkBtn.textContent = 'Hold to Talk';
-  sendSignal('vad_end');
+  sendSignal('recording_end');
 }
 talkBtn.addEventListener('mousedown', talkStart);
 talkBtn.addEventListener('mouseup', talkEnd);

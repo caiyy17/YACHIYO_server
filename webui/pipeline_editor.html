@@ -531,10 +531,11 @@ function createNode(options = {}) {
   const outputs = options.outputs || []; // [{name, target}]
   const passes = options.passes || [];   // [{source, target}]
   const extraConfig = options.extraConfig || {}; // {key: value}
+  const extraNext = options.extraNext || [];     // virtual next_nodes entries (e.g. -1 = exit)
   const x = options.x || CANVAS_PAD;
   const y = options.y || CANVAS_PAD;
 
-  const nodeObj = { id, fn, inputs, outputs, passes, extraConfig, x, y, el: null };
+  const nodeObj = { id, fn, inputs, outputs, passes, extraConfig, extraNext, x, y, el: null };
   nodes.push(nodeObj);
 
   // Column background stripe
@@ -1178,6 +1179,11 @@ function exportJSON() {
       }
     });
     const next_nodes = Array.from(nextSet);
+    // Re-append preserved virtual entries (e.g. -1 = exit); unwired nodes are terminals
+    (nodeObj.extraNext || []).forEach(nid => {
+      if (!next_nodes.includes(nid)) next_nodes.push(nid);
+    });
+    if (next_nodes.length === 0) next_nodes.push(-1);
 
     // Parse extra config values
     const extras = {};
@@ -1281,7 +1287,10 @@ function loadPipeline(data) {
       if (!reserved.has(k)) extraConfig[k] = v;
     });
 
-    createNode({ id: item.node_id, fn: item.function, inputs, outputs, passes, extraConfig, x, y });
+    // Preserve virtual next_nodes entries (ids with no real node, e.g. -1 = exit)
+    const extraNext = (cfg.next_nodes || []).filter(nid => !nodeDataMap.hasOwnProperty(nid));
+
+    createNode({ id: item.node_id, fn: item.function, inputs, outputs, passes, extraConfig, extraNext, x, y });
   });
 
   // Build target → {nodeId, portType('output'|'pass-out'), portIdx}
@@ -1292,9 +1301,9 @@ function loadPipeline(data) {
   const nodeConfigMap = {};
   (data.pipeline || []).forEach(item => { nodeConfigMap[item.node_id] = item.config; });
   nodes.forEach(nodeObj => {
-    // Skip terminal nodes (next_nodes=[]) — their outputs go to client, not pipeline
+    // Skip terminal nodes (only virtual next_nodes like -1) — outputs go to client
     const cfg = nodeConfigMap[nodeObj.id] || {};
-    if ((cfg.next_nodes || []).length === 0) return;
+    if ((cfg.next_nodes || []).filter(nid => nodeDataMap.hasOwnProperty(nid)).length === 0) return;
     nodeObj.outputs.forEach((out, idx) => {
       if (out.target) targetLookup[out.target] = { nodeId: nodeObj.id, portType: 'output', portIdx: idx };
     });

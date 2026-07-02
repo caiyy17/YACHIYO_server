@@ -25,7 +25,7 @@
                         "target": "data"
                     }
                 ],
-                "next_nodes": [],
+                "next_nodes": [-1],
                 "sample_rate": 48000,
                 "frame_samples": 960,
                 "video_fps": 30,

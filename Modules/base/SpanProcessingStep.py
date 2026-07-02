@@ -72,8 +72,9 @@ class SpanProcessingStep(BaseProcessingStep):
                 data = json.loads(data)
 
                 # Destination check first: forward pass-through messages immediately
+                # (-1 = pipeline exit: matches no node, so it is relayed all the way out)
                 dest = data.get("destination", self.index)
-                if dest != self.index and dest != -2:
+                if dest != self.index:
                     self.output_queue.put(json.dumps(data))
                     continue
 

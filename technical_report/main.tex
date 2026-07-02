@@ -618,7 +618,7 @@ Each inter-node message is a flat key-value object. Variable names are prefixed 
     \item \textbf{pass\_vars}: carries metadata unchanged across nodes that do not consume it (e.g., the LLM's action tag passes through TTS to reach the client).
 \end{itemize}
 
-Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \texttt{destination} field enables skip-connections to non-adjacent nodes. Node IDs need not be contiguous but must be monotonically increasing.
+Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \texttt{destination} field enables skip-connections to non-adjacent nodes; the special id \texttt{-1} denotes the pipeline exit, so terminal nodes declare \texttt{next\_nodes: [-1]}. Node IDs need not be contiguous but must be monotonically increasing.
 
 \begin{lstlisting}[caption={Pipeline configuration (simplified).}]
 {
@@ -672,7 +672,7 @@ Pass-through is only applied when a node actually processes a message; forwarded
                        "target": "action"}],
         "output_vars": [{"output_name": "audio_file",
                          "target": "audio_data"}],
-        "next_nodes": [],
+        "next_nodes": [-1],
         "model": "qwen_tts"
       }
     }

@@ -825,7 +825,7 @@ def test_basic_backpressure():
             "process_time": 0.15,
             "input_vars": [{"input_name": "text", "source": "1_text"}],
             "output_vars": [{"output_name": "result", "target": "result"}],
-            "next_nodes": [],
+            "next_nodes": [-1],
         }),
     ], logger)
 
@@ -890,7 +890,7 @@ def test_no_backpressure_baseline():
             "process_time": 0.15,
             "input_vars": [{"input_name": "text", "source": "1_text"}],
             "output_vars": [{"output_name": "result", "target": "result"}],
-            "next_nodes": [],
+            "next_nodes": [-1],
         }),
     ], logger)
 
@@ -943,7 +943,7 @@ def test_cancel_during_backpressure():
             "process_time": 0.5,
             "input_vars": [{"input_name": "text", "source": "1_text"}],
             "output_vars": [{"output_name": "result", "target": "result"}],
-            "next_nodes": [],
+            "next_nodes": [-1],
         }),
     ], logger)
 
@@ -996,7 +996,7 @@ def test_multiple_inputs():
             "process_time": 0.08,
             "input_vars": [{"input_name": "text", "source": "1_text"}],
             "output_vars": [{"output_name": "result", "target": "result"}],
-            "next_nodes": [],
+            "next_nodes": [-1],
         }),
     ], logger)
 
@@ -1067,7 +1067,7 @@ def test_three_stage_pipeline():
             "process_time": 0.2,
             "input_vars": [{"input_name": "text", "source": "3_result"}],
             "output_vars": [{"output_name": "result", "target": "result"}],
-            "next_nodes": [],
+            "next_nodes": [-1],
         }),
     ], logger)
 

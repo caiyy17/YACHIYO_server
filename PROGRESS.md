@@ -6,18 +6,21 @@
 - **danmaku 模块去 vtuber 后缀**：`danmaku_buffer_vtuber` → `danmaku_buffer`，注册名 `call_danmaku_buffer`。同步更新 `unity_chan_live.json`、webui 编辑器、README（中英）。
 - **LLM prompt 回显**：`OpenaiStep` 在 **SoS 之后**经 `destination=-1` 把本轮输入 prompt 直达客户端（中继过所有下游节点、都不处理，最终进 send_queue）。字段名走 `add_output`+`output_vars` 可 rename；**所有 `call_openai_llm` 的 config（9 个）LLM 节点均已加** `{"output_name":"prompt","target":"prompt"}`。
 - **DanmakuBuffer 输出时间戳统一**：批次释放与 idle 释放都用 `last_message_pts`（最后收到的消息时间戳），不再用 span 起点（第一条弹幕）。span 收集期的 cancel 锚点不变。
-- **WebRTC 录音信号统一为 `recording_start`/`recording_end`**：客户端发的信号由 `vad_start`/`vad_end` 改名为 `recording_start`/`recording_end`（客户端已改）。`AudioCollectorStep` catch 这两个信号切分音频 span，并**重新发出同名信号**顺 pipeline 透传 → FrameSplitter 并入 → server_webrtc `_on_signal` 经 DataChannel 有序回客户端（server_webrtc 对信号是通用处理，无需改逻辑，仅注释）。`recording_end` 放在 WAV 前发，抢在 ASR 处理前到达；与 WAV 同轮时间戳。故客户端"发 recording_start → 收到 pipeline 有序回来的 recording_start"（同名往返，作为服务器权威确认）。
+- **路由改革：`-1` 出口顶点化、哨兵退役**：`add_destination` 只做 `next_nodes[index]` 查表；`-1` 成为 next_nodes 合法取值（出口顶点），11 个 config 末节点 `[]`→`[-1]`，`-2` 与哨兵参数全部删除，4 处 `dest != -2` 判断简化。LLM 回显边显式进 config（`next_nodes: [x, -1]`，位置约定：第二条边即回显边）。editor 同步适配（extraNext 保持 + 无出线自动 `[-1]`）。**需重启 8910 生效。**
+- **WebRTC 录音信号统一为 `recording_start`/`recording_end`**：客户端发的信号由 `vad_start`/`vad_end` 改名为 `recording_start`/`recording_end`（客户端已改）。`AudioCollectorStep` catch 这两个信号切分音频 span，并**重新发出同名信号**顺 pipeline 透传 → FrameSplitter 并入 → server_webrtc `_on_signal` 经 DataChannel 有序回客户端（server_webrtc 对信号是通用处理，无需改逻辑，仅注释）。`recording_end` 放在 WAV 前发，抢在 ASR 处理前到达；与 WAV 同轮时间戳。故客户端"发 recording_start → 收到 pipeline 有序回来的 recording_start"（同名往返，作为服务器权威确认）。网页测试端 `webrtc_client/index.html` 的 Hold-to-Talk 也已同步改名。
+
+- **recording_end 入口延迟 100ms**（`server_webrtc`，`RECORDING_END_HOLD_S=0.1`）：DataChannel 比音频轨快 ~80ms（localhost 实测，opus+jitter buffer 固有延迟，脚本 `/tmp/measure_av_dc_skew.py`），立即注入会在话尾音频落地前关掉 AudioCollector 的 span、切掉结尾。信号缓冲改为 `(due_time, raw)`，队头未到期整体等待（保 FIFO）；仅 recording_end 有 hold，其他信号即时。**根治方案（recording_end 带最后一帧 PTS、按媒体时间对齐）留作后续。**
 
 ## 端口
 
-| 服务            | 端口  |
-| --------------- | ----- |
-| vLLM (LLM)      | 8000  |
+| 服务             | 端口  |
+| ---------------- | ----- |
+| vLLM (LLM)       | 8000  |
 | YACHIYO 主服务器 | 8910  |
-| WebRTC          | 15168 |
-| ASR             | 8010  |
-| TTS             | 8011  |
-| Database        | 8100  |
+| WebRTC           | 15168 |
+| ASR              | 8010  |
+| TTS              | 8011  |
+| Database         | 8100  |
 
 ## 环境
 
@@ -57,8 +60,10 @@
 ## Pipeline 路由机制
 
 - 每节点默认发 `next_nodes[0]`；signal 不在 `catch_signal_set` 则自动透传，在则由 `process` 决定重发/吞。
-- `SoS`/`EoS` 由 LLM 发；`destination=-1` 中继到末端出客户端、`-2` 直达下一个、`direct_send` 旁路直发（后两者当前无人用）。
-- 并行靠 `DispatcherStep`（fan-out 到分支 + dispatch_start/end 跳给 Receiver）。
+- **`-1` = 出口顶点**：作为 `next_nodes` 的合法取值（不再是 add_destination 的哨兵参数），盖上 `destination=-1` 的消息被所有节点转发、从末节点流出到客户端（send_data 出口会剥掉 destination 字段）。**末节点必须写 `next_nodes: [-1]`**，空表/index 越界直接抛 `ValueError`（fail-fast，无静默兜底）。`-2` 已彻底退役；`direct_send` 仍无人用。
+- LLM prompt 回显走位置约定（同 Dispatcher 风格）：`next_nodes = [主输出, 回显边?]`，接了第二条边就回显，没接就不回显——接线即开关，无额外配置键。WS 系 config 回显边 = `-1`（直达出口）；**webrtc 回显边 = `7`（frame_splitter）**：splitter 把"发给自己但无音频"的内容消息收进 `_pending_data`，装入下一个组的空 data 槽（常规即第 0 槽、通常是静音组），prompt 随 20Hz data 通道按序到客户端；cancel 清 pending + 槽装填时按时间戳丢弃过期项。
+- 并行靠 `DispatcherStep`（fan-out 到分支 + dispatch_start/end 跳给 Receiver，全部具体节点号，不受影响）。
+- webui editor 已适配：加载时把指向不存在节点的 next_nodes 条目（如 `-1`）存为 extraNext，保存时拼回；无出线节点导出自动补 `[-1]`。
 
 ## LLM 角色扮演
 

@@ -296,7 +296,12 @@ class ClientConnection:
     async def close(self):
         if self.connected:
             self.log_info(f"Close: Closing connection for client {self.client_id}")
-            await self.websocket.close()
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                # Peer may have closed already (e.g. rapid reconnect race);
+                # a failed close of a stale socket must not kill the new one.
+                self.log_info(f"Close: websocket already closed: {e}")
         else:
             self.log_info(f"Close: No close: Client {self.client_id} not connected")
 

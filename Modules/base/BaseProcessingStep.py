@@ -99,8 +99,9 @@ class BaseProcessingStep:
                 data = json.loads(data)
 
                 # Destination check first: forward pass-through messages immediately
+                # (-1 = pipeline exit: matches no node, so it is relayed all the way out)
                 dest = data.get("destination", self.index)
-                if dest != self.index and dest != -2:
+                if dest != self.index:
                     self.output_queue.put(json.dumps(data))
                     continue
 
@@ -223,30 +224,22 @@ class BaseProcessingStep:
         return data
 
     def add_destination(self, data, index=0):
-        if index < -2:
-            self.logger.error(f"destination index {index} is invalid, should be >= -2")
-            data["destination"] = -2
-            return data
-        # If -2, forward directly to the next node (keep -2)
-        if index == -2:
-            data["destination"] = -2
-            return data
-        # If -1, forward directly to the last node (keep -1)
-        if index == -1:
-            data["destination"] = -1
-            return data
+        """Resolve destination by looking up next_nodes[index].
 
+        next_nodes entries are node ids, or -1 for the pipeline exit (the
+        message is forwarded untouched by every node and leaves to the client).
+        Terminal nodes must declare next_nodes: [-1]."""
         destination = self.config.get("next_nodes", [])
-        if len(destination) > 0:
-            if index < len(destination):
-                data["destination"] = destination[index]
-            else:
-                self.logger.error(
-                    f"destination index {index} is invalid, should be < {len(destination)}"
-                )
-                data["destination"] = destination[0]
-        else:
-            data["destination"] = -2
+        if len(destination) == 0:
+            raise ValueError(
+                f"{self.name}: next_nodes is empty; terminal nodes must declare [-1]"
+            )
+        if index < 0 or index >= len(destination):
+            raise ValueError(
+                f"{self.name}: destination index {index} is invalid, "
+                f"should be 0..{len(destination) - 1}"
+            )
+        data["destination"] = destination[index]
         return data
 
     def prepare_output_dict(self):

@@ -1224,7 +1224,7 @@ def fs_build_frame_splitter(logger, config_overrides=None):
             {"output_name": "video", "target": "video"},
             {"output_name": "data", "target": "data"},
         ],
-        "next_nodes": [],
+        "next_nodes": [-1],
         "sample_rate": 48000,
         "frame_samples": 960,
         "video_fps": 30,

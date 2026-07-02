@@ -91,6 +91,12 @@ VIDEO_CLOCK_RATE = 90000  # RTP clock rate for video (fixed by RTP spec)
 # server-side group boundaries, up to 100ms apart.
 CANCEL_TIMESTAMP_OFFSET = -0.15
 
+# Hold recording_end before injecting into the pipeline: the DataChannel beats
+# the audio track by ~80ms (opus + jitter buffer, measured on localhost), so an
+# immediate recording_end closes the span while the speech tail is still in
+# flight. Holding lets the tail audio land first; FIFO order is preserved.
+RECORDING_END_HOLD_S = 0.1
+
 logger = logging.getLogger("server_webrtc")
 stats_logger = logging.getLogger("webrtc_stats")
 
@@ -427,7 +433,9 @@ class WebRTCSession:
         self._input_video_buffer = deque()   # (pts, b64_jpeg) from video track
         self._last_video_frame = None        # Last received video frame (for drop fill)
         self._input_data_buffer = deque()    # data dicts from DataChannel
-        self._input_signal_buffer = deque()  # Client signals waiting for next group boundary
+        # Client signals waiting for next group boundary: (due_time, raw_msg).
+        # recording_end is held RECORDING_END_HOLD_S; others are due immediately.
+        self._input_signal_buffer = deque()
         self.cancel_timestamp = 0            # Output-side cancel filtering
         self._audio_pts_origin = None        # First audio PTS (for gap detection)
 
@@ -607,7 +615,8 @@ class WebRTCSession:
             return
 
         if msg.get("signal"):
-            self._input_signal_buffer.append(raw_msg)
+            hold = RECORDING_END_HOLD_S if msg["signal"] == "recording_end" else 0.0
+            self._input_signal_buffer.append((time.time() + hold, raw_msg))
         else:
             self._input_data_buffer.append(msg)
 
@@ -797,9 +806,12 @@ class WebRTCSession:
                     data_group.append(None)
 
             # === Flush pending signals at group boundary ===
-            # Timestamp set at send time, same basis as group timestamp
+            # Timestamp set at send time, same basis as group timestamp.
+            # Head not yet due (held recording_end) blocks the queue: FIFO order.
             while self._input_signal_buffer:
-                sig = json.loads(self._input_signal_buffer.popleft())
+                if self._input_signal_buffer[0][0] > time.time():
+                    break
+                sig = json.loads(self._input_signal_buffer.popleft()[1])
                 sig["timestamp"] = time.time()
                 if sig.get("signal") == "cancel":
                     sig["timestamp"] += CANCEL_TIMESTAMP_OFFSET

@@ -42,6 +42,10 @@ class FrameSplitterStep(BaseProcessingStep):
     Signals (SoS, EoS, etc.) are buffered in order with audio groups
     and flushed at tick boundaries to preserve ordering.
 
+    Content messages addressed to this node without audio (e.g. the LLM prompt
+    echo wired here via next_nodes) are queued and placed into the next group's
+    free data slots, so they ride the data lane in arrival order.
+
     Group size is calculated from GCD of audio/video/data frame rates
     (all configurable via config). Standard output format:
       {"audio": [<pcm>...], "video": [<jpeg>...], "data": [{...}, null, ...]}
@@ -82,6 +86,9 @@ class FrameSplitterStep(BaseProcessingStep):
         # Internal buffer: ("group", dict-with-video-markers) or ("signal", json_str)
         # Video markers are strings "idle"/"speak"; JPEGs are rendered on pop.
         self._group_buffer = deque()
+        # Client-bound content addressed to this node, waiting for data slots:
+        # deque of (timestamp, content_dict)
+        self._pending_data = deque()
         self._clock_running = False
 
         # Stats counters (reset every 100 groups in _run_clock)
@@ -174,7 +181,7 @@ class FrameSplitterStep(BaseProcessingStep):
 
         # Forward messages not destined for this node
         dest = data.get("destination", self.index)
-        if dest != self.index and dest != -2:
+        if dest != self.index:
             self.output_queue.put(json.dumps(data))
             return
 
@@ -190,8 +197,9 @@ class FrameSplitterStep(BaseProcessingStep):
             self.output_queue.put(json.dumps(data))
 
     def custom_cancel(self, cancel_message):
-        """Clear buffer when current input is cancelled."""
+        """Clear buffers when current input is cancelled."""
         self._group_buffer.clear()
+        self._pending_data.clear()
 
     def _run_clock(self):
         """Run the 100ms clock loop until connection_stop or kill."""
@@ -279,7 +287,7 @@ class FrameSplitterStep(BaseProcessingStep):
 
             # Destination routing: forward if not for this node
             dest = data.get("destination", self.index)
-            if dest != self.index and dest != -2:
+            if dest != self.index:
                 self.output_queue.put(json.dumps(data))
                 continue
 
@@ -308,7 +316,30 @@ class FrameSplitterStep(BaseProcessingStep):
                 # Buffer was filled — set current_timestamp for cancel tracking
                 self.current_timestamp = ts
                 return
-            # No audio_data in message — continue reading next message
+            # No audio in this message: client-bound content addressed here
+            # (e.g. the LLM prompt echo) — queue for the next group's free
+            # data slots so it rides the data lane in arrival order.
+            content = {
+                k: v for k, v in data.items()
+                if k not in ("timestamp", "destination", "signal") and v
+            }
+            if content:
+                self._pending_data.append((ts, content))
+                self.logger.info(f"queued client-bound data: {content}")
+            # continue reading next message
+
+    def _fill_data_slots(self, data_list):
+        """Fill None slots from pending client-bound content (FIFO order),
+        dropping entries whose turn was cancelled after they were queued."""
+        for i in range(len(data_list)):
+            if data_list[i] is not None:
+                continue
+            while self._pending_data and self._pending_data[0][0] is not None \
+                    and self._pending_data[0][0] < self.cancel_timestamp:
+                self._pending_data.popleft()
+            if not self._pending_data:
+                break
+            data_list[i] = self._pending_data.popleft()[1]
 
     def _fill_default(self):
         """Fill buffer with default content when no input available.
@@ -317,7 +348,9 @@ class FrameSplitterStep(BaseProcessingStep):
         frame_data = {}
         self.add_output(frame_data, "audio", self._silence_audio)
         self.add_output(frame_data, "video", ["idle"] * self.video_per_group)
-        self.add_output(frame_data, "data", [None] * self.data_per_group)
+        data_list = [None] * self.data_per_group
+        self._fill_data_slots(data_list)
+        self.add_output(frame_data, "data", data_list)
         self.add_destination(frame_data)
         self._group_buffer.append(("group", frame_data))
 
@@ -350,6 +383,7 @@ class FrameSplitterStep(BaseProcessingStep):
             data_list = [None] * self.data_per_group
             if group_count == 0 and meta:
                 data_list[0] = meta
+            self._fill_data_slots(data_list)
 
             frame_data = {}
             self.add_output(frame_data, "audio", audio_list)
