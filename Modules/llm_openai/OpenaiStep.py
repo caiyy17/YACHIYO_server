@@ -128,6 +128,12 @@ class OpenaiStep(LLMStep):
         prompt = data.get("prompt", "")
         sos_signal = {"signal": "SoS"}
         self.output_to_queue(sos_signal, pass_data)
+        # Right after SoS, echo this round's input question straight to the client.
+        # destination=-1 relays past all downstream nodes without processing; the
+        # field name is set by this node's output_vars, like any other output.
+        echo_data = {}
+        self.add_output(echo_data, "prompt", prompt)
+        self.output_to_queue(echo_data, pass_data, destination_index=-1)
 
         current_loop = 0
         already_end = False

@@ -65,6 +65,10 @@
                     {
                         "output_name": "expression",
                         "target": "3_expression"
+                    },
+                    {
+                        "output_name": "prompt",
+                        "target": "prompt"
                     }
                 ],
                 "next_nodes": [4],

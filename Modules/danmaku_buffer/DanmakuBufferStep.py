@@ -210,8 +210,8 @@ class DanmakuBufferStep(SpanProcessingStep):
 
         prompt = self._format_batch(batch)
 
-        # Use span start timestamp (first danmaku), consistent with vad_start pattern
-        ts = self.current_timestamp or self.last_release_pts
+        # Use the last received message timestamp (unified with idle release)
+        ts = self.last_message_pts
 
         output_data = {}
         self.add_output(output_data, "prompt", prompt)

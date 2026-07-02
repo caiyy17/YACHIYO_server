@@ -2,7 +2,7 @@
     "pipeline": [
         {
             "node_id": 1,
-            "function": "call_danmaku_buffer_vtuber",
+            "function": "call_danmaku_buffer",
             "config": {
                 "input_vars": [
                     {
@@ -69,6 +69,10 @@
                     {
                         "output_name": "expression",
                         "target": "2_expression"
+                    },
+                    {
+                        "output_name": "prompt",
+                        "target": "prompt"
                     }
                 ],
                 "next_nodes": [3],

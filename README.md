@@ -63,11 +63,11 @@ Each service runs in its own conda environment. Replace any service with any Ope
 
 | Module                   | Function Name                       | Description                                                          |
 | ------------------------ | ----------------------------------- | -------------------------------------------------------------------- |
-| `webrtc_audio_collector` | `audio_collector`                   | Assembles WebRTC audio frames between vad_start/vad_end into WAV     |
+| `webrtc_audio_collector` | `audio_collector`                   | Assembles WebRTC audio frames between recording_start/recording_end into WAV     |
 | `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                             |
 | `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction |
 | `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                        |
-| `danmaku_buffer_vtuber`  | `call_danmaku_buffer_vtuber`        | Buffers and selects danmaku (live comments) for VTuber responses     |
+| `danmaku_buffer`         | `call_danmaku_buffer`               | Buffers and selects danmaku (live comments) for VTuber responses     |
 | `motion_generation`      | `call_motion_generation`            | Text-to-motion via HY-Motion API; returns Unity humanoid motion by default (or raw SMPL-H) |
 | `tts_openai`             | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                             |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups |

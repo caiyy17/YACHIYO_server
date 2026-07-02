@@ -31,7 +31,7 @@ Standard frame format:
   Input (WebRTC → pipeline):
     {"audio": ["<pcm1>", ...], "video": ["<jpeg1>", ...],
      "data": [{...}, null], "timestamp": ...}
-    {"signal": "vad_start/vad_end", "timestamp": ...}
+    {"signal": "recording_start/recording_end", "timestamp": ...}
   Input uses the same group structure as output.
   Signals are forwarded immediately via WebSocket (not grouped).
   Output (pipeline → WebRTC):
@@ -87,7 +87,7 @@ VIDEO_CLOCK_RATE = 90000  # RTP clock rate for video (fixed by RTP spec)
 # Cancel timestamp offset: cancel signals are shifted back to avoid
 # racing with data signals stamped at the same group boundary.
 # Cancel offset must exceed one group period (100ms) because cancel and
-# vad_start sent in the same client frame may be flushed in different
+# recording_start sent in the same client frame may be flushed in different
 # server-side group boundaries, up to 100ms apart.
 CANCEL_TIMESTAMP_OFFSET = -0.15
 
@@ -599,7 +599,7 @@ class WebRTCSession:
 
     async def _forward_dc_message(self, raw_msg):
         """Handle DataChannel message from client.
-        Signal messages (vad_start/vad_end) → buffer for next group boundary.
+        Signal messages (recording_start/recording_end) → buffer for next group boundary.
         Data messages → buffer for group inclusion."""
         try:
             msg = json.loads(raw_msg)

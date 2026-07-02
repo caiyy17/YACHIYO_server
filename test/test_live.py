@@ -331,8 +331,8 @@ def run_manual():
 
 LIVE_CLIENT_ID = "vtuber_standalone"
 LIVE_PIPELINE_CONFIG_FILE = "configs/unity_chan_live.json"
-# Set to a room ID to force connect, or None for auto-discovery
-LIVE_FORCE_ROOM_ID = 22632424
+# Set to a room ID to force connect, or None for auto-discovery of an active room
+LIVE_FORCE_ROOM_ID = None
 
 BILIBILI_ROOM_LIST_API = "https://api.live.bilibili.com/room/v1/area/getRoomList"
 BILIBILI_HEADERS = {

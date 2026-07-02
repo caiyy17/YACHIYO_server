@@ -63,11 +63,11 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 
 | 模块                     | 函数名                              | 说明                                                 |
 | ------------------------ | ----------------------------------- | ---------------------------------------------------- |
-| `webrtc_audio_collector` | `audio_collector`                   | 在 vad_start/vad_end 之间收集 WebRTC 音频帧合成 WAV  |
+| `webrtc_audio_collector` | `audio_collector`                   | 在 recording_start/recording_end 之间收集 WebRTC 音频帧合成 WAV  |
 | `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                    |
 | `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取 |
 | `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                   |
-| `danmaku_buffer_vtuber`  | `call_danmaku_buffer_vtuber`        | 缓冲和筛选弹幕用于 VTuber 回复                       |
+| `danmaku_buffer`         | `call_danmaku_buffer`               | 缓冲和筛选弹幕用于 VTuber 回复                       |
 | `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成动作；默认返回 Unity humanoid 格式（可选原始 SMPL-H） |
 | `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                    |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组              |

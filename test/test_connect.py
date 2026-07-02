@@ -211,7 +211,7 @@ def run_concurrent():
         os.system("rm -rf test/tmp")
     os.mkdir("test/tmp")
 
-    pipeline_config = "unity_chan"
+    pipeline_config = "unity_chan_default"
     messages = []
 
     # Add messages
@@ -380,6 +380,10 @@ def parse_log_timing(log):
         elif "OpenaiStep: processing data" in line:
             timing["llm_start"] = ts
         elif "OpenaiStep" in line and "output data" in line:
+            # skip SoS/EoS signal frames and the destination=-1 prompt echo;
+            # count only real token output
+            if "'signal'" in line or "'destination': -1" in line:
+                continue
             if "llm_first_output" not in timing:
                 timing["llm_first_output"] = ts
             timing["llm_last_output"] = ts
@@ -387,6 +391,8 @@ def parse_log_timing(log):
             if "tts_first_start" not in timing:
                 timing["tts_first_start"] = ts
         elif "TTSStep" in line and "output data" in line:
+            if "'signal'" in line:  # skip SoS/EoS signal frames, count only real audio output
+                continue
             if "tts_first_end" not in timing:
                 timing["tts_first_end"] = ts
             timing["tts_last_end"] = ts
@@ -551,7 +557,7 @@ async def benchmark_multi_user():
         requests.post(f"{SERVER}/register/", json={"client_id": f"multi_{i}"})
         requests.post(
             f"{SERVER}/init_pipeline/multi_{i}",
-            json={"config": "unity_chan", "force": True},
+            json={"config": "unity_chan_default", "force": True},
         )
     await asyncio.sleep(2)
 
@@ -604,14 +610,14 @@ async def latency_main():
     print("  GPU: NVIDIA RTX 5090 (single card, all local services)")
     print("=" * 60)
 
-    # 1. Local pipeline
+    # 1. unity_chan_default: Qwen3-ASR (local) + gemma (remote vLLM) + Qwen3-TTS (local)
     avg_local = await benchmark_ws(
-        "unity_chan", "Test 1: Full Local (Qwen3-ASR + Qwen + Qwen3-TTS)"
+        "unity_chan_default", "Test 1: unity_chan_default (Qwen3-ASR + gemma + Qwen3-TTS)"
     )
 
-    # 2. OpenAI API pipeline
+    # 2. demo: full OpenAI — Whisper (ASR) + GPT (LLM) + OpenAI TTS-1, all remote
     avg_openai = await benchmark_ws(
-        "unity_chan_openai", "Test 2: Full OpenAI API (Whisper + GPT-4.1 + TTS-1)"
+        "demo", "Test 2: demo (full OpenAI: Whisper + GPT + TTS-1)"
     )
 
     # 3. WebRTC pipeline

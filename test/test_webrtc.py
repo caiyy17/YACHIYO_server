@@ -616,22 +616,22 @@ async def run_test():
         return False
 
     # --- Wait for initial silence period (visible in recording) ---
-    SILENCE_BEFORE_SPEECH = 3  # seconds of silence before vad_start
+    SILENCE_BEFORE_SPEECH = 3  # seconds of silence before recording_start
     print(f"[Client] Waiting {SILENCE_BEFORE_SPEECH}s silence before speech...")
     await asyncio.sleep(SILENCE_BEFORE_SPEECH)
 
     # --- Send speech ---
     test_start = time.time()
-    client_dc.send(json.dumps({"signal": "vad_start"}))
-    send_audio.speaking = True  # start sending speech audio after vad_start
-    print(f"[Client] vad_start → sending {speech_duration:.1f}s of speech...")
+    client_dc.send(json.dumps({"signal": "recording_start"}))
+    send_audio.speaking = True  # start sending speech audio after recording_start
+    print(f"[Client] recording_start → sending {speech_duration:.1f}s of speech...")
 
     while not send_audio.finished_speech:
         await asyncio.sleep(0.1)
     await asyncio.sleep(0.5)
 
-    client_dc.send(json.dumps({"signal": "vad_end"}))
-    print("[Client] vad_end → waiting for pipeline response...")
+    client_dc.send(json.dumps({"signal": "recording_end"}))
+    print("[Client] recording_end → waiting for pipeline response...")
 
     # --- Wait for test duration (30s total from connection) ---
     eos_seen = False
@@ -1028,15 +1028,15 @@ def run_client_process(client_id, output_mp4, result_dict):
 
         # Send speech
         test_start = time.time()
-        client_dc.send(json.dumps({"signal": "vad_start"}))
-        print(f"[{client_id}] vad_start sent")
+        client_dc.send(json.dumps({"signal": "recording_start"}))
+        print(f"[{client_id}] recording_start sent")
 
         while not send_audio.finished_speech:
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.5)
 
-        client_dc.send(json.dumps({"signal": "vad_end"}))
-        print(f"[{client_id}] vad_end sent")
+        client_dc.send(json.dumps({"signal": "recording_end"}))
+        print(f"[{client_id}] recording_end sent")
 
         # Wait for test duration
         eos_seen = False

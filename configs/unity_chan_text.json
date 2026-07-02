@@ -23,6 +23,10 @@
                     {
                         "output_name": "expression",
                         "target": "1_expression"
+                    },
+                    {
+                        "output_name": "prompt",
+                        "target": "prompt"
                     }
                 ],
                 "next_nodes": [2],

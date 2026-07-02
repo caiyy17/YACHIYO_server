@@ -1,5 +1,4 @@
 import os
-import time
 import json
 
 from ..base.BaseProcessingStep import BaseProcessingStep
@@ -16,7 +15,7 @@ class MemoryManagerStep(BaseProcessingStep):
         self.catch_signal_set = {"SoS", "EoS"}
         self.min_content_length = self.get_config("min_content_length", 20)
         self.max_memory_entries = self.get_config("max_memory_entries", 50)
-        self.memory_file = f"history/memory_vtuber_{self.client_id}.json"
+        self.memory_file = f"history/memory_{self.client_id}.json"
         self.current_response_text = ""
         self.memories = self._load_memories()
         self.logger.info(f"loaded {len(self.memories)} memory entries")
@@ -30,7 +29,7 @@ class MemoryManagerStep(BaseProcessingStep):
             return
 
         if signal == "EoS":
-            self._evaluate_and_store()
+            self._evaluate_and_store(data.get("timestamp"))
             self.output_to_queue(data, pass_data)
             return
 
@@ -46,7 +45,7 @@ class MemoryManagerStep(BaseProcessingStep):
                 self.add_output(output_data, key, value)
         self.output_to_queue(output_data, pass_data)
 
-    def _evaluate_and_store(self):
+    def _evaluate_and_store(self, timestamp):
         """Evaluate if the current response is worth remembering."""
         response = self.current_response_text.strip()
 
@@ -63,7 +62,7 @@ class MemoryManagerStep(BaseProcessingStep):
             return
 
         entry = {
-            "timestamp": time.time(),
+            "timestamp": timestamp,  # conversation (turn) timestamp, from the EoS message
             "response_summary": response[:200],
             "response_length": len(response),
         }

@@ -17,9 +17,7 @@
                         "target": "1_text"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ],
+                "next_nodes": [2],
                 "model": "openai"
             }
         },
@@ -38,11 +36,13 @@
                     {
                         "output_name": "text",
                         "target": "2_text"
+                    },
+                    {
+                        "output_name": "prompt",
+                        "target": "prompt"
                     }
                 ],
-                "next_nodes": [
-                    3
-                ],
+                "next_nodes": [3],
                 "system_prompt": "This is a system prompt.",
                 "reset_history": true,
                 "history_length": 30,
