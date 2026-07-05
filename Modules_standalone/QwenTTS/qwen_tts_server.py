@@ -3,17 +3,51 @@ Qwen3-TTS OpenAI-compatible server using faster-qwen3-tts (CUDA Graph accelerati
 """
 
 import argparse
+import base64
 import io
+import json
 import os
 import threading
+import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 app = FastAPI()
+
+
+# OpenAI-shaped error body: {"error": {message, type, param, code}} so that
+# openai SDK clients surface proper error messages (FastAPI default is {"detail"}).
+@app.exception_handler(StarletteHTTPException)
+async def _openai_http_error(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {
+            "message": str(exc.detail),
+            "type": "invalid_request_error" if exc.status_code < 500 else "server_error",
+            "param": None,
+            "code": None,
+        }},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _openai_validation_error(request, exc):
+    return JSONResponse(
+        status_code=400,
+        content={"error": {
+            "message": str(exc.errors()),
+            "type": "invalid_request_error",
+            "param": None,
+            "code": None,
+        }},
+    )
 model = None
+MODEL_SR = None  # native sample rate, captured at warmup (pcm streaming has no header)
 ref_cache = {}  # voice_name -> {audio_path, text}
 # CUDA Graph is not thread-safe — concurrent generate() calls corrupt the
 # static KV cache and cause the decoder to miss EOS, producing abnormally
@@ -30,10 +64,20 @@ class SpeechRequest(BaseModel):
     language: Optional[str] = "auto"
     speed: Optional[float] = 1.0
     response_format: Optional[str] = "wav"
+    stream_format: Optional[str] = "audio"  # "audio" (binary body) | "sse" (event stream)
 
 
 def get_available_voices():
     return list(ref_cache.keys())
+
+
+def _to_pcm16_bytes(audio):
+    """Float [-1,1] or int16 audio chunk -> raw 16-bit LE PCM bytes."""
+    arr = np.asarray(audio).flatten()
+    if arr.dtype != np.int16:
+        arr = np.clip(arr.astype(np.float32), -1.0, 1.0)
+        arr = (arr * 32767.0).astype(np.int16)
+    return arr.tobytes()
 
 
 @app.get("/health")
@@ -57,6 +101,17 @@ def languages():
 def speech(req: SpeechRequest):
     if not req.input.strip():
         raise HTTPException(400, "Empty input")
+    # Explicit 400 for unsupported knobs (no silent fallback to WAV)
+    if req.stream_format not in ("audio", "sse"):
+        raise HTTPException(
+            400, f"stream_format '{req.stream_format}' not supported; use 'audio' or 'sse'"
+        )
+    if req.response_format not in ("wav", "pcm"):
+        raise HTTPException(
+            400,
+            f"response_format '{req.response_format}' not supported by this server; "
+            f"use 'wav' or 'pcm'",
+        )
 
     language = req.language or "auto"
     voice = req.voice
@@ -65,6 +120,84 @@ def speech(req: SpeechRequest):
         fallback = list(ref_cache.keys())[0]
         print(f"Voice '{voice}' not found, falling back to '{fallback}'")
         voice = fallback
+    if voice not in ref_cache:
+        raise HTTPException(500, "No reference voices loaded")
+
+    # OpenAI-compatible SSE streaming (stream_format="sse"): text/event-stream of
+    #   data: {"type": "speech.audio.delta", "audio": "<b64 pcm16>"}
+    #   data: {"type": "speech.audio.done", "usage": {...}}
+    # Audio payload is always raw PCM16 mono at the native sample rate (24kHz);
+    # usage tokens are approximations (chars in / 12Hz codec steps out).
+    if req.stream_format == "sse":
+        ref = ref_cache[voice]
+
+        def sse_stream():
+            # Same locking rules as the binary pcm path (CUDA Graph is serial).
+            with _model_lock:
+                gen = model.generate_voice_clone_streaming(
+                    text=req.input,
+                    language=language,
+                    ref_audio=ref["audio_path"],
+                    ref_text=ref["text"],
+                )
+                total_samples = 0
+                sr_seen = MODEL_SR or 24000
+                try:
+                    for chunk, sr, _timing in gen:
+                        sr_seen = sr
+                        pcm = _to_pcm16_bytes(chunk)
+                        total_samples += len(pcm) // 2
+                        event = {
+                            "type": "speech.audio.delta",
+                            "audio": base64.b64encode(pcm).decode("ascii"),
+                        }
+                        yield f"data: {json.dumps(event)}\n\n".encode()
+                finally:
+                    gen.close()
+                usage = {
+                    "input_tokens": len(req.input),
+                    "output_tokens": int(total_samples / sr_seen * 12),
+                }
+                usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+                done = {"type": "speech.audio.done", "usage": usage}
+                yield f"data: {json.dumps(done)}\n\n".encode()
+
+        headers = {}
+        if MODEL_SR:
+            headers["X-Sample-Rate"] = str(MODEL_SR)
+        return StreamingResponse(
+            sse_stream(), media_type="text/event-stream", headers=headers
+        )
+
+    # OpenAI-compatible raw PCM streaming: 16-bit LE mono, chunks flushed as
+    # generated (chunked transfer). Same as OpenAI, pcm carries no container
+    # header; the sample rate is exposed via the X-Sample-Rate header.
+    if req.response_format == "pcm":
+        ref = ref_cache[voice]
+
+        def pcm_stream():
+            # CUDA Graph is not thread-safe: hold the lock for the whole
+            # generation. Runs in a threadpool thread; acquire and release
+            # happen in that same thread (incl. client-disconnect unwinding).
+            with _model_lock:
+                gen = model.generate_voice_clone_streaming(
+                    text=req.input,
+                    language=language,
+                    ref_audio=ref["audio_path"],
+                    ref_text=ref["text"],
+                )
+                try:
+                    for chunk, sr, _timing in gen:
+                        yield _to_pcm16_bytes(chunk)
+                finally:
+                    gen.close()
+
+        headers = {}
+        if MODEL_SR:
+            headers["X-Sample-Rate"] = str(MODEL_SR)
+        return StreamingResponse(
+            pcm_stream(), media_type="application/octet-stream", headers=headers
+        )
 
     try:
         with _model_lock:
@@ -134,13 +267,13 @@ if __name__ == "__main__":
     load_reference_voices(args.ref_dir)
     print(f"Available voices: {get_available_voices()}")
 
-    # Warmup with reference voice
+    # Warmup with reference voice (also captures the native sample rate for pcm)
     if ref_cache:
         name = list(ref_cache.keys())[0]
         ref = ref_cache[name]
         print(f"Warmup with voice '{name}'...")
-        model.generate_voice_clone(text="test", language="chinese", ref_audio=ref["audio_path"], ref_text=ref["text"])
-        print("Warmup done")
+        _, MODEL_SR = model.generate_voice_clone(text="test", language="chinese", ref_audio=ref["audio_path"], ref_text=ref["text"])
+        print(f"Warmup done (sample rate: {MODEL_SR})")
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

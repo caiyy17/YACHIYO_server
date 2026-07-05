@@ -56,6 +56,34 @@ curl http://localhost:8011/v1/audio/speech \
   -o output.wav
 ```
 
+PCM streaming (OpenAI-compatible): `response_format: "pcm"` streams raw 16-bit LE
+mono PCM chunks as they are generated (24kHz, exposed via `X-Sample-Rate` header).
+Consume with the OpenAI SDK:
+
+```python
+with client.audio.speech.with_streaming_response.create(
+    model="tts", input=text, voice="test_cn", response_format="pcm",
+) as resp:
+    for chunk in resp.iter_bytes(65536):
+        ...  # first chunk arrives in ~0.5s
+```
+
+SSE streaming (OpenAI-compatible): `stream_format: "sse"` returns `text/event-stream`
+in the official event shape — `speech.audio.delta` events carrying base64 PCM16
+chunks, terminated by one `speech.audio.done` with `usage` (tokens approximated:
+input = chars, output = 12Hz codec steps):
+
+```
+data: {"type": "speech.audio.delta", "audio": "<base64 pcm16>"}
+...
+data: {"type": "speech.audio.done", "usage": {"input_tokens": 39, "output_tokens": 90, "total_tokens": 129}}
+```
+
+Supported `response_format`: `wav`, `pcm` — anything else returns an explicit 400
+(no silent fallback). Errors use the OpenAI shape `{"error": {message, type, param,
+code}}`, so openai SDK clients raise proper typed exceptions. `speed` and
+`instructions` are accepted but ignored (not supported by the underlying model).
+
 ## Configuration
 
 Service address is configured in `configs/settings/settings.json`:
