@@ -25,6 +25,12 @@
                         "target": "data"
                     }
                 ],
+                "catch_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    }
+                ],
                 "next_nodes": [-1],
                 "sample_rate": 48000,
                 "frame_samples": 960,

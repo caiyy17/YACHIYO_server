@@ -17,6 +17,22 @@
                         "target": "1_audio_file"
                     }
                 ],
+                "catch_signals": [
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    }
+                ],
                 "next_nodes": [2],
                 "sample_rate": 48000
             }
@@ -36,6 +52,20 @@
                     {
                         "output_name": "result",
                         "target": "2_text"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
                     }
                 ],
                 "next_nodes": [3],
@@ -69,6 +99,20 @@
                     {
                         "output_name": "prompt",
                         "target": "prompt"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
                     }
                 ],
                 "next_nodes": [4, 7],
@@ -128,11 +172,33 @@
                         "target": "4_expression"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    }
+                ],
+                "next_nodes": [5],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [5]
+                "score_threshold": 0.6
             }
         },
         {
@@ -169,11 +235,33 @@
                         "target": "5_action"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    }
+                ],
+                "next_nodes": [6],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [6]
+                "score_threshold": 0.6
             }
         },
         {
@@ -212,6 +300,28 @@
                     {
                         "output_name": "audio_file",
                         "target": "6_audio_data"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
                     }
                 ],
                 "next_nodes": [7],
@@ -263,6 +373,30 @@
                     {
                         "output_name": "data",
                         "target": "data"
+                    }
+                ],
+                "catch_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
                     }
                 ],
                 "next_nodes": [-1],

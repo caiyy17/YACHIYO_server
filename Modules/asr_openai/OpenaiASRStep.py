@@ -59,6 +59,7 @@ class OpenaiASRCaller:
             self.logger.info("ASR init call OK")
         except Exception as e:
             self.logger.error(f"ASR init call failed: {e}")
+            raise  # init failure must surface (fail-fast at pipeline init)
 
     def call(self, audio_file):
         try:

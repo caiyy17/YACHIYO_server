@@ -113,6 +113,116 @@ class MotionGenerationCaller:
             self.logger.error(f"Failed to call motion generation: {e}")
             return ""
 
+    def call_stream(self, prompt):
+        """Stream motion chunks from the backend's SSE endpoint
+        (/api/generate_json_stream), yielding one payload per delta.
+
+        humanoid_output: deltas are converted incrementally — prev_trans /
+        ref_y carry the cross-chunk state so the concatenation of chunk
+        conversions equals one whole-clip conversion (no root-step loss or
+        hips jump at chunk boundaries). Otherwise raw SMPL-H chunks are
+        yielded in the non-stream motion schema. Continuation history is
+        saved from the accumulated tail exactly like call().
+        """
+        try:
+            body = {
+                "model": self.model_name,
+                "text": prompt,
+                "character": self.character,
+                "duration": self.duration,
+                "is_continuation": False,
+            }
+            body.update(self.extra)
+            if self.continuous and self._has_history():
+                body["is_continuation"] = True
+                body["history"] = {
+                    "num_frames": int(self.history_poses.shape[0]),
+                    "poses": _b64_encode_f32(self.history_poses),
+                    "poses_shape": list(self.history_poses.shape),
+                    "trans": _b64_encode_f32(self.history_trans),
+                    "trans_shape": list(self.history_trans.shape),
+                    "betas": _b64_encode_f32(self.history_betas),
+                    "betas_shape": list(self.history_betas.shape),
+                }
+            stream_size = int(self.config.get("stream_size", 0))
+            if stream_size > 0:
+                body["stream_size"] = stream_size
+
+            response = requests.post(
+                self.addr_motion + "/api/generate_json_stream",
+                json=body,
+                stream=True,
+                timeout=30,
+            )
+            response.raise_for_status()
+            framerate = float(response.headers.get("X-Framerate", FRAMERATE))
+
+            prev_trans = None   # last root translation of the previous chunk
+            ref_y = None        # session first-frame pelvis Y
+            tail_poses = tail_trans = None  # rolling tail for continuation
+            betas = None
+
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                event = json.loads(line[len("data: "):])
+                etype = event.get("type", "")
+
+                if etype == "motion.delta":
+                    if "poses" not in event:
+                        # skeleton-only backend: forward the raw delta
+                        yield event
+                        continue
+                    poses = _b64_decode_f32(event["poses"], event["poses_shape"])
+                    trans = _b64_decode_f32(event["trans"], event["trans_shape"])
+                    n = int(event["num_frames"])
+
+                    if self.continuous:
+                        if tail_poses is None:
+                            tail_poses, tail_trans = poses, trans
+                        else:
+                            tail_poses = np.concatenate([tail_poses, poses])
+                            tail_trans = np.concatenate([tail_trans, trans])
+                        tail_poses = tail_poses[-self.history_size:]
+                        tail_trans = tail_trans[-self.history_size:]
+
+                    if self.humanoid_output:
+                        h = smplh_to_humanoid(
+                            poses, trans, n, framerate=framerate,
+                            prev_trans=prev_trans, ref_y=ref_y,
+                        )
+                        if ref_y is None:
+                            ref_y = float(trans[0][1])
+                        prev_trans = [float(v) for v in trans[-1]]
+                        yield h
+                    else:
+                        yield {
+                            "num_frames": n,
+                            "framerate": framerate,
+                            "duration": n / framerate,
+                            "format": "smplh",
+                            "poses": event["poses"],
+                            "poses_shape": event["poses_shape"],
+                            "trans": event["trans"],
+                            "trans_shape": event["trans_shape"],
+                        }
+
+                elif etype == "motion.done":
+                    if "betas" in event:
+                        betas = _b64_decode_f32(event["betas"], event["betas_shape"])
+
+                elif etype == "error":
+                    self.logger.error(f"motion stream error: {event.get('error')}")
+                    break
+
+            if self.continuous and tail_poses is not None:
+                self.history_poses = tail_poses.copy()
+                self.history_trans = tail_trans.copy()
+                self.history_betas = (betas if betas is not None
+                                      else np.zeros(10, dtype=np.float32))
+        except Exception as e:
+            self.logger.error(f"Failed to stream motion generation: {e}")
+
     def _save_history(self, result):
         """Keep the last `history_size` frames of the returned motion as continuation
         context for the next request. Does NOT modify the returned motion."""
@@ -140,7 +250,7 @@ class MotionGenerationCaller:
 
 
 class MotionGenerationStep(MotionStep):
+    """Continuous mode needs config: catch_signals+pass_signals: ["SoS"]."""
+
     def custom_init(self):
         self.motion_caller = MotionGenerationCaller(self.config, self.logger)
-        if self.motion_caller.continuous:
-            self.catch_signal_set = {"SoS"}

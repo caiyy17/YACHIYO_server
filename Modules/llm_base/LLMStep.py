@@ -45,6 +45,10 @@ class BaseLLMCaller:
 
 
 class LLMStep(BaseProcessingStep):
+    REQUIRED_INPUTS = ["prompt"]
+
+    EMIT_SIGNALS = ["SoS", "EoS"]  # broadcast turn envelope
+
     def custom_init(self):
         self.llm_caller = BaseLLMCaller(self.client_id, self.config, self.logger)
 
@@ -53,8 +57,7 @@ class LLMStep(BaseProcessingStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        sos_signal = {"signal": "SoS"}
-        self.output_to_queue(sos_signal, pass_data)
+        self.emit_signal("SoS", pass_data, is_add_destination=False)
         for response in self.llm_caller.call_stream(prompt):
             if self.check_cancel():
                 self.logger.info("cancel inside loop")
@@ -65,6 +68,5 @@ class LLMStep(BaseProcessingStep):
             for key, value in response.items():
                 self.add_output(current_data, key, value)
             self.output_to_queue(current_data, pass_data)
-        eos_signal = {"signal": "EoS"}
-        self.output_to_queue(eos_signal, pass_data)
+        self.emit_signal("EoS", pass_data, is_add_destination=False)
         return

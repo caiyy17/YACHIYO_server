@@ -23,6 +23,31 @@ class CustomLogger:
 
 
 class BaseProcessingStep:
+    # Signals this module emits, by INTERNAL name (module contract, mirrors
+    # how handlers own their internal catch names). The wire name of each is
+    # config-renamable via emit_signals; unmapped names emit under the same
+    # name. Renaming emitted envelope signals is what makes nested
+    # dispatcher/receiver brackets wireable (inner pair uses distinct names).
+    EMIT_SIGNALS = []
+    # Module SELF-consistency contracts, checked statically at pipeline init
+    # (utils/pipeline_validator): the node's config must declare
+    #   - a catch_signals entry whose TARGET covers each required catch name
+    #     (handlers match target names, so renamed wiring still satisfies it)
+    #   - an input_vars entry whose input_name covers each required input
+    # Validation is strictly per-node — no cross-module flow modeling; broken
+    # links between nodes surface at runtime via the four-state signal rules.
+    REQUIRED_CATCH_SIGNALS = []
+    REQUIRED_INPUTS = []
+
+    @classmethod
+    def required_catch_signals(cls, config):
+        """Override for config-dependent contracts (e.g. continuous mode)."""
+        return list(cls.REQUIRED_CATCH_SIGNALS)
+
+    @classmethod
+    def required_inputs(cls, config):
+        return list(cls.REQUIRED_INPUTS)
+
     def __init__(
         self,
         index,
@@ -53,16 +78,47 @@ class BaseProcessingStep:
             "timestamp",
         ]
         self.output_dict = {}
-        self.catch_signal_set = set()
+        # Signal routing — declared ENTIRELY in config, like input_vars:
+        #   catch_signals: deliver to process() (renamed to target)
+        #   pass_signals:  relay downstream (renamed to target); when combined
+        #                  with catch, relay happens AFTER process() returns
+        # Entries are "name" or {"source": arriving_name, "target": new_name}.
+        # Every signal arriving at a node MUST be declared (catch and/or
+        # pass); undeclared signals are dropped with an error.
+        self.catch_signal_map = self._parse_signal_decls(
+            self.config.get("catch_signals"))
+        self.pass_signal_map = self._parse_signal_decls(
+            self.config.get("pass_signals"))
+        self.catch_signal_set = set(self.catch_signal_map)
+        self.pass_signal_set = set(self.pass_signal_map)
+        # emit map: internal name -> wire name; defaults to identity for
+        # every EMIT_SIGNALS entry, overridable via config emit_signals
+        self.emit_signal_map = {s: s for s in self.EMIT_SIGNALS}
+        self.emit_signal_map.update(
+            self._parse_signal_decls(self.config.get("emit_signals")))
         self.prepare_output_dict()
         self._init_with_timeout()
         self.logger.info("initialized")
 
+    @staticmethod
+    def _parse_signal_decls(entries):
+        """"name" or {"source":..., "target":...} -> {source: target}."""
+        decls = {}
+        for e in entries or []:
+            if isinstance(e, str):
+                decls[e] = e
+            else:
+                decls[e["source"]] = e.get("target", e["source"])
+        return decls
+
     def _init_with_timeout(self, timeout=60):
-        """Run custom_init with a timeout to prevent hanging on unreachable services."""
+        """Run custom_init with a timeout to prevent hanging on unreachable
+        services. The outcome is recorded in self.init_error (None = OK) so
+        the pipeline builder can fail fast and surface it to the client."""
         import threading
         init_done = threading.Event()
         init_error = [None]
+        self.init_error = None
 
         def _run_init():
             try:
@@ -75,9 +131,11 @@ class BaseProcessingStep:
         t = threading.Thread(target=_run_init, daemon=True)
         t.start()
         if not init_done.wait(timeout=timeout):
-            self.logger.error(f"custom_init timed out after {timeout}s")
+            self.init_error = f"custom_init timed out after {timeout}s"
+            self.logger.error(self.init_error)
         elif init_error[0]:
-            self.logger.error(f"custom_init failed: {init_error[0]}")
+            self.init_error = f"custom_init failed: {init_error[0]}"
+            self.logger.error(self.init_error)
 
     def custom_init(self):
         """Subclasses can override this method for custom initialization."""
@@ -115,29 +173,54 @@ class BaseProcessingStep:
                     self.current_timestamp = None
                     continue
 
-                # If this is a signal not in catch_signal_set, remove destination and forward to output_queue
-                if (
-                    data.get("signal", "") != ""
-                    and data.get("signal", "") not in self.catch_signal_set
-                ):
-                    data.pop("destination", None)
-                    self.output_queue.put(json.dumps(data))
+                # Signal handling — every arriving signal MUST be declared:
+                #   catch only        -> consume (terminate)
+                #   catch + pass      -> consume, then relay (renamed)
+                #   pass only         -> relay (renamed), no processing
+                #   undeclared        -> wiring error: drop loudly
+                # The four states apply to directed signals too (destination
+                # surviving here equals self.index): relaying strips the
+                # destination, so a passed-on directed signal continues as a
+                # broadcast handled by downstream declarations.
+                signal = data.get("signal", "")
+                if signal != "" and signal not in self.catch_signal_set:
+                    if signal in self.pass_signal_set:
+                        data.pop("destination", None)
+                        data["signal"] = self.pass_signal_map[signal]
+                        self.output_queue.put(json.dumps(data))
+                    else:
+                        self.logger.error(
+                            f"undeclared signal '{signal}' at node "
+                            f"{self.index}; dropping — declare it in "
+                            f"catch_signals or pass_signals"
+                        )
                     self.current_timestamp = None
                     continue
 
-                # Caught signals: pass all fields directly (no filtering)
+                # Caught signals: pass all fields directly (no filtering),
+                # signal renamed to its catch target for process().
                 # Normal messages: filter through input_vars/pass_vars
-                if data.get("signal", "") in self.catch_signal_set:
+                if signal != "":
                     filtered_data = {
                         k: v for k, v in data.items()
                         if k not in ("destination",)
                     }
+                    filtered_data["signal"] = self.catch_signal_map[signal]
                     pass_data = {"timestamp": data.get("timestamp")}
                 else:
                     filtered_data = self.extract_input_data(data)
                     pass_data = self.extract_pass_data(data)
                 self.logger.info(f"processing data: {filtered_data}")
                 self.process(filtered_data, pass_data)
+                # Consume-then-relay: a caught signal also declared in
+                # pass_signals is forwarded (renamed, destination stripped)
+                # after process() returns, so any output the node emitted for
+                # it stays ahead of the relayed signal.
+                if signal != "" and signal in self.pass_signal_set:
+                    relay = {k: v for k, v in data.items()
+                             if k != "destination"}
+                    relay["signal"] = self.pass_signal_map[signal]
+                    self.output_queue.put(json.dumps(relay))
                 self.current_timestamp = None
             except queue.Empty:
                 self.custom_update()
@@ -289,6 +372,20 @@ class BaseProcessingStep:
                 self.logger.info(f"output data: {data}")
             self.output_queue.put(json.dumps(data))
         return
+
+    def emit_signal(self, internal_name, pass_data={}, **kwargs):
+        """Emit a signal by its INTERNAL name; the wire name comes from the
+        emit_signals config mapping (identity by default). kwargs forward to
+        output_to_queue (is_add_destination / destination_index for directed
+        signals; broadcast = is_add_destination=False)."""
+        wire_name = self.emit_signal_map.get(internal_name)
+        if wire_name is None:
+            self.logger.error(
+                f"emit_signal('{internal_name}') is not declared in "
+                f"EMIT_SIGNALS/emit_signals; emitting under the same name"
+            )
+            wire_name = internal_name
+        self.output_to_queue({"signal": wire_name}, pass_data, **kwargs)
 
     def process(self, data, pass_data={}):
         """Process the extracted data. Subclasses can override this method."""

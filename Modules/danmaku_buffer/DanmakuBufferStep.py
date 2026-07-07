@@ -8,6 +8,9 @@ TIMESTAMP_EPSILON = 1e-3
 
 
 class DanmakuBufferStep(SpanProcessingStep):
+    REQUIRED_CATCH_SIGNALS = ["playback_complete"]
+    REQUIRED_INPUTS = ["text"]
+
     """
     Buffers incoming danmaku messages and releases batches to the LLM at intervals.
     Paced by client playback_complete signal.
@@ -27,8 +30,7 @@ class DanmakuBufferStep(SpanProcessingStep):
     GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
 
     def span_init(self):
-        self.catch_signal_set = {"playback_complete"}
-
+        # Requires config: catch_signals: ["playback_complete"]
         self.buffer = []
         self.release_interval = self.get_config("release_interval", 12)
         self.max_batch_size = self.get_config("max_batch_size", 8)

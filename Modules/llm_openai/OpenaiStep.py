@@ -64,6 +64,7 @@ class OpenaiCaller(BaseLLMCaller):
             self.logger.info(f"LLM init call OK (messages: {len(messages)})")
         except Exception as e:
             self.logger.error(f"LLM init call failed: {e}")
+            raise  # init failure must surface (fail-fast at pipeline init)
 
     def create_stream(self, history, allow_tools=True):
         model_name = self.model_config.get("model_name", "gpt")
@@ -126,8 +127,9 @@ class OpenaiStep(LLMStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        sos_signal = {"signal": "SoS"}
-        self.output_to_queue(sos_signal, pass_data)
+        # SoS/EoS are broadcast turn-envelope signals (no destination);
+        # wire names are renamable via config emit_signals.
+        self.emit_signal("SoS", pass_data, is_add_destination=False)
         # Right after SoS, echo this round's input question along the optional
         # echo edge: next_nodes = [main, echo?] (echo typically -1, the pipeline
         # exit). No second edge wired -> no echo. The field name is set by this
@@ -160,6 +162,5 @@ class OpenaiStep(LLMStep):
                 for key, value in response.items():
                     self.add_output(current_data, key, value)
                 self.output_to_queue(current_data, pass_data)
-        eos_signal = {"signal": "EoS"}
-        self.output_to_queue(eos_signal, pass_data)
+        self.emit_signal("EoS", pass_data, is_add_destination=False)
         return

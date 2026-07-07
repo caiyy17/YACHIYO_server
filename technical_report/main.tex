@@ -243,17 +243,30 @@ Linearization makes temporal consistency a structural guarantee rather than a ru
 \label{sec:signals}
 
 \paragraph{Why signals are needed.}
-A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``voice activity detected'' (\texttt{vad\_start}/\texttt{vad\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
+A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``voice activity detected'' (\texttt{recording\_start}/\texttt{recording\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
 
 \paragraph{Why signals should not overtake data.}
 If control signals could freely overtake data messages in the queue, ordering guarantees would break: the client might receive \texttt{EoS} before the last audio chunk. This is analogous to the hazard problem in CPU instruction pipelines, where out-of-order execution of control instructions (branches) relative to data instructions causes incorrect results.
 
-\paragraph{Our design: forwarding without processing.}
-Instead of giving signals a separate fast path, we keep them in the \emph{same} queue as data but exempt them from processing. When a signal arrives at a node that does not catch it, the node clears the signal's destination and immediately forwards it to the next queue. The signal thus travels at the speed of queue forwarding ($\sim$$\mu$s per hop) rather than the speed of data processing ($\sim$ms--s per stage)---but only \emph{after} it reaches the head of each queue. A signal does not jump ahead of messages already queued before it; it simply passes through each node's processing step in negligible time. This is analogous to a CPU pipeline's \emph{bypass/forwarding} mechanism: the result is forwarded to where it is needed without waiting for the full stage to complete.
+\paragraph{Our design: declared routing, no drifting.}
+Signals travel in the \emph{same} queue as data, hop by hop, exactly like ordinary messages---there is no separate channel and no implicit ``drifting''. What a node does with an arriving signal is declared \emph{entirely in its pipeline config}, mirroring how \texttt{input\_vars}/\texttt{pass\_vars} declare field handling. Two declaration lists, both supporting renaming via \texttt{\{source, target\}} entries (by convention written explicitly, defaulting to identical names):
 
-Each node declares which signals it catches. A signal emitted by any node will reach the client directly as long as no downstream node explicitly catches it---creating an express lane within the existing linear structure, without introducing a separate channel.
+\begin{itemize}
+    \item \texttt{catch\_signals}: deliver the signal to this node's \texttt{process()} (renamed to its target, so a module's internal handler names are decoupled from the wire names);
+    \item \texttt{pass\_signals}: relay the signal (renamed) to the next queue.
+\end{itemize}
 
-The one exception requiring out-of-band delivery is cancellation, discussed in Section~\ref{sec:cancel}.
+The four resulting states: \emph{catch only} = consume and terminate; \emph{catch + pass} = consume, then relay \emph{after} \texttt{process()} returns, so any output the node emitted for the signal stays ahead of it (consume-then-relay); \emph{pass only} = forward without processing, at queue-forwarding speed ($\sim$$\mu$s per hop) rather than data-processing speed ($\sim$ms--s per stage), without overtaking any queued message; \emph{undeclared} = a wiring error---the signal is dropped with a loud log. Every signal arriving at a node must therefore be declared, and the complete signal flow of a pipeline is readable from its config alone.
+
+Two routing primitives follow from the presence of a \texttt{destination} field. A \emph{directed} signal (with destination, e.g.\ \texttt{dispatch\_start/end}) transits intermediate nodes via ordinary destination routing; at its target the same four states apply (a pass declaration relays it onward as a broadcast, stripping the destination). A \emph{broadcast} signal (no destination, e.g.\ \texttt{SoS}/\texttt{EoS}) advances one declared \texttt{pass} hop at a time until the pipeline exit, reaching every subscriber in between.
+
+The emitting side is declared symmetrically: each module lists the signals it emits (by internal name) in its class contract \texttt{EMIT\_SIGNALS}, and sends through \texttt{emit\_signal()}; the wire name is renamable via the config's \texttt{emit\_signals} mapping. Renaming emitted envelopes is what makes \emph{nested} dispatcher/receiver brackets wireable: the inner pair emits, say, \texttt{inner\_dispatch\_start/end}, which the inner receiver catches, without colliding with the outer envelope. The dispatcher's own signal semantics follow its logical mainline: its \texttt{pass\_signals} relay \emph{directed to the receiver} (transiting branch nodes, which neither see nor declare them), while \texttt{dispatch\_signals} (parallel to \texttt{dispatch\_vars}, both referencing renamed target names) direct per-branch copies; catch-renaming keeps the branch-directed name distinct so branches do not double-trigger.
+
+Pipelines are validated statically at initialization time, and the validation is deliberately \emph{per-node}: each module declares its own contract as class attributes (\texttt{REQUIRED\_CATCH\_SIGNALS} / \texttt{REQUIRED\_INPUTS}, config-dependent variants via classmethods, plus \texttt{EMIT\_SIGNALS} for what it sends), and the validator only checks every node's config against its own module's contract --- required catches covered by catch targets (renamed wiring still satisfies the contract, since handlers match target names), required inputs covered by \texttt{input\_vars}, and node-internal reference consistency (emit renames must name real emissions; dispatcher's \texttt{dispatch\_vars}/\texttt{dispatch\_signals} must reference its own output/catch targets). Cross-node flow is intentionally \emph{not} modeled: doing so would replicate each module's routing semantics inside the validator and drift as modules evolve. Broken links between nodes instead surface at runtime through the four-state rules --- an undeclared signal is dropped with a loud per-client log entry at the first node it reaches. Any static finding rejects the pipeline (HTTP 400 with details).
+
+Environment failures are separated from configuration failures. Node initialization is sequential; each node's \texttt{custom\_init} runs under a 60\,s timeout and records its outcome. A failed init (dependent model service down, bad settings entry) \emph{fails fast}: nodes built so far are killed, the client state is reset to re-initializable, and the endpoint returns HTTP 503 with the failing node and cause --- distinct from the validator's 400 (fix the config) in that a 503 is retryable once the service is back.
+
+The one exception requiring out-of-band delivery is cancellation, discussed in Section~\ref{sec:cancel}: cancellation is \emph{not} a signal---its semantics are deliberately order-free (invalidate everything older than $T$), which is exactly why it may bypass the in-band ordering that signals must respect.
 
 \subsection{Timestamps and Cancellation}
 \label{sec:cancel}
@@ -297,7 +310,7 @@ Messages are produced only on events (user speech, LLM output, TTS completion); 
 Audio and video tracks produce frames at fixed rates (50\,fps, 30\,fps) regardless of activity, emitting silence when idle. The timing origin is the server's monotonic frame clock.
 
 \paragraph{Paradigm adapters.}
-Two adapter nodes bridge the paradigms: \textbf{AudioCollector} assembles continuous microphone frames into a single WAV buffer on \texttt{vad\_end} (frame $\rightarrow$ event); \textbf{FrameSplitter} is a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data (event $\rightarrow$ frame). FrameSplitter overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
+Two adapter nodes bridge the paradigms: \textbf{AudioCollector} assembles continuous microphone frames into a single WAV buffer on \texttt{recording\_end} (frame $\rightarrow$ event); \textbf{FrameSplitter} is a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data (event $\rightarrow$ frame). FrameSplitter overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
 
 \subsection{Motivation: From Sentence-Level to Frame-Level}
 
@@ -750,7 +763,7 @@ Every pipeline node extends \texttt{BaseProcessingStep}, which implements the co
 \begin{enumerate}[nosep]
     \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
     \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
-    \item \textbf{Signal handling}: each node declares a \texttt{catch\_signal\_set}; signals not in this set are forwarded immediately without waiting behind data messages (Section~\ref{sec:signals}).
+    \item \textbf{Signal handling}: each node declares \texttt{catch\_signals} / \texttt{pass\_signals} in its pipeline config (renaming supported, like the var declarations); caught signals go to \texttt{process()}, passed signals are relayed at forwarding speed, undeclared signals are dropped as wiring errors (Section~\ref{sec:signals}).
     \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
     \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
 \end{enumerate}
@@ -759,7 +772,7 @@ Subclasses override a single \texttt{process()} method containing the node-speci
 
 \subsection{SpanProcessingStep}
 
-Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{vad\_start} and \texttt{vad\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{recording\_start} and \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
 
 \subsection{Connection Lifecycle}
 

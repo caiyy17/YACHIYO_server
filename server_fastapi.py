@@ -56,6 +56,12 @@ def setup_global_logger():
 global_logger = setup_global_logger()
 
 
+class PipelineInitError(Exception):
+    """A node failed to initialize (dependent service down / bad settings).
+    Raised by setup_processing_pipeline after killing already-started nodes;
+    init_pipeline surfaces it as HTTP 503 with the node detail."""
+
+
 # Client class for managing each connection
 class ClientConnection:
     def __init__(self, client_id: str, logger: logging.Logger):
@@ -100,7 +106,20 @@ class ClientConnection:
         self.queues = []
         self.cancel_queues = []
         self.threads = []
-        self.setup_processing_pipeline()
+        try:
+            self.setup_processing_pipeline()
+        except PipelineInitError:
+            # Kill nodes that already started, wait them out, and restore a
+            # clean re-initializable state (dispose() can't be used here: it
+            # guards on self.initialized which is still False).
+            self.kill_event.set()
+            await self.wait_for_threads()
+            self.kill_event.clear()
+            self.queues = [self.send_queue]
+            self.cancel_queues = [self.send_cancel_queue]
+            self.threads = []
+            self.initialized = False
+            raise
         self.initialized = True
         self.log_info(f"Init: Client {self.client_id} initialized")
 
@@ -120,7 +139,10 @@ class ClientConnection:
         self.queues.append(self.send_queue)
         self.cancel_queues.append(self.send_cancel_queue)
 
-        # Create a thread for each function
+        # Create a thread for each function. Node initialization is
+        # sequential; a failed init (dependent service down) FAILS FAST:
+        # nodes built so far are killed and the error surfaces to the caller
+        # instead of leaving a silently half-broken pipeline.
         for i, node in enumerate(pipeline):
             func_name = node["function"]  # Get current node's function name
             func_class = get_function_class_by_name(func_name)  # Get corresponding class
@@ -139,6 +161,13 @@ class ClientConnection:
                 self.kill_event,
                 config,
             )
+            if getattr(func_instance, "init_error", None):
+                detail = (
+                    f"node[{i}] {func_name}(id={node['node_id']}): "
+                    f"{func_instance.init_error}"
+                )
+                self.logger.error(f"Init: pipeline init failed — {detail}")
+                raise PipelineInitError(detail)
             t = threading.Thread(target=func_instance.run, name=f"{i}_{func_name}")
             t.start()
             self.threads.append(t)
@@ -465,7 +494,32 @@ async def init_pipeline(client_id: str, data: ConfigData):
         with open(json_file, "r") as file:
             pipeline_config = json.load(file)
 
-    await client.init_pipeline(pipeline_config, force=data.force)
+    # Static validation before building: signal-flow closure (every signal
+    # declared at every node it reaches) and var-flow closure (every
+    # input/pass source produced upstream). Both are strict — reject on any
+    # finding, with the details in the response and the client log.
+    from utils.pipeline_validator import validate_pipeline
+    errors, warnings = validate_pipeline(pipeline_config, get_function_class_by_name)
+    findings = errors + warnings
+    if findings:
+        for f in findings:
+            client.logger.error(f"pipeline validation [{config_name}]: {f}")
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "pipeline validation failed",
+                    "config": config_name, "findings": findings},
+        )
+
+    try:
+        await client.init_pipeline(pipeline_config, force=data.force)
+    except PipelineInitError as e:
+        # Configuration is valid (validator passed) but a dependent service
+        # failed at node init — 503 so the client can retry once it is up.
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "pipeline node init failed",
+                    "config": config_name, "detail": str(e)},
+        )
     return {"status": "initialized", "client_id": client_id}
 
 

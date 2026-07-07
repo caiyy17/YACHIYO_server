@@ -29,6 +29,9 @@ FONT_CANDIDATES = [
 
 
 class FrameSplitterStep(BaseProcessingStep):
+    REQUIRED_CATCH_SIGNALS = ["connection_start"]
+    REQUIRED_INPUTS = ["audio_data"]
+
     """
     Clock-driven group output for WebRTC streaming.
 
@@ -95,9 +98,9 @@ class FrameSplitterStep(BaseProcessingStep):
         self._stats_silence = 0
         self._stats_content = 0
 
-        # Catch connection_start signal from WebRTC server
-        self.catch_signal_set = {"connection_start"}
-
+        # Requires config: catch_signals: ["connection_start"]; broadcast
+        # signals passing through to the client (SoS/EoS/recording_*) must be
+        # declared in pass_signals — they are interleaved in group order.
         self.logger.info(
             f"Sync group: {self.audio_per_group} audio + {self.video_per_group} video "
             f"+ {self.data_per_group} data ({group_ms:.0f}ms), "
@@ -191,10 +194,17 @@ class FrameSplitterStep(BaseProcessingStep):
             self.logger.info("connection_start received, clock started")
             return
 
-        # Forward any other signal or data (shouldn't happen when paused, but be safe)
-        if signal and signal != "connection_stop":
-            data.pop("destination", None)
-            self.output_queue.put(json.dumps(data))
+        # Paused state: apply the same four-state rules for other signals
+        if signal:
+            if signal in self.pass_signal_set:
+                data.pop("destination", None)
+                data["signal"] = self.pass_signal_map[signal]
+                self.output_queue.put(json.dumps(data))
+            else:
+                self.logger.error(
+                    f"undeclared/uncatchable signal '{signal}' at paused "
+                    f"splitter; dropping"
+                )
 
     def custom_cancel(self, cancel_message):
         """Clear buffers when current input is cancelled."""
@@ -299,13 +309,31 @@ class FrameSplitterStep(BaseProcessingStep):
             signal = data.get("signal", "")
 
             if signal == "connection_start":
-                continue
+                continue  # already running; duplicate start is a no-op
 
-            # Valid signal: add to buffer, set current_timestamp for cancel tracking
-            if signal and signal not in self.catch_signal_set:
-                data.pop("destination", None)
-                self._group_buffer.append(("signal", json.dumps(data)))
-                self.current_timestamp = ts
+            # Four-state signal rules (see BaseProcessingStep). The splitter
+            # has no generic handler beyond connection_start, so a caught
+            # signal here is a wiring mistake — interleave it instead of
+            # silently dropping it into the content path.
+            if signal:
+                if signal in self.pass_signal_set:
+                    data.pop("destination", None)
+                    data["signal"] = self.pass_signal_map[signal]
+                    self._group_buffer.append(("signal", json.dumps(data)))
+                    self.current_timestamp = ts
+                elif signal in self.catch_signal_set:
+                    self.logger.error(
+                        f"splitter cannot process caught signal '{signal}'; "
+                        f"interleaving as pass-through"
+                    )
+                    data.pop("destination", None)
+                    self._group_buffer.append(("signal", json.dumps(data)))
+                    self.current_timestamp = ts
+                else:
+                    self.logger.error(
+                        f"undeclared signal '{signal}' at splitter; dropping "
+                        f"— declare it in catch_signals or pass_signals"
+                    )
                 return
 
             # Valid audio data: split into groups

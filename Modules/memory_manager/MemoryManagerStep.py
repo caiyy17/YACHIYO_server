@@ -5,6 +5,8 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 
 class MemoryManagerStep(BaseProcessingStep):
+    REQUIRED_CATCH_SIGNALS = ["SoS", "EoS"]
+
     """
     Tracks LLM responses and decides what to store in memory.
     Catches SoS/EoS to track response boundaries.
@@ -12,7 +14,9 @@ class MemoryManagerStep(BaseProcessingStep):
     """
 
     def custom_init(self):
-        self.catch_signal_set = {"SoS", "EoS"}
+        # Observer node. Requires config:
+        #   catch_signals: ["SoS", "EoS"], pass_signals: ["SoS", "EoS"]
+        # (consume for response tracking, framework relays them downstream)
         self.min_content_length = self.get_config("min_content_length", 20)
         self.max_memory_entries = self.get_config("max_memory_entries", 50)
         self.memory_file = f"history/memory_{self.client_id}.json"
@@ -25,12 +29,10 @@ class MemoryManagerStep(BaseProcessingStep):
 
         if signal == "SoS":
             self.current_response_text = ""
-            self.output_to_queue(data, pass_data)
             return
 
         if signal == "EoS":
             self._evaluate_and_store(data.get("timestamp"))
-            self.output_to_queue(data, pass_data)
             return
 
         # Accumulate response text

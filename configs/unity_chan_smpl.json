@@ -107,11 +107,21 @@
                         "target": "3_expression"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "next_nodes": [4],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [4]
+                "score_threshold": 0.6
             }
         },
         {
@@ -156,8 +166,18 @@
                         "target": "4_action"
                     }
                 ],
-                "next_nodes": [5, 6, 7],
-                "dispatch_vars": [["action"], ["text"]]
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "dispatch_vars": [["4_action"], ["4_audio_text"]],
+                "next_nodes": [5, 6, 7]
             }
         },
         {
@@ -177,8 +197,8 @@
                         "target": "5_action"
                     }
                 ],
-                "duration": 0.0,
                 "next_nodes": [7],
+                "duration": 5.0,
                 "model": "hy_motion"
             }
         },
@@ -244,6 +264,26 @@
                     {
                         "output_name": "action",
                         "target": "action"
+                    }
+                ],
+                "catch_signals": [
+                    {
+                        "source": "dispatch_end",
+                        "target": "dispatch_end"
+                    },
+                    {
+                        "source": "dispatch_start",
+                        "target": "dispatch_start"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
                     }
                 ],
                 "next_nodes": [-1]

@@ -75,12 +75,22 @@ def _mirror(q):                                # X-mirror: SMPL world -> Unity d
     return (q[0], -q[1], -q[2], q[3])
 
 
-def smplh_to_humanoid(poses, trans, num_frames, framerate=30):
+def smplh_to_humanoid(poses, trans, num_frames, framerate=30,
+                      prev_trans=None, ref_y=None):
     """Convert SMPL-H motion to humanoid motion.
 
     poses: n*156 axis-angle (numpy [n,156] or flat/nested list)
     trans: n*3 root translation (numpy [n,3] or flat/nested list)
     Returns the humanoid-format motion dict (HumanoidMotionPlayer schema).
+
+    Streaming continuation (both default to the original whole-clip behavior):
+      prev_trans: last [x, y, z] root translation of the PREVIOUS chunk. When
+        given, frame 0's root_xz becomes the real step from that frame instead
+        of [0, 0], so concatenated chunk conversions equal one whole-clip
+        conversion.
+      ref_y: pelvis Y of the SESSION's first frame. When given, hips_pos is
+        referenced to it instead of this chunk's own frame 0 (prevents a hips
+        height jump at every chunk boundary).
     """
     n = int(num_frames)
     out = {
@@ -98,7 +108,8 @@ def smplh_to_humanoid(poses, trans, num_frames, framerate=30):
     pf = _to_flat(poses)
     tf = _to_flat(trans)
 
-    t0y = tf[1]                                # frame-0 pelvis Y (reference for hips bob)
+    # frame-0 pelvis Y (reference for hips bob), session-pinned when streaming
+    t0y = tf[1] if ref_y is None else ref_y
     joints = out["joints"]
 
     for f in range(n):
@@ -114,7 +125,10 @@ def smplh_to_humanoid(poses, trans, num_frames, framerate=30):
 
         sx = tf[f * 3]; sy = tf[f * 3 + 1]; sz = tf[f * 3 + 2]
         if f == 0:
-            out["root_xz"].append([0.0, 0.0])
+            if prev_trans is None:
+                out["root_xz"].append([0.0, 0.0])
+            else:  # streaming: real step from the previous chunk's last frame
+                out["root_xz"].append([-(sx - prev_trans[0]), (sz - prev_trans[2])])
         else:
             px = tf[(f - 1) * 3]; pz = tf[(f - 1) * 3 + 2]
             out["root_xz"].append([-(sx - px), (sz - pz)])   # X-mirrored frame-to-frame step

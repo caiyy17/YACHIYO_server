@@ -73,6 +73,16 @@
                         "target": "audio_data"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
                 "next_nodes": [-1],
                 "model": "openai"
             }

@@ -107,11 +107,21 @@
                         "target": "3_expression"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "next_nodes": [4],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [4]
+                "score_threshold": 0.6
             }
         },
         {
@@ -148,11 +158,21 @@
                         "target": "4_action"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "next_nodes": [5],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [5]
+                "score_threshold": 0.6
             }
         },
         {
@@ -191,6 +211,16 @@
                     {
                         "output_name": "audio_file",
                         "target": "audio_data"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
                     }
                 ],
                 "next_nodes": [-1],

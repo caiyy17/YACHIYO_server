@@ -20,8 +20,11 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 
 class ReceiverStep(BaseProcessingStep):
+    REQUIRED_CATCH_SIGNALS = ["dispatch_start", "dispatch_end"]
+
+    """Requires config: catch_signals: ["dispatch_start", "dispatch_end"]."""
+
     def custom_init(self):
-        self.catch_signal_set = {"dispatch_start", "dispatch_end"}
         self.current_group = None
 
     def process(self, data, pass_data={}):

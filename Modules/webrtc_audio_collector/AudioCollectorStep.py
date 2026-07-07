@@ -9,6 +9,14 @@ SAMPLE_RATE = 48000  # WebRTC default sample rate
 
 
 class AudioCollectorStep(SpanProcessingStep):
+    REQUIRED_CATCH_SIGNALS = ["recording_start", "recording_end"]
+    REQUIRED_INPUTS = ["audio"]
+
+    # Re-emitted span delimiters (manual relay for custom ordering:
+    # recording_end must precede the assembled WAV). Wire names renamable
+    # via config emit_signals.
+    EMIT_SIGNALS = ["recording_start", "recording_end"]
+
     """
     Collects individual audio frames between recording_start and recording_end
     signals, assembles them into a complete WAV file, and outputs to the next module (ASR).
@@ -26,7 +34,9 @@ class AudioCollectorStep(SpanProcessingStep):
     """
 
     def span_init(self):
-        self.catch_signal_set = {"recording_start", "recording_end"}
+        # Requires config: catch_signals: ["recording_start", "recording_end"]
+        # (NOT pass — this node re-emits them manually for custom ordering:
+        # recording_end must go out BEFORE the assembled WAV)
         self.sample_rate = self.get_config("sample_rate", SAMPLE_RATE)
         self.audio_buffer = []
 
@@ -37,11 +47,14 @@ class AudioCollectorStep(SpanProcessingStep):
             self.logger.info("recording_start - begin buffering")
             self.audio_buffer = []
             self.start_span(data["timestamp"])
-            # Caught here to delimit the audio span; re-emit it so it continues
-            # through the pipeline and is dispatched back to the client via
-            # DataChannel (WebRTC) in pipeline order.
-            self.output_to_queue(
-                {"signal": "recording_start"}, {"timestamp": data["timestamp"]}
+            # Caught here to delimit the audio span; re-emit it MANUALLY (not
+            # via pass_signals) as a broadcast so it continues through the
+            # pipeline to the client. Manual relay is kept because this node
+            # needs custom ordering (see recording_end: signal BEFORE the WAV),
+            # which consume-then-relay cannot express.
+            self.emit_signal(
+                "recording_start", {"timestamp": data["timestamp"]},
+                is_add_destination=False,
             )
             return
 
@@ -56,8 +69,10 @@ class AudioCollectorStep(SpanProcessingStep):
             # processing and reaches the client via DataChannel before the response.
             # Same timestamp as the WAV (span start) so cancel treats them as one turn.
             if self.span_active:
-                self.output_to_queue(
-                    {"signal": "recording_end"}, {"timestamp": self.current_timestamp}
+                self.emit_signal(
+                    "recording_end",
+                    {"timestamp": self.current_timestamp},
+                    is_add_destination=False,
                 )
             if self.audio_buffer:
                 wav_b64 = self._assemble_wav()

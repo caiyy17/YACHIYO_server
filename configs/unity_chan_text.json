@@ -86,11 +86,21 @@
                         "target": "2_expression"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "next_nodes": [3],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [3]
+                "score_threshold": 0.6
             }
         },
         {
@@ -127,11 +137,21 @@
                         "target": "action"
                     }
                 ],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    }
+                ],
+                "next_nodes": [-1],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
-                "score_threshold": 0.6,
-                "next_nodes": [-1]
+                "score_threshold": 0.6
             }
         }
     ]
