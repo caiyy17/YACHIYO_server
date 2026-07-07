@@ -629,6 +629,7 @@ Each inter-node message is a flat key-value object. Variable names are prefixed 
     \item \textbf{input\_vars}: selects which upstream fields a node consumes, with ordered fallback sources.
     \item \textbf{output\_vars}: maps processing results to prefixed target names.
     \item \textbf{pass\_vars}: carries metadata unchanged across nodes that do not consume it (e.g., the LLM's action tag passes through TTS to reach the client).
+    \item \textbf{catch\_signals / pass\_signals / emit\_signals}: the signal counterparts (Section~\ref{sec:signals}); every signal arriving at a node must be declared as caught and/or passed, so the listing's downstream nodes declare \texttt{pass\_signals} for the LLM's \texttt{SoS}/\texttt{EoS}.
 \end{itemize}
 
 Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \texttt{destination} field enables skip-connections to non-adjacent nodes; the special id \texttt{-1} denotes the pipeline exit, so terminal nodes declare \texttt{next\_nodes: [-1]}. Node IDs need not be contiguous but must be monotonically increasing.
@@ -672,6 +673,10 @@ Pass-through is only applied when a node actually processes a message; forwarded
                        "target": "5_text"}],
         "output_vars": [{"output_name": "result",
                          "target": "5_action"}],
+        "pass_signals": [{"source": "SoS",
+                          "target": "SoS"},
+                         {"source": "EoS",
+                          "target": "EoS"}],
         "next_nodes": [6]
       }
     },
@@ -685,6 +690,10 @@ Pass-through is only applied when a node actually processes a message; forwarded
                        "target": "action"}],
         "output_vars": [{"output_name": "audio_file",
                          "target": "audio_data"}],
+        "pass_signals": [{"source": "SoS",
+                          "target": "SoS"},
+                         {"source": "EoS",
+                          "target": "EoS"}],
         "next_nodes": [-1],
         "model": "qwen_tts"
       }

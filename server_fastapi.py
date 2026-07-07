@@ -494,10 +494,12 @@ async def init_pipeline(client_id: str, data: ConfigData):
         with open(json_file, "r") as file:
             pipeline_config = json.load(file)
 
-    # Static validation before building: signal-flow closure (every signal
-    # declared at every node it reaches) and var-flow closure (every
-    # input/pass source produced upstream). Both are strict — reject on any
-    # finding, with the details in the response and the client log.
+    # Static validation before building: strictly PER-NODE self-consistency
+    # (each node's config vs its own module contract — required catches,
+    # required inputs, emit/dispatch references). No cross-module flow
+    # modeling; broken links between nodes surface at runtime via the
+    # four-state signal rules. Reject on any finding, with the details in
+    # the response and the client log.
     from utils.pipeline_validator import validate_pipeline
     errors, warnings = validate_pipeline(pipeline_config, get_function_class_by_name)
     findings = errors + warnings
