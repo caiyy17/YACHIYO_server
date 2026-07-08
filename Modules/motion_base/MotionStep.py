@@ -40,8 +40,6 @@ class MotionStep(BaseProcessingStep):
         # continuous mode consumes SoS to reset continuation history
         return ["SoS"] if config.get("continuous") else []
 
-    # process() understands SoS in any mode (reset is a no-op without history)
-    KNOWN_CATCH_SIGNALS = ["SoS"]
     REQUIRED_INPUTS = ["prompt"]
 
     """Pipeline step: text prompt -> motion. Emits a single ``motion`` output.
@@ -82,10 +80,12 @@ class MotionStep(BaseProcessingStep):
         return
 
     def _process_stream(self, prompt, pass_data):
-        """Emit one message per chunk. The first chunk carries the full
-        pass_vars meta (downstream sees it exactly once, same as non-stream);
-        later chunks carry only the timestamp, so cancel semantics still
-        apply to every chunk."""
+        """Emit one message per chunk (single-in-multi-out protocol). The
+        first chunk carries the per-sentence pass_vars data exactly once,
+        wrapped under the fixed "pass_data" key (shape built here by the
+        caller — same protocol as signal-borne pass data), structurally
+        separate from the chunk's own payload; later chunks carry only the
+        timestamp (cancel semantics still apply to every chunk)."""
         first = True
         for chunk in self.motion_caller.call_stream(prompt):
             if self.check_cancel():
@@ -96,8 +96,11 @@ class MotionStep(BaseProcessingStep):
             output_data = {}
             self.add_output(output_data, "motion", chunk)
             if first:
-                self.output_to_queue(output_data, pass_data)
+                wrapped = {k: v for k, v in pass_data.items()
+                           if k != "timestamp"}
+                if wrapped:
+                    output_data["pass_data"] = wrapped
                 first = False
-            else:
-                self.output_to_queue(output_data, pass_data, is_add_pass_data=False)
+            self.output_to_queue(output_data, pass_data,
+                                 is_add_pass_data=False)
         return

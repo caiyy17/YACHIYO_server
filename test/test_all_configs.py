@@ -135,7 +135,7 @@ async def test_config(config_name, config_spec):
     success = True
 
     try:
-        async with websockets.connect(f"{WS_URL}/{client_id}") as ws:
+        async with websockets.connect(f"{WS_URL}/{client_id}", max_size=None) as ws:
             await ws.send(json.dumps(input_msg))
             print(f"  Sent {input_type} input")
 

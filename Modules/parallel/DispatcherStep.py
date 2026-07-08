@@ -153,11 +153,15 @@ class DispatcherStep(BaseProcessingStep):
             f"receiver {self.config['next_nodes'][self.receiver_idx]}"
         )
 
-        ts_only = {"timestamp": pass_data.get("timestamp")}
-
-        # 1. Start signal with pass_data -> receiver
+        # 1. Start signal -> receiver, carrying the group's pass_vars data
+        # wrapped under the fixed "pass_data" key (shape built here by the
+        # caller; the receiver reads its base layer from that key)
+        start = {"timestamp": pass_data.get("timestamp")}
+        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
+        if wrapped:
+            start["pass_data"] = wrapped
         self.emit_signal(
-            "dispatch_start", pass_data,
+            "dispatch_start", start,
             destination_index=self.receiver_idx,
         )
 
@@ -169,10 +173,11 @@ class DispatcherStep(BaseProcessingStep):
                 oname = self._target_to_output.get(target)
                 if oname is not None and oname in data:
                     msg[target] = data[oname]
-            self.output_to_queue(msg, ts_only, destination_index=i)
+            self.output_to_queue(msg, pass_data, destination_index=i,
+                                 is_add_pass_data=False)
 
         # 3. End signal -> receiver
         self.emit_signal(
-            "dispatch_end", ts_only,
+            "dispatch_end", {"timestamp": pass_data.get("timestamp")},
             destination_index=self.receiver_idx,
         )

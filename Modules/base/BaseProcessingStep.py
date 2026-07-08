@@ -480,10 +480,11 @@ class BaseProcessingStep:
         """Emit a signal by its INTERNAL name; the wire name comes from the
         emit_signals config declaration. By default the signal is addressed
         to this node's first edge, like any data output; pass
-        destination_index for a directed signal (dispatcher envelope). An
-        undeclared internal name is a wiring error: error + drop, same
-        spirit as the receiving-side four-state rule (the validator catches
-        this at init)."""
+        destination_index for a directed signal (dispatcher envelope). Any
+        pass-through data rides FLAT on the signal message — the same shape
+        as a data message. An undeclared internal name is a wiring error:
+        error + drop, same spirit as the receiving-side four-state rule
+        (the validator catches this at init)."""
         wire_name = self.emit_signal_map.get(internal_name)
         if wire_name is None:
             self.logger.error(

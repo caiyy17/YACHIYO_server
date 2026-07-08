@@ -57,9 +57,15 @@ class LLMStep(BaseProcessingStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        # SoS carries this round's input prompt under the fixed field name
-        # "prompt" (signal-borne fields skip vars renaming) — see OpenaiStep
-        self.emit_signal("SoS", {"prompt": prompt, **pass_data})
+        # SoS carries the prompt top-level and pass_vars data wrapped
+        # under "pass_data" (shape built by the caller) — see OpenaiStep
+        sos = {"prompt": prompt, "timestamp": pass_data.get("timestamp")}
+        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
+        if wrapped:
+            sos["pass_data"] = wrapped
+        self.emit_signal("SoS", sos)
+        # single-in-multi-out protocol: per-turn data travels once, on the
+        # SoS; stream messages and EoS carry only the timestamp
         for response in self.llm_caller.call_stream(prompt):
             if self.check_cancel():
                 self.logger.info("cancel inside loop")
@@ -69,6 +75,7 @@ class LLMStep(BaseProcessingStep):
             current_data = {}
             for key, value in response.items():
                 self.add_output(current_data, key, value)
-            self.output_to_queue(current_data, pass_data)
-        self.emit_signal("EoS", pass_data)
+            self.output_to_queue(current_data, pass_data,
+                                 is_add_pass_data=False)
+        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

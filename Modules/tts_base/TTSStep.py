@@ -75,10 +75,12 @@ class TTSStep(BaseProcessingStep):
         return
 
     def _process_stream(self, text, language, speaker, pass_data):
-        """Emit one message per chunk. The first chunk carries the full
-        pass_vars meta — downstream sees the sentence meta exactly once, the
-        same as non-stream; later chunks carry only the timestamp (so cancel
-        semantics still apply to every chunk)."""
+        """Emit one message per chunk (single-in-multi-out protocol). The
+        first chunk carries the per-sentence pass_vars data exactly once,
+        wrapped under the fixed "pass_data" key (shape built here by the
+        caller — same protocol as signal-borne pass data), structurally
+        separate from the chunk's own payload; later chunks carry only the
+        timestamp (cancel semantics still apply to every chunk)."""
         first = True
         for chunk in self.tts_caller.call_stream(text, language, speaker):
             if self.check_cancel():
@@ -94,8 +96,11 @@ class TTSStep(BaseProcessingStep):
             output_data = {}
             self.add_output(output_data, "audio_file", chunk_b64)
             if first:
-                self.output_to_queue(output_data, pass_data)
+                wrapped = {k: v for k, v in pass_data.items()
+                           if k != "timestamp"}
+                if wrapped:
+                    output_data["pass_data"] = wrapped
                 first = False
-            else:
-                self.output_to_queue(output_data, pass_data, is_add_pass_data=False)
+            self.output_to_queue(output_data, pass_data,
+                                 is_add_pass_data=False)
         return

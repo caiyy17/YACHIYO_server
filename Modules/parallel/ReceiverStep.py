@@ -30,20 +30,17 @@ class ReceiverStep(BaseProcessingStep):
     def process(self, data, pass_data={}):
         signal = data.get("signal", "")
 
-        # Start signal: begin collecting, store pass_data as base layer
-        # (caught signals bypass extract, so apply pass_vars manually)
+        # Start signal: begin collecting. The group's pass data rides the
+        # start signal wrapped under the fixed "pass_data" key; store it as
+        # the base layer (renamed via this node's pass_vars when declared).
         if signal == "dispatch_start":
+            carried = data.get("pass_data", {})
             pass_vars = self.config.get("pass_vars", [])
             if pass_vars:
-                base = {}
-                for pv in pass_vars:
-                    if pv["source"] in data:
-                        base[pv["target"]] = data[pv["source"]]
+                base = {pv["target"]: carried[pv["source"]]
+                        for pv in pass_vars if pv["source"] in carried}
             else:
-                base = {
-                    k: v for k, v in data.items()
-                    if k not in ("signal", "timestamp", "destination")
-                }
+                base = dict(carried)
             self.current_group = {"base": base, "branches": []}
             self.logger.info("dispatch_start")
             return
