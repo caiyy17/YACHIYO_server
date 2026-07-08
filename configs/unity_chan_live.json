@@ -75,13 +75,19 @@
                     {
                         "output_name": "expression",
                         "target": "2_expression"
-                    },
-                    {
-                        "output_name": "prompt",
-                        "target": "prompt"
                     }
                 ],
-                "next_nodes": [3, -1],
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    }
+                ],
+                "next_nodes": [3],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -205,6 +211,16 @@
                     {
                         "source": "SoS",
                         "target": "SoS"
+                    }
+                ],
+                "emit_signals": [
+                    {
+                        "source": "dispatch_start",
+                        "target": "dispatch_start"
+                    },
+                    {
+                        "source": "dispatch_end",
+                        "target": "dispatch_end"
                     }
                 ],
                 "dispatch_vars": [["4_action"], ["4_audio_text"]],

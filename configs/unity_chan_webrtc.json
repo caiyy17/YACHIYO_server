@@ -33,6 +33,16 @@
                         "target": "connection_start"
                     }
                 ],
+                "emit_signals": [
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    }
+                ],
                 "next_nodes": [2],
                 "sample_rate": 48000
             }
@@ -95,10 +105,6 @@
                     {
                         "output_name": "expression",
                         "target": "3_expression"
-                    },
-                    {
-                        "output_name": "prompt",
-                        "target": "prompt"
                     }
                 ],
                 "pass_signals": [
@@ -115,7 +121,17 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [4, 7],
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    }
+                ],
+                "next_nodes": [4],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {

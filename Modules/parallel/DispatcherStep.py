@@ -11,29 +11,32 @@ Config:
         The last entry is always the receiver node.
     dispatch_vars: [
         ["renamed_field"],   # branch 0 fields, by output_vars TARGET name
-        ["other_field"],     # branch 1 fields (same rule as dispatch_signals:
-    ]                        #  reference the renamed/wire name)
-    dispatch_signals: [      # optional; parallel to dispatch_vars
-        ["renamed_sig"],     # signals (by their catch TARGET name) directed
-        [],                  # to each branch as DIRECTED signal messages
+        ["other_field"],     # branch 1 fields
     ]
-        Every name here must be a catch_signals target of this node.
+    dispatch_signals: [      # the signal-side parallel of dispatch_vars:
+        ["SoS", "EoS"],      # which CAUGHT signals (by catch TARGET name)
+        ["SoS"],             # each branch receives, as directed copies.
+    ]                        # The same name may appear in several lists.
 
 Signal semantics (the dispatcher's logical mainline is the RECEIVER):
+    catch_signals -> a signal must be CAUGHT to be dispatched: catch is the
+                     entry (renamable as usual), dispatch_signals reference
+                     the caught (target) names. The validator enforces the
+                     exact match both ways: every catch target referenced by
+                     some branch list, every reference a real catch target.
     pass_signals  -> relayed DIRECTED TO THE RECEIVER (renamed), transiting
                      the branch nodes via destination routing — branches
-                     neither see nor declare them. The receiver declares its
+                     neither see nor declare them. Implemented by overriding
+                     the base _relay_signal hook. The receiver declares its
                      own pass to continue the signal downstream.
-    dispatch_signals -> per-branch directed copies (by catch target name);
-                     use catch renaming to keep the branch-directed name
-                     distinct so a signal can go to branches and receiver
-                     under different names without double-triggering.
 
 Emit order:
     1. signal "dispatch_start" + pass_data -> receiver
     2. Branch messages in REVERSE topological order (later branch first)
     3. signal "dispatch_end" -> receiver
 """
+
+import json
 
 from ..base.BaseProcessingStep import BaseProcessingStep
 
@@ -45,62 +48,96 @@ class DispatcherStep(BaseProcessingStep):
     # inner envelope colliding with the outer one.
     EMIT_SIGNALS = ["dispatch_start", "dispatch_end"]
 
+    @classmethod
+    def validate_config(cls, config):
+        """Dispatcher structure on top of the base checks: next_nodes shape,
+        dispatch_vars referencing output targets, dispatch_signals
+        referencing catch targets exactly both ways (a signal must be caught
+        to be dispatched; an unreferenced catch would be swallowed)."""
+        errors = super().validate_config(config)
+        nn = config.get("next_nodes", [])
+        if len(nn) < 3:
+            errors.append(
+                "dispatcher needs >=3 next_nodes [branch..., receiver]")
+        n_branches = max(len(nn) - 1, 0)
+        dv = config.get("dispatch_vars", [])
+        if len(dv) != n_branches:
+            errors.append(
+                f"dispatch_vars length {len(dv)} != branch count {n_branches}"
+            )
+        output_targets = {v.get("target")
+                          for v in config.get("output_vars", [])}
+        for bi, names in enumerate(dv):
+            for t in names:
+                if t not in output_targets:
+                    errors.append(
+                        f"dispatch_vars[{bi}] field '{t}' is not an "
+                        f"output_vars target"
+                    )
+        ds = config.get("dispatch_signals", [])
+        if ds and len(ds) > n_branches:
+            errors.append(
+                f"dispatch_signals has {len(ds)} entries for "
+                f"{n_branches} branches"
+            )
+        catch_targets = {e["target"] for e in config.get("catch_signals") or []
+                         if isinstance(e, dict) and e.get("target")}
+        referenced = set()
+        for bi, sigs in enumerate(ds):
+            seen = set()
+            for s in sigs:
+                if s in seen:
+                    errors.append(
+                        f"dispatch_signals[{bi}] lists '{s}' more than once")
+                seen.add(s)
+                referenced.add(s)
+                if s not in catch_targets:
+                    errors.append(
+                        f"dispatch_signals[{bi}] signal '{s}' is not a "
+                        f"catch_signals target — a signal must be caught to "
+                        f"be dispatched"
+                    )
+        for t in sorted(catch_targets - referenced):
+            errors.append(
+                f"catch_signals target '{t}' is not referenced by any "
+                f"dispatch_signals branch — it would be silently swallowed"
+            )
+        return errors
+
+    @classmethod
+    def _validate_catch_contract(cls, config, catch_targets, errors):
+        # The dispatcher consumes nothing itself: its catch contract is the
+        # set of names referenced by dispatch_signals, checked exactly both
+        # ways in validate_config above — the base required==targets rule
+        # does not apply.
+        pass
+
     def custom_init(self):
         nodes = self.config.get("next_nodes", [])
-        if len(nodes) < 3:
-            self.logger.error(
-                "Dispatcher needs at least 3 next_nodes: "
-                "[branch_0, branch_1, ..., receiver]"
-            )
         self.branch_nodes = nodes[:-1]
         self.receiver_idx = len(self.branch_nodes)  # index of receiver in next_nodes
         self.dispatch_vars = self.config.get("dispatch_vars", [])
-        if len(self.dispatch_vars) != len(self.branch_nodes):
-            self.logger.error(
-                f"dispatch_vars length ({len(self.dispatch_vars)}) "
-                f"!= branch count ({len(self.branch_nodes)})"
-            )
-        # dispatch_vars reference output_vars TARGET (renamed/wire) names,
-        # same rule as dispatch_signals referencing catch targets
+        # dispatch_vars reference output_vars TARGET (renamed/wire) names
         self._target_to_output = {}
         for oname, targets in self.output_dict.items():
             for t in targets:
                 self._target_to_output[t] = oname
-        for i, names in enumerate(self.dispatch_vars):
-            for t in names:
-                if t not in self._target_to_output:
-                    self.logger.error(
-                        f"dispatch_vars[{i}] contains '{t}' which is not an "
-                        f"output_vars target of this node"
-                    )
-        # dispatch_signals[i] = catch-target names directed to branch i
+        # dispatch_signals[i] = caught signal names (catch TARGETS) branch i
+        # receives (validated statically by validate_config)
         self.dispatch_signals = self.config.get("dispatch_signals", [])
-        # The dispatcher's pass target is the RECEIVER, not the physical next
-        # node: take the declarations over from base (so base's generic relay
-        # never fires) and handle them in process(). pass-only signals still
-        # need to reach process(), so fold them into the catch map unrenamed.
-        self.receiver_pass_map = dict(self.pass_signal_map)
-        self.pass_signal_map = {}
-        self.pass_signal_set = set()
-        for src in self.receiver_pass_map:
-            self.catch_signal_map.setdefault(src, src)
-        self.catch_signal_set = set(self.catch_signal_map)
-        catch_targets = set(self.catch_signal_map.values())
-        for i, sigs in enumerate(self.dispatch_signals):
-            for s in sigs:
-                if s not in catch_targets:
-                    self.logger.error(
-                        f"dispatch_signals[{i}] contains '{s}' which is not "
-                        f"a catch_signals target of this node"
-                    )
-        # Reverse map: catch target -> source (for receiver_pass lookup)
-        self._catch_source_of = {t: s for s, t in self.catch_signal_map.items()}
+
+    def _relay_signal(self, relay):
+        """The dispatcher's pass relay is DIRECTED TO THE RECEIVER (its
+        logical mainline): the copy transits the branch nodes via destination
+        routing, so branches neither see nor declare it."""
+        self.add_destination(relay, self.receiver_idx)
+        self.output_queue.put(json.dumps(relay))
 
     def process(self, data, pass_data={}):
-        # Caught signal (renamed to its catch target by base):
-        #   1. direct copies to branches subscribed via dispatch_signals
-        #   2. if declared in pass_signals: relay DIRECTED TO THE RECEIVER
-        #      (renamed by the pass declaration), transiting branch nodes
+        # Caught signal (renamed to its catch target by base): directed
+        # copies to the branches subscribed via dispatch_signals, in REVERSE
+        # branch order like data dispatch. (Relaying to the receiver is
+        # handled by _relay_signal.)
         signal = data.get("signal", "")
         if signal != "":
             for i in reversed(range(len(self.branch_nodes))):
@@ -110,13 +147,6 @@ class DispatcherStep(BaseProcessingStep):
                         {"timestamp": pass_data.get("timestamp")},
                         destination_index=i,
                     )
-            source = self._catch_source_of.get(signal)
-            if source in self.receiver_pass_map:
-                self.output_to_queue(
-                    {"signal": self.receiver_pass_map[source]},
-                    {"timestamp": pass_data.get("timestamp")},
-                    destination_index=self.receiver_idx,
-                )
             return
         self.logger.info(
             f"dispatching to branches {self.branch_nodes}, "

@@ -481,18 +481,20 @@ async def init_pipeline(client_id: str, data: ConfigData):
 
     client = manager.clients[client_id]
     config_name = data.config
-    if os.path.exists(f"configs/{config_name}.json"):
-        global_logger.info(f"Client {client_id} config file: {config_name}")
-        json_file = f"configs/{config_name}.json"
-        with open(json_file, "r") as file:
-            pipeline_config = json.load(file)
-    else:
+    json_file = f"configs/{config_name}.json"
+    # Unknown config = client-side error: reject explicitly (no fallback —
+    # silently building a different pipeline than requested misleads debugging)
+    if not os.path.exists(json_file):
         global_logger.warning(
-            f"Client {client_id} config file not found: {config_name}, using demo.json"
+            f"Client {client_id} config file not found: {config_name}"
         )
-        json_file = "configs/demo.json"
-        with open(json_file, "r") as file:
-            pipeline_config = json.load(file)
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "config not found", "config": config_name},
+        )
+    global_logger.info(f"Client {client_id} config file: {config_name}")
+    with open(json_file, "r") as file:
+        pipeline_config = json.load(file)
 
     # Static validation before building: strictly PER-NODE self-consistency
     # (each node's config vs its own module contract — required catches,

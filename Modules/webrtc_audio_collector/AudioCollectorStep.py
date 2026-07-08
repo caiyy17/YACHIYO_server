@@ -48,13 +48,12 @@ class AudioCollectorStep(SpanProcessingStep):
             self.audio_buffer = []
             self.start_span(data["timestamp"])
             # Caught here to delimit the audio span; re-emit it MANUALLY (not
-            # via pass_signals) as a broadcast so it continues through the
-            # pipeline to the client. Manual relay is kept because this node
-            # needs custom ordering (see recording_end: signal BEFORE the WAV),
-            # which consume-then-relay cannot express.
+            # via pass_signals) so it continues down the pipeline to the
+            # client. Manual relay is kept because this node needs custom
+            # ordering (see recording_end: signal BEFORE the WAV), which
+            # consume-then-relay cannot express.
             self.emit_signal(
                 "recording_start", {"timestamp": data["timestamp"]},
-                is_add_destination=False,
             )
             return
 
@@ -72,7 +71,6 @@ class AudioCollectorStep(SpanProcessingStep):
                 self.emit_signal(
                     "recording_end",
                     {"timestamp": self.current_timestamp},
-                    is_add_destination=False,
                 )
             if self.audio_buffer:
                 wav_b64 = self._assemble_wav()

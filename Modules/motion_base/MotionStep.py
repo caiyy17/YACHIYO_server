@@ -40,6 +40,8 @@ class MotionStep(BaseProcessingStep):
         # continuous mode consumes SoS to reset continuation history
         return ["SoS"] if config.get("continuous") else []
 
+    # process() understands SoS in any mode (reset is a no-op without history)
+    KNOWN_CATCH_SIGNALS = ["SoS"]
     REQUIRED_INPUTS = ["prompt"]
 
     """Pipeline step: text prompt -> motion. Emits a single ``motion`` output.

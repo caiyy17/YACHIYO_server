@@ -57,7 +57,9 @@ class LLMStep(BaseProcessingStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        self.emit_signal("SoS", pass_data, is_add_destination=False)
+        # SoS carries this round's input prompt under the fixed field name
+        # "prompt" (signal-borne fields skip vars renaming) — see OpenaiStep
+        self.emit_signal("SoS", {"prompt": prompt, **pass_data})
         for response in self.llm_caller.call_stream(prompt):
             if self.check_cancel():
                 self.logger.info("cancel inside loop")
@@ -68,5 +70,5 @@ class LLMStep(BaseProcessingStep):
             for key, value in response.items():
                 self.add_output(current_data, key, value)
             self.output_to_queue(current_data, pass_data)
-        self.emit_signal("EoS", pass_data, is_add_destination=False)
+        self.emit_signal("EoS", pass_data)
         return

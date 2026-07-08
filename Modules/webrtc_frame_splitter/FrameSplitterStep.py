@@ -45,9 +45,10 @@ class FrameSplitterStep(BaseProcessingStep):
     Signals (SoS, EoS, etc.) are buffered in order with audio groups
     and flushed at tick boundaries to preserve ordering.
 
-    Content messages addressed to this node without audio (e.g. the LLM prompt
-    echo wired here via next_nodes) are queued and placed into the next group's
-    free data slots, so they ride the data lane in arrival order.
+    Content messages addressed to this node without audio are queued and
+    placed into the next group's free data slots, so they ride the data lane
+    in arrival order. (The round's input prompt now travels ON the SoS
+    signal itself, interleaved in group order like any signal.)
 
     Group size is calculated from GCD of audio/video/data frame rates
     (all configurable via config). Standard output format:
@@ -195,11 +196,10 @@ class FrameSplitterStep(BaseProcessingStep):
             return
 
         # Paused state: apply the same four-state rules for other signals
+        # (one relay copy per declared pass target)
         if signal:
             if signal in self.pass_signal_set:
-                data.pop("destination", None)
-                data["signal"] = self.pass_signal_map[signal]
-                self.output_queue.put(json.dumps(data))
+                self._relay_caught(data, signal)
             else:
                 self.logger.error(
                     f"undeclared/uncatchable signal '{signal}' at paused "
@@ -317,9 +317,11 @@ class FrameSplitterStep(BaseProcessingStep):
             # silently dropping it into the content path.
             if signal:
                 if signal in self.pass_signal_set:
-                    data.pop("destination", None)
-                    data["signal"] = self.pass_signal_map[signal]
-                    self._group_buffer.append(("signal", json.dumps(data)))
+                    relay = {k: v for k, v in data.items()
+                             if k != "destination"}
+                    relay["signal"] = self.pass_signal_map[signal]
+                    self.add_destination(relay)
+                    self._group_buffer.append(("signal", json.dumps(relay)))
                     self.current_timestamp = ts
                 elif signal in self.catch_signal_set:
                     self.logger.error(
@@ -345,8 +347,8 @@ class FrameSplitterStep(BaseProcessingStep):
                 self.current_timestamp = ts
                 return
             # No audio in this message: client-bound content addressed here
-            # (e.g. the LLM prompt echo) — queue for the next group's free
-            # data slots so it rides the data lane in arrival order.
+            # — queue for the next group's free data slots so it rides the
+            # data lane in arrival order.
             content = {
                 k: v for k, v in data.items()
                 if k not in ("timestamp", "destination", "signal") and v

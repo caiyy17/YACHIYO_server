@@ -89,14 +89,23 @@ class SpanProcessingStep(BaseProcessingStep):
 
                 # Signal handling: same four-state rules as
                 # BaseProcessingStep (catch / catch+pass / pass / undeclared;
-                # relaying strips destination — see base)
+                # relayed copies re-addressed to the first edge — see base)
                 signal = data.get("signal", "")
-                if signal != "" and signal not in self.catch_signal_set:
+                if signal != "":
+                    caught = signal in self.catch_signal_set
+                    if caught:
+                        filtered_data = {
+                            k: v for k, v in data.items()
+                            if k not in ("destination",)
+                        }
+                        filtered_data["signal"] = self.catch_signal_map[signal]
+                        self.logger.info(f"processing data: {filtered_data}")
+                        self.span_process(filtered_data,
+                                          {"timestamp": data.get("timestamp")})
+                    # Consume-then-relay (see base)
                     if signal in self.pass_signal_set:
-                        data.pop("destination", None)
-                        data["signal"] = self.pass_signal_map[signal]
-                        self.output_queue.put(json.dumps(data))
-                    else:
+                        self._relay_caught(data, signal)
+                    elif not caught:
                         self.logger.error(
                             f"undeclared signal '{signal}' at node "
                             f"{self.index}; dropping — declare it in "
@@ -104,27 +113,11 @@ class SpanProcessingStep(BaseProcessingStep):
                         )
                     continue
 
-                # Extract data for processing (caught signal renamed)
-                if signal != "":
-                    filtered_data = {
-                        k: v for k, v in data.items()
-                        if k not in ("destination",)
-                    }
-                    filtered_data["signal"] = self.catch_signal_map[signal]
-                    pass_data = {"timestamp": data.get("timestamp")}
-                else:
-                    filtered_data = self.extract_input_data(data)
-                    pass_data = self.extract_pass_data(data)
+                # Normal messages: filter through input_vars/pass_vars
+                filtered_data = self.extract_input_data(data)
+                pass_data = self.extract_pass_data(data)
                 self.logger.info(f"processing data: {filtered_data}")
                 self.span_process(filtered_data, pass_data)
-
-                # Consume-then-relay for caught signals (see base; relaying
-                # strips the destination)
-                if signal != "" and signal in self.pass_signal_set:
-                    relay = {k: v for k, v in data.items()
-                             if k != "destination"}
-                    relay["signal"] = self.pass_signal_map[signal]
-                    self.output_queue.put(json.dumps(relay))
 
                 # Don't reset current_timestamp — span_process manages it
                 # via start_span() / end_span()

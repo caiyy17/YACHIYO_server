@@ -226,7 +226,7 @@ Let $\{u_1, u_2, \ldots\}$ be a sequence of user utterances with timestamps $T(u
 \begin{enumerate}[nosep]
     \item \textbf{Causal order.} If $T(u_i) < T(u_j)$, then all outputs of $u_i$ are delivered to the client before any output of $u_j$---unless $u_i$ has been cancelled.
     \item \textbf{Internal order.} Within a single utterance $u_i$, outputs are delivered in production order: $o_{i,1}$ arrives before $o_{i,2}$ before $\cdots$ before $o_{i,K_i}$.
-    \item \textbf{Cancellation consistency.} After a cancellation event $\text{cancel}(T)$ is issued, no message with timestamp $\leq T$ is subsequently delivered to the client.
+    \item \textbf{Cancellation consistency.} After a cancellation event $\text{cancel}(T)$ is issued, no message with timestamp $< T$ is subsequently delivered to the client.
 \end{enumerate}
 
 \subsection{Why Linearization Guarantees Temporal Consistency}
@@ -243,28 +243,30 @@ Linearization makes temporal consistency a structural guarantee rather than a ru
 \label{sec:signals}
 
 \paragraph{Why signals are needed.}
-A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``voice activity detected'' (\texttt{recording\_start}/\texttt{recording\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
+A linearized pipeline processes \emph{data} messages (audio, text, etc.) stage by stage. But some information is not data---it is \emph{control}: ``speech has started'' (\texttt{SoS}), ``speech has ended'' (\texttt{EoS}), ``recording has started/ended'' (\texttt{recording\_start}/\texttt{recording\_end}). Control information often needs to reach the client faster than data, because the client must update its state (e.g., begin the listening animation) before any processed data arrives.
 
 \paragraph{Why signals should not overtake data.}
 If control signals could freely overtake data messages in the queue, ordering guarantees would break: the client might receive \texttt{EoS} before the last audio chunk. This is analogous to the hazard problem in CPU instruction pipelines, where out-of-order execution of control instructions (branches) relative to data instructions causes incorrect results.
 
 \paragraph{Our design: declared routing, no drifting.}
-Signals travel in the \emph{same} queue as data, hop by hop, exactly like ordinary messages---there is no separate channel and no implicit ``drifting''. What a node does with an arriving signal is declared \emph{entirely in its pipeline config}, mirroring how \texttt{input\_vars}/\texttt{pass\_vars} declare field handling. Two declaration lists, both supporting renaming via \texttt{\{source, target\}} entries (by convention written explicitly, defaulting to identical names):
+Signals travel in the \emph{same} queue as data, hop by hop, exactly like ordinary messages---there is no separate channel and no implicit ``drifting''. What a node does with an arriving signal is declared \emph{entirely in its pipeline config}, mirroring how \texttt{input\_vars}/\texttt{pass\_vars} declare field handling. Two declaration lists hold explicit \texttt{\{source, target\}} entries: both fields are always spelled out, same-name included --- no shorthand, no implicit defaults. Each list is a strict one-to-one map: sources are unique (a signal maps to exactly one name) and targets are unique (many-to-one renames would be an untraceable merge).
 
 \begin{itemize}
     \item \texttt{catch\_signals}: deliver the signal to this node's \texttt{process()} (renamed to its target, so a module's internal handler names are decoupled from the wire names);
     \item \texttt{pass\_signals}: relay the signal (renamed) to the next queue.
 \end{itemize}
 
-The four resulting states: \emph{catch only} = consume and terminate; \emph{catch + pass} = consume, then relay \emph{after} \texttt{process()} returns, so any output the node emitted for the signal stays ahead of it (consume-then-relay); \emph{pass only} = forward without processing, at queue-forwarding speed ($\sim$$\mu$s per hop) rather than data-processing speed ($\sim$ms--s per stage), without overtaking any queued message; \emph{undeclared} = a wiring error---the signal is dropped with a loud log. Every signal arriving at a node must therefore be declared, and the complete signal flow of a pipeline is readable from its config alone.
+The four resulting states: \emph{catch only} = consume and terminate; \emph{catch + pass} = consume, then relay \emph{after} \texttt{process()} returns, so any output the node emitted for the signal stays ahead of it (consume-then-relay); \emph{pass only} = forward without processing, at queue-forwarding speed ($\sim$$\mu$s per hop) rather than data-processing speed ($\sim$ms--s per stage), without overtaking any queued message; \emph{undeclared} = a wiring error---the signal is dropped with a loud log. Every signal arriving at a node must therefore be declared.
 
-Two routing primitives follow from the presence of a \texttt{destination} field. A \emph{directed} signal (with destination, e.g.\ \texttt{dispatch\_start/end}) transits intermediate nodes via ordinary destination routing; at its target the same four states apply (a pass declaration relays it onward as a broadcast, stripping the destination). A \emph{broadcast} signal (no destination, e.g.\ \texttt{SoS}/\texttt{EoS}) advances one declared \texttt{pass} hop at a time until the pipeline exit, reaching every subscriber in between.
+Signals use the same destination routing as data. A relayed (passed) copy is re-addressed to the node's \emph{first edge} (\texttt{next\_nodes[0]})---the same default destination a data output gets---so an ordinary signal such as \texttt{SoS}/\texttt{EoS} advances edge by edge, one declared \texttt{pass} hop at a time, checked at every node until the pipeline exit. A \emph{directed} signal takes a non-default edge (e.g.\ the dispatcher's \texttt{dispatch\_start/end} to its receiver) and transits intermediate nodes via ordinary destination routing; at its target the same four states apply. A signal message may carry payload fields --- \texttt{SoS} carries the round's input prompt, \texttt{dispatch\_start} carries the group's pass-through fields; relayed copies keep all fields, and signal-borne fields belong to the signal's own contract, outside the vars renaming.
 
-The emitting side is declared symmetrically: each module lists the signals it emits (by internal name) in its class contract \texttt{EMIT\_SIGNALS}, and sends through \texttt{emit\_signal()}; the wire name is renamable via the config's \texttt{emit\_signals} mapping. Renaming emitted envelopes is what makes \emph{nested} dispatcher/receiver brackets wireable: the inner pair emits, say, \texttt{inner\_dispatch\_start/end}, which the inner receiver catches, without colliding with the outer envelope. The dispatcher's own signal semantics follow its logical mainline: its \texttt{pass\_signals} relay \emph{directed to the receiver} (transiting branch nodes, which neither see nor declare them), while \texttt{dispatch\_signals} (parallel to \texttt{dispatch\_vars}, both referencing renamed target names) direct per-branch copies; catch-renaming keeps the branch-directed name distinct so branches do not double-trigger.
+The emitting side is declared symmetrically: each module's class contract lists the signals it emits, by internal name; the wire name of every emission comes from the config's \texttt{emit\_signals} declaration --- entirely config-defined with no contract default, the same rule as \texttt{catch\_signals}/\texttt{pass\_signals}, so a pipeline's complete signal surface (emit, catch, pass) is readable from its config alone. Renaming emitted envelopes is what makes \emph{nested} dispatcher/receiver brackets wireable: the inner pair emits, say, \texttt{inner\_dispatch\_start/end}, which the inner receiver catches, without colliding with the outer envelope.
 
-Pipelines are validated statically at initialization time, and the validation is deliberately \emph{per-node}: each module declares its own contract as class attributes (\texttt{REQUIRED\_CATCH\_SIGNALS} / \texttt{REQUIRED\_INPUTS}, config-dependent variants via classmethods, plus \texttt{EMIT\_SIGNALS} for what it sends), and the validator only checks every node's config against its own module's contract --- required catches covered by catch targets (renamed wiring still satisfies the contract, since handlers match target names), required inputs covered by \texttt{input\_vars}, and node-internal reference consistency (emit renames must name real emissions; dispatcher's \texttt{dispatch\_vars}/\texttt{dispatch\_signals} must reference its own output/catch targets). Cross-node flow is intentionally \emph{not} modeled: doing so would replicate each module's routing semantics inside the validator and drift as modules evolve. Broken links between nodes instead surface at runtime through the four-state rules --- an undeclared signal is dropped with a loud per-client log entry at the first node it reaches. Any static finding rejects the pipeline (HTTP 400 with details).
+The dispatcher's own signal semantics follow its logical mainline: its \texttt{pass\_signals} relay \emph{directed to the receiver} (transiting branch nodes, which neither see nor declare them), while \texttt{dispatch\_signals}---the signal-side parallel of \texttt{dispatch\_vars}---list which \emph{caught} signals each branch receives as directed copies, by catch-target name (a signal must be caught to be dispatched; the same name may go to several branches). The validator enforces the exact match both ways: every catch target referenced by some branch list, every reference a real catch target.
 
-Environment failures are separated from configuration failures. Node initialization is sequential; each node's \texttt{custom\_init} runs under a 60\,s timeout and records its outcome. A failed init (dependent model service down, bad settings entry) \emph{fails fast}: nodes built so far are killed, the client state is reset to re-initializable, and the endpoint returns HTTP 503 with the failing node and cause --- distinct from the validator's 400 (fix the config) in that a 503 is retryable once the service is back.
+Pipelines are validated statically at initialization time, before any node is built, so all findings across all nodes are reported at once (HTTP 400) at zero build cost. Every check is a per-module contract: declaration lists well-formed (explicit one-to-one entries); catch targets equal to the module's required catches \emph{exactly} (renamed wiring still satisfies the contract since handlers match target names, while an extra target would be silently swallowed); required inputs declared; emit declarations covering the module's emissions exactly, both directions; plus the dispatcher's structural rules. Validation stays strictly \emph{per-node}: cross-node flow is intentionally not modeled --- that would replicate each module's routing semantics and drift as modules evolve; broken links between nodes surface at runtime through the four-state rules, dropped with a loud per-client log entry at the first node reached.
+
+Environment failures are separated from configuration failures. Node initialization is sequential; each node's initialization runs under a timeout and records its outcome. A failed init (dependent model service down, bad settings entry) \emph{fails fast}: nodes built so far are killed, the client state is reset to re-initializable, and the endpoint returns HTTP 503 with the failing node and cause --- distinct from the validator's 400 (fix the config) in that a 503 is retryable once the service is back.
 
 The one exception requiring out-of-band delivery is cancellation, discussed in Section~\ref{sec:cancel}: cancellation is \emph{not} a signal---its semantics are deliberately order-free (invalidate everything older than $T$), which is exactly why it may bypass the in-band ordering that signals must respect.
 
@@ -281,12 +283,14 @@ Every message carries a \texttt{timestamp} field, preferring the client-provided
 When the user interrupts (barge-in), every pipeline node must \emph{immediately} stop processing stale messages. If the cancel signal traveled through the data queue, it would wait behind the very messages it intends to invalidate---defeating its purpose. This is analogous to a CPU pipeline \emph{flush}: upon a branch misprediction, all in-flight instructions must be discarded simultaneously, not sequentially.
 
 \paragraph{Cancellation design.}
-Each node has a dedicated \texttt{cancel\_queue} (parallel to its data queue), checked before each dequeue operation. When the client sends $\texttt{cancel}(T)$, the server broadcasts $T$ to every node's cancel queue. Each node updates its local $\texttt{cancel\_timestamp}$; any subsequently dequeued message with timestamp $\leq \texttt{cancel\_timestamp}$ is silently dropped.
+Each node has a dedicated \texttt{cancel\_queue} (parallel to its data queue), checked before each dequeue operation. When the client sends $\texttt{cancel}(T)$, the server broadcasts $T$ to every node's cancel queue. Each node updates its local \texttt{cancel\_timestamp}; any subsequently dequeued message with timestamp $<$ \texttt{cancel\_timestamp} is silently dropped.
 
-The send queue performs a final filter: before transmitting any message to the client, it verifies that the message's timestamp exceeds the current cancel timestamp. This provides a safety net for messages that were already past intermediate nodes when the cancel arrived.
+The inequality is deliberately \emph{strict}, uniformly across server and client; whether the boundary is included is expressed by the issuer's choice of $T$ (nudged by an epsilon where needed---e.g.\ a barge-in cancel spares the concurrent same-instant utterance, while disconnect cleanup includes the final turn).
+
+The send queue performs a final filter: before transmitting any message to the client, it verifies that the message's timestamp is not older than the current cancel timestamp. This provides a safety net for messages that were already past intermediate nodes when the cancel arrived.
 
 \paragraph{Proof of no leakage.}
-After $\text{cancel}(T)$ is issued, consider any message $m$ with $\text{timestamp}(m) \leq T$. At the moment the cancel is broadcast, $m$ is in one of three states:
+After $\text{cancel}(T)$ is issued, consider any message $m$ with $\text{timestamp}(m) < T$. At the moment the cancel is broadcast, $m$ is in one of three states:
 \begin{itemize}[nosep]
     \item \textbf{Waiting in a queue, not yet dequeued}: when the node dequeues $m$, it checks the cancel timestamp (updated via the cancel queue) and drops $m$ without processing.
     \item \textbf{Currently being processed by node $N_i$}: the node cannot abort mid-computation, so it completes and enqueues its output $f_i(m)$ into $Q_{i+1}$. However, $f_i(m)$ inherits the same timestamp as $m$. When the next node $N_{i+1}$ dequeues $f_i(m)$, it checks the cancel timestamp and drops it. If $f_i(m)$ propagates through multiple forwarding nodes before being caught, the send queue's final filter guarantees it is not delivered.
@@ -659,6 +663,10 @@ Pass-through is only applied when a node actually processes a message; forwarded
                          "target": "3_text"},
                         {"output_name": "action",
                          "target": "3_action"}],
+        "emit_signals": [{"source": "SoS",
+                          "target": "SoS"},
+                         {"source": "EoS",
+                          "target": "EoS"}],
         "next_nodes": [5],
         "model": "qwen"
       }
@@ -737,7 +745,7 @@ The trade-off is HTTP overhead per call ($\sim$1--10\,ms), which is negligible w
 
 \subsection{Client Architecture}
 
-The Unity client mirrors the server's pipeline design: modules (VAD, recording, WebSocket communication, audio playback, animation) are connected in a sequential queue chain with the same destination-based routing, timestamp propagation, and cancel-queue mechanism. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
+The Unity client mirrors the server's pipeline design: modules (recording, content, action, audio playback, WebSocket/WebRTC communication) are connected in a sequential queue chain with the same destination-based routing (per-module edge tables sharing the \texttt{-1} exit-vertex convention), timestamp propagation, and cancel-queue mechanism. Signals follow the same four-state declared routing as Section~\ref{sec:signals}: each module's catch/pass lists are serialized scene fields---the client's analogue of the server's pipeline config---with the same consume-then-relay ordering, and undeclared signals dropped loudly. Renaming is deliberately omitted on the client: its chain is short and single-instance, so wire names are simply the module contract names. Contracts mirror the server's per-node validation philosophy: each module declares the signals it cannot function without, checked at initialization strictly against the module's own wiring, and any finding or module init failure stops the pipeline with a \texttt{pipeline\_error} event---the client-side counterpart of the server's 400/503 split. Two boundary conventions complete the picture: the network modules' catch lists serve as the per-scene \emph{export manifest} (declaring which client-side signals cross into the remote server pipeline), and after a successful start the client injects a \texttt{pipeline\_ready} message addressed to the exit vertex, whose traversal of every queue doubles as a liveness self-test. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
 
 \begin{figure}[h]
     \centering
@@ -753,7 +761,7 @@ A three-state machine governs the interaction flow:
     \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. On \texttt{answering\_end} it returns to Idle; a barge-in (\texttt{listening\_start}) interrupts playback and returns to Listening.
 \end{itemize}
 
-The state machine is purely client-side; the server does not track client state. For motion generation pipelines, the client includes an SMPL-H motion player that retargets received joint parameters onto the character skeleton, playing back a frame buffer at the motion's native framerate with crossfade blending between motions.
+The state machine is purely client-side; the server does not track client state. For motion generation pipelines, retargeting happens on the server: the motion node converts SMPL-H results to an engine-native humanoid format (per-bone rotations keyed by Unity's \texttt{HumanBodyBones}, plus root motion). The client's humanoid motion player only consumes this pre-retargeted format, playing back a continuous frame buffer at the motion's native framerate with crossfade blending between motions and idle auto-refill.
 
 \subsection{LLM Workflow}
 
@@ -761,27 +769,9 @@ The LLM node internally implements a structured dialogue management workflow ins
 
 Multi-turn history is persisted per client. Character personality is defined in external ``lorebook'' files whose entries are activated by keyword or vector similarity and injected into the prompt at each turn. The LLM streams tokens, segmented into sentences by the StreamCutter; action tags are parsed for downstream animation mapping; tool calls are executed in a loop. This workflow runs entirely within the LLM node---upstream and downstream nodes are unaware of it.
 
-\subsection{Backpressure}
+\subsection{Execution Substrate}
 
-Each inter-node queue accepts an optional \texttt{max\_queue\_size} parameter. When a producer attempts to enqueue into a full queue, the \texttt{put()} call blocks until the consumer drains a slot. The send queue supports a separate \texttt{send\_queue\_max\_size} for the same purpose.
-
-\subsection{BaseProcessingStep}
-
-Every pipeline node extends \texttt{BaseProcessingStep}, which implements the core execution loop described in Section~\ref{sec:pipeline}. Each instance runs in a dedicated thread and provides:
-
-\begin{enumerate}[nosep]
-    \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
-    \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
-    \item \textbf{Signal handling}: each node declares \texttt{catch\_signals} / \texttt{pass\_signals} in its pipeline config (renaming supported, like the var declarations); caught signals go to \texttt{process()}, passed signals are relayed at forwarding speed, undeclared signals are dropped as wiring errors (Section~\ref{sec:signals}).
-    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
-    \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
-\end{enumerate}
-
-Subclasses override a single \texttt{process()} method containing the node-specific logic. The base class handles all pipeline mechanics, so module authors need not reason about routing, ordering, or cancellation.
-
-\subsection{SpanProcessingStep}
-
-Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{recording\_start} and \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+Every node runs the same substrate in a dedicated thread: the queue-driven loop with destination routing, signal handling, variable routing, and cancellation described in Sections~\ref{sec:pipeline}--\ref{sec:cancel}. A module author overrides a single processing method; the substrate handles all pipeline mechanics, so modules need not reason about routing, ordering, or cancellation. A span variant serves modules whose work spans multiple messages (e.g.\ accumulating audio frames between \texttt{recording\_start} and \texttt{recording\_end}), discarding accumulated state on cancellation. Inter-node queues may be bounded, in which case a producer blocks when its downstream queue is full --- natural end-to-end backpressure.
 
 \subsection{Connection Lifecycle}
 

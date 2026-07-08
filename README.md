@@ -10,7 +10,7 @@ A real-time streaming pipeline server for embodied conversational agents. Orches
 - **WebSocket & WebRTC** — sentence-level streaming via WebSocket; frame-level (20ms) synchronized streaming via WebRTC with configurable fps/resolution
 - **Service-oriented** — lightweight per-user pipeline instances; compute-heavy models run as shared standalone services with OpenAI-compatible APIs
 - **Config-driven** — pipelines, models, and characters defined entirely in JSON; swap local/cloud backends by changing one config file
-- **Declared signal routing** — every signal a node catches, passes, or emits is declared (and renamable) in the pipeline config, like the var declarations; undeclared signals never drift through a node. Per-node contracts are validated statically at init
+- **Declared signal routing** — every signal a node catches, passes, or emits is declared in the pipeline config as explicit one-to-one `{source, target}` entries (both fields always written; renames included), like the var declarations; undeclared signals never drift through a node, and relayed copies travel edge by edge like data. Per-node contracts are validated statically at init, exactly: catch targets == the module's required catches, emit declarations == its EMIT_SIGNALS, both ways
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ Each service runs in its own conda environment. Replace any service with any Ope
 
 ```
 POST /register/                     Register client
-POST /init_pipeline/{client_id}     Load pipeline config (400 = config invalid, 503 = a node's dependent service failed at init; both with details)
+POST /init_pipeline/{client_id}     Load pipeline config (404 = config name not found, 400 = config invalid, 503 = a node's dependent service failed at init; all with details)
 WS   /ws/{client_id}                Connect WebSocket (send/receive JSON messages)
 POST /unregister/                   Cleanup
 ```

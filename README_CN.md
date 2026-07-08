@@ -10,7 +10,7 @@
 - **WebSocket & WebRTC** — WebSocket 提供句子级流式；WebRTC 提供帧级（20ms）同步流式，帧率/分辨率可配
 - **服务化架构** — 轻量的每用户 pipeline 实例；计算密集型模型作为共享独立服务运行，提供 OpenAI 兼容 API
 - **配置驱动** — pipeline、模型和角色完全由 JSON 定义；切换本地/云端只需改配置文件
-- **声明式信号路由** — 节点 catch / pass / emit 的每个信号都在 pipeline 配置中声明（支持改名），与 vars 声明同构；未声明的信号不会漂流穿过任何节点。init 时按模块契约静态校验
+- **声明式信号路由** — 节点 catch / pass / emit 的每个信号都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名），与 vars 声明同构；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且为恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS，双向核对
 
 ## 快速开始
 
@@ -78,7 +78,7 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 
 ```
 POST /register/                     注册客户端
-POST /init_pipeline/{client_id}     加载 pipeline 配置（400 = 配置校验失败，503 = 节点依赖服务 init 失败；均带明细）
+POST /init_pipeline/{client_id}     加载 pipeline 配置（404 = 配置名不存在，400 = 配置校验失败，503 = 节点依赖服务 init 失败；均带明细）
 WS   /ws/{client_id}                连接 WebSocket（收发 JSON 消息）
 POST /unregister/                   清理
 ```

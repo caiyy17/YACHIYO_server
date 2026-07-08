@@ -24,9 +24,10 @@ class CustomLogger:
 
 class BaseProcessingStep:
     # Signals this module emits, by INTERNAL name (module contract, mirrors
-    # how handlers own their internal catch names). The wire name of each is
-    # config-renamable via emit_signals; unmapped names emit under the same
-    # name. Renaming emitted envelope signals is what makes nested
+    # how handlers own their internal catch names). The wire name of each
+    # comes from the config emit_signals declaration — every entry here MUST
+    # be declared there (validator enforces coverage at init; no default).
+    # Renaming emitted envelope signals is what makes nested
     # dispatcher/receiver brackets wireable (inner pair uses distinct names).
     EMIT_SIGNALS = []
     # Module SELF-consistency contracts, checked statically at pipeline init
@@ -41,8 +42,101 @@ class BaseProcessingStep:
 
     @classmethod
     def required_catch_signals(cls, config):
-        """Override for config-dependent contracts (e.g. continuous mode)."""
+        """Override for config-dependent contracts (e.g. continuous mode).
+        validate_config enforces catch targets == this, exactly (a target
+        the module does not handle would be silently swallowed)."""
         return list(cls.REQUIRED_CATCH_SIGNALS)
+
+    @classmethod
+    def validate_config(cls, config):
+        """Static self-check of one node's config against this class's own
+        contract — run by the pipeline validator BEFORE any node is built
+        (pure classmethod: config + class attributes only; no instance, no
+        services). Returns a list of finding strings. Subclasses with extra
+        structure extend via super() (see DispatcherStep)."""
+        errors = []
+        catch_map = cls._check_decl_list(
+            "catch_signals", config.get("catch_signals"), errors)
+        cls._check_decl_list("pass_signals", config.get("pass_signals"), errors)
+        emit_map = cls._check_decl_list(
+            "emit_signals", config.get("emit_signals"), errors)
+
+        # catch contract: targets == required, exactly (dispatcher overrides)
+        cls._validate_catch_contract(config, set(catch_map.values()), errors)
+
+        # input contract
+        input_names = {v.get("input_name")
+                       for v in config.get("input_vars", [])}
+        for field in cls.required_inputs(config):
+            if field not in input_names:
+                errors.append(
+                    f"module requires input '{field}' (as an input_vars "
+                    f"input_name) but it is not declared"
+                )
+
+        # emit declaration: exact coverage both ways (the wire-name map is
+        # entirely config-defined, no contract default)
+        emits = set(cls.EMIT_SIGNALS)
+        declared = set(emit_map)
+        for src in sorted(declared - emits):
+            errors.append(
+                f"emit_signals declares '{src}' but the module only emits "
+                f"{sorted(emits)}"
+            )
+        for s in sorted(emits - declared):
+            errors.append(
+                f"module emits '{s}' but it is not declared in emit_signals"
+            )
+        return errors
+
+    @classmethod
+    def _validate_catch_contract(cls, config, catch_targets, errors):
+        """catch targets must equal required_catch_signals(config) exactly:
+        fewer -> the module cannot work; more -> process() would silently
+        swallow the extra name."""
+        required = set(cls.required_catch_signals(config))
+        for sig in sorted(required - catch_targets):
+            errors.append(
+                f"module requires catching '{sig}' (as a catch_signals "
+                f"target) but it is not declared"
+            )
+        for t in sorted(catch_targets - required):
+            errors.append(
+                f"catch_signals target '{t}' is not a signal this module "
+                f"handles ({sorted(required) or 'none'}) — process() would "
+                f"silently swallow it"
+            )
+
+    @staticmethod
+    def _check_decl_list(key, entries, errors):
+        """Well-formedness of one declaration list: every entry an explicit
+        {"source", "target"} object with non-empty values (no shorthand, no
+        implicit same-name default), one-to-one — sources unique, targets
+        unique. Returns the {source: target} map of the valid entries."""
+        decls = {}
+        seen_targets = set()
+        for e in entries or []:
+            if (not isinstance(e, dict)
+                    or not e.get("source") or not e.get("target")):
+                errors.append(
+                    f"{key} entry {e!r} is not an explicit "
+                    f'{{"source", "target"}} object with non-empty values'
+                )
+                continue
+            src, tgt = e["source"], e["target"]
+            if src in decls:
+                errors.append(
+                    f"{key} declares source '{src}' more than once — a "
+                    f"signal maps to exactly one name"
+                )
+            if tgt in seen_targets:
+                errors.append(
+                    f"{key} maps more than one entry to target '{tgt}' — "
+                    f"many-to-one renames are an untraceable merge"
+                )
+            decls[src] = tgt
+            seen_targets.add(tgt)
+        return decls
 
     @classmethod
     def required_inputs(cls, config):
@@ -82,34 +176,36 @@ class BaseProcessingStep:
         #   catch_signals: deliver to process() (renamed to target)
         #   pass_signals:  relay downstream (renamed to target); when combined
         #                  with catch, relay happens AFTER process() returns
-        # Entries are "name" or {"source": arriving_name, "target": new_name}.
-        # Every signal arriving at a node MUST be declared (catch and/or
-        # pass); undeclared signals are dropped with an error.
+        # Entries are explicit {"source": arriving_name, "target": new_name}
+        # objects — both fields spelled out, same-name included (no
+        # shorthand, no implicit defaults). Declarations are ONE-TO-ONE maps
+        # (unique sources and unique targets per list — the validator
+        # enforces format and uniqueness): a signal is delivered once,
+        # relayed once, emitted once, under exactly one name. Every signal
+        # arriving at a node MUST be declared (catch and/or pass);
+        # undeclared signals are dropped with an error.
         self.catch_signal_map = self._parse_signal_decls(
             self.config.get("catch_signals"))
         self.pass_signal_map = self._parse_signal_decls(
             self.config.get("pass_signals"))
         self.catch_signal_set = set(self.catch_signal_map)
         self.pass_signal_set = set(self.pass_signal_map)
-        # emit map: internal name -> wire name; defaults to identity for
-        # every EMIT_SIGNALS entry, overridable via config emit_signals
-        self.emit_signal_map = {s: s for s in self.EMIT_SIGNALS}
-        self.emit_signal_map.update(
-            self._parse_signal_decls(self.config.get("emit_signals")))
+        # emit map: internal name -> wire name, ENTIRELY from config — same
+        # rule as catch/pass, no contract default. The validator enforces at
+        # init that every EMIT_SIGNALS entry is declared.
+        self.emit_signal_map = self._parse_signal_decls(
+            self.config.get("emit_signals"))
         self.prepare_output_dict()
         self._init_with_timeout()
         self.logger.info("initialized")
 
     @staticmethod
     def _parse_signal_decls(entries):
-        """"name" or {"source":..., "target":...} -> {source: target}."""
-        decls = {}
-        for e in entries or []:
-            if isinstance(e, str):
-                decls[e] = e
-            else:
-                decls[e["source"]] = e.get("target", e["source"])
-        return decls
+        """Explicit {"source", "target"} entries -> {source: target}.
+        No shorthand and no implicit defaults: every declaration spells out
+        both names (same-name included), one-to-one — the validator enforces
+        the format and uniqueness."""
+        return {e["source"]: e["target"] for e in entries or []}
 
     def _init_with_timeout(self, timeout=60):
         """Run custom_init with a timeout to prevent hanging on unreachable
@@ -178,17 +274,28 @@ class BaseProcessingStep:
                 #   catch + pass      -> consume, then relay (renamed)
                 #   pass only         -> relay (renamed), no processing
                 #   undeclared        -> wiring error: drop loudly
-                # The four states apply to directed signals too (destination
-                # surviving here equals self.index): relaying strips the
-                # destination, so a passed-on directed signal continues as a
-                # broadcast handled by downstream declarations.
+                # This applies to directed signals too (destination surviving
+                # here equals self.index): the relayed copy is re-addressed to
+                # this node's first edge, so signals travel edge by edge
+                # exactly like data output, checked at every hop.
                 signal = data.get("signal", "")
-                if signal != "" and signal not in self.catch_signal_set:
+                if signal != "":
+                    caught = signal in self.catch_signal_set
+                    if caught:
+                        filtered_data = {
+                            k: v for k, v in data.items()
+                            if k not in ("destination",)
+                        }
+                        filtered_data["signal"] = self.catch_signal_map[signal]
+                        self.logger.info(f"processing data: {filtered_data}")
+                        self.process(filtered_data,
+                                     {"timestamp": data.get("timestamp")})
+                    # Consume-then-relay: relay AFTER process() returns, so
+                    # anything the node emitted for the signal stays ahead
+                    # of the relayed copy.
                     if signal in self.pass_signal_set:
-                        data.pop("destination", None)
-                        data["signal"] = self.pass_signal_map[signal]
-                        self.output_queue.put(json.dumps(data))
-                    else:
+                        self._relay_caught(data, signal)
+                    elif not caught:
                         self.logger.error(
                             f"undeclared signal '{signal}' at node "
                             f"{self.index}; dropping — declare it in "
@@ -197,35 +304,31 @@ class BaseProcessingStep:
                     self.current_timestamp = None
                     continue
 
-                # Caught signals: pass all fields directly (no filtering),
-                # signal renamed to its catch target for process().
                 # Normal messages: filter through input_vars/pass_vars
-                if signal != "":
-                    filtered_data = {
-                        k: v for k, v in data.items()
-                        if k not in ("destination",)
-                    }
-                    filtered_data["signal"] = self.catch_signal_map[signal]
-                    pass_data = {"timestamp": data.get("timestamp")}
-                else:
-                    filtered_data = self.extract_input_data(data)
-                    pass_data = self.extract_pass_data(data)
+                filtered_data = self.extract_input_data(data)
+                pass_data = self.extract_pass_data(data)
                 self.logger.info(f"processing data: {filtered_data}")
                 self.process(filtered_data, pass_data)
-                # Consume-then-relay: a caught signal also declared in
-                # pass_signals is forwarded (renamed, destination stripped)
-                # after process() returns, so any output the node emitted for
-                # it stays ahead of the relayed signal.
-                if signal != "" and signal in self.pass_signal_set:
-                    relay = {k: v for k, v in data.items()
-                             if k != "destination"}
-                    relay["signal"] = self.pass_signal_map[signal]
-                    self.output_queue.put(json.dumps(relay))
                 self.current_timestamp = None
             except queue.Empty:
                 self.custom_update()
             except Exception as e:
                 self.logger.error(f"{e}")
+
+    def _relay_caught(self, data, signal):
+        """Relay an arriving signal along its pass declaration: one copy,
+        renamed to the declared target."""
+        relay = {k: v for k, v in data.items() if k != "destination"}
+        relay["signal"] = self.pass_signal_map[signal]
+        self._relay_signal(relay)
+
+    def _relay_signal(self, relay):
+        """Hook: where a passed signal goes. Default: this node's first edge
+        (next_nodes[0]) — the same default destination a data output gets,
+        so signals travel edge by edge like everything else. DispatcherStep
+        overrides this to direct the relay to its receiver."""
+        self.add_destination(relay, 0)
+        self.output_queue.put(json.dumps(relay))
 
     def check_cancel(self):
         hasCancel = False
@@ -375,16 +478,20 @@ class BaseProcessingStep:
 
     def emit_signal(self, internal_name, pass_data={}, **kwargs):
         """Emit a signal by its INTERNAL name; the wire name comes from the
-        emit_signals config mapping (identity by default). kwargs forward to
-        output_to_queue (is_add_destination / destination_index for directed
-        signals; broadcast = is_add_destination=False)."""
+        emit_signals config declaration. By default the signal is addressed
+        to this node's first edge, like any data output; pass
+        destination_index for a directed signal (dispatcher envelope). An
+        undeclared internal name is a wiring error: error + drop, same
+        spirit as the receiving-side four-state rule (the validator catches
+        this at init)."""
         wire_name = self.emit_signal_map.get(internal_name)
         if wire_name is None:
             self.logger.error(
                 f"emit_signal('{internal_name}') is not declared in "
-                f"EMIT_SIGNALS/emit_signals; emitting under the same name"
+                f"emit_signals at node {self.index}; dropping — declare it "
+                f"in the node config"
             )
-            wire_name = internal_name
+            return
         self.output_to_queue({"signal": wire_name}, pass_data, **kwargs)
 
     def process(self, data, pass_data={}):

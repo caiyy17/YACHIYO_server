@@ -127,17 +127,12 @@ class OpenaiStep(LLMStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        # SoS/EoS are broadcast turn-envelope signals (no destination);
-        # wire names are renamable via config emit_signals.
-        self.emit_signal("SoS", pass_data, is_add_destination=False)
-        # Right after SoS, echo this round's input question along the optional
-        # echo edge: next_nodes = [main, echo?] (echo typically -1, the pipeline
-        # exit). No second edge wired -> no echo. The field name is set by this
-        # node's output_vars, like any other output.
-        if len(self.get_config("next_nodes", [])) > 1:
-            echo_data = {}
-            self.add_output(echo_data, "prompt", prompt)
-            self.output_to_queue(echo_data, pass_data, destination_index=1)
+        # SoS opens the turn envelope and CARRIES this round's input prompt
+        # under the fixed field name "prompt" — fields riding a signal are
+        # part of the signal's own contract and do NOT go through the vars
+        # renaming. Relayed signal copies keep all fields, so the prompt
+        # rides the SoS hop by hop to the client.
+        self.emit_signal("SoS", {"prompt": prompt, **pass_data})
 
         current_loop = 0
         already_end = False
@@ -162,5 +157,5 @@ class OpenaiStep(LLMStep):
                 for key, value in response.items():
                     self.add_output(current_data, key, value)
                 self.output_to_queue(current_data, pass_data)
-        self.emit_signal("EoS", pass_data, is_add_destination=False)
+        self.emit_signal("EoS", pass_data)
         return

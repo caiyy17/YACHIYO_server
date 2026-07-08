@@ -23,13 +23,19 @@
                     {
                         "output_name": "expression",
                         "target": "1_expression"
-                    },
-                    {
-                        "output_name": "prompt",
-                        "target": "prompt"
                     }
                 ],
-                "next_nodes": [2, -1],
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    }
+                ],
+                "next_nodes": [2],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {

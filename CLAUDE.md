@@ -1,5 +1,12 @@
 # YACHIYO Server — 项目须知
 
+## 信号声明约定(最终协议)
+
+- **emit/catch/pass 三面都必须显式写在 config 里**:条目一律为显式 `{"source","target"}` 双字段(全同名也要写全;无字符串简写、无缺省 target)。每列表**一对一**:source 唯一(一个信号只映射一个名)、target 唯一(禁止多对一合流)。
+- **validator 恰好匹配**:catch targets == 模块 `required_catch_signals(config)`(多一个少一个都 400);emit 声明 == `EMIT_SIGNALS`(双向)。dispatcher 例外:它自身不消费,其 catch 契约 = dispatch_signals 引用集(双向恰好,"先 catch 才能 dispatch")。
+- **信号沿边定址**:转发/发射副本与数据一样定址 `next_nodes[0]`(第一条边);dispatcher 的 pass 定向 receiver(_relay_signal 钩子)。dispatch_signals 是字符串列表的列表(每分支订哪些 caught 信号,按 catch target 名)。信号消息可携带字段(SoS 带 prompt、dispatch_start 带 pass_vars),携带字段属信号自身契约、不参与 vars 重命名。
+- **校验逻辑住在类里**:base 的 classmethod `validate_config(config)` 承载通用检查,结构特殊的模块(dispatcher)经 super() 扩展;`utils/pipeline_validator.py` 仅为纯调度。新模块自带校验,不改 validator。
+
 ## 配置范围约定
 
 - `configs/` 里 **`dev_*` 开头的 config 是开发实验配置,不在 sync 范围内**:不纳入 `test/test_all_configs.py` 的正式在册列表,文档/测试同步时跳过。正式范围 = demo + unity_chan_* 系列。

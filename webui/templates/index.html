@@ -301,6 +301,7 @@
                 <div class="btn-group">
                     <button class="btn" onclick="loadConfigs()">Refresh List</button>
                     <button class="btn" onclick="editConfig()">View / Edit</button>
+                    <button class="btn" onclick="downloadConfig()">Download</button>
                     <a href="/pipeline-editor" target="_blank" class="btn" style="text-decoration:none;display:inline-block;text-align:center;">Visual Editor</a>
                 </div>
 
@@ -501,6 +502,37 @@
                     });
 
                     showResult('configResult', true, `Loaded ${configs.length} config files`);
+                } else {
+                    showResult('configResult', false, result.message);
+                }
+            } catch (error) {
+                showResult('configResult', false, 'Request failed: ' + error.message);
+            }
+        }
+
+        // Download the selected config as a local .json (e.g. to load it in the visual editor)
+        async function downloadConfig() {
+            const configValue = document.getElementById('configSelect').value;
+            if (!configValue) {
+                showResult('configResult', false, 'Please select a config file');
+                return;
+            }
+
+            const [configType, configName] = configValue.split(':');
+
+            try {
+                const response = await fetch(`/api/config/${configType}/${configName}`);
+                const result = await response.json();
+
+                if (result.success) {
+                    const blob = new Blob([result.data.content], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${configName}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showResult('configResult', true, `Downloaded ${configName}.json`);
                 } else {
                     showResult('configResult', false, result.message);
                 }
