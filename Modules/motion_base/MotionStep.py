@@ -23,12 +23,13 @@ class BaseMotionCaller:
         }
 
     def call_stream(self, prompt):
-        """Yield motion chunks. Base fallback: a single chunk holding the full
-        call() result, so stream mode works (degenerately) with any caller;
-        real streaming callers override this."""
+        """Yield chunks as {"motion": <payload>} — every caller's stream
+        product is a dict keyed by its product names (one uniform shape).
+        Base fallback: a single chunk holding the full call() result; real
+        streaming callers override."""
         result = self.call(prompt)
         if result != "":
-            yield result
+            yield {"motion": result}
 
     def reset_history(self):
         pass
@@ -41,6 +42,14 @@ class MotionStep(BaseProcessingStep):
         return ["SoS"] if config.get("continuous") else []
 
     REQUIRED_INPUTS = ["prompt"]
+    # Sentence-level stream envelope, emitted only in stream mode (see
+    # emitted_signals); wire names must be renamed in config when the
+    # turn-level SoS/EoS also passes through (clash check enforces it).
+    EMIT_SIGNALS = ["SoS", "EoS"]
+
+    @classmethod
+    def emitted_signals(cls, config):
+        return ["SoS", "EoS"] if config.get("stream") else []
 
     """Pipeline step: text prompt -> motion. Emits a single ``motion`` output.
 
@@ -80,27 +89,27 @@ class MotionStep(BaseProcessingStep):
         return
 
     def _process_stream(self, prompt, pass_data):
-        """Emit one message per chunk (single-in-multi-out protocol). The
-        first chunk carries the per-sentence pass_vars data exactly once,
-        wrapped under the fixed "pass_data" key (shape built here by the
-        caller — same protocol as signal-borne pass data), structurally
-        separate from the chunk's own payload; later chunks carry only the
-        timestamp (cancel semantics still apply to every chunk)."""
-        first = True
+        """Single-in-multi-out protocol, same shape as the LLM turn: a
+        sentence-level SoS opens the chunk stream and carries the per-
+        sentence pass_vars data (wrapped under "pass_data"); every chunk
+        message is uniform (payload + timestamp only); a sentence-level EoS
+        closes the stream. On cancel the envelope is NOT closed — the whole
+        turn is stale anyway."""
+        start = {"timestamp": pass_data.get("timestamp")}
+        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
+        if wrapped:
+            start["pass_data"] = wrapped
+        self.emit_signal("SoS", start)
         for chunk in self.motion_caller.call_stream(prompt):
             if self.check_cancel():
                 self.logger.info("cancelled during motion stream")
                 return
+            chunk = chunk.get("motion") if isinstance(chunk, dict) else None
             if chunk == "" or chunk is None:
                 continue
             output_data = {}
             self.add_output(output_data, "motion", chunk)
-            if first:
-                wrapped = {k: v for k, v in pass_data.items()
-                           if k != "timestamp"}
-                if wrapped:
-                    output_data["pass_data"] = wrapped
-                first = False
             self.output_to_queue(output_data, pass_data,
                                  is_add_pass_data=False)
+        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

@@ -102,7 +102,7 @@ class OpenaiTTSCaller:
         if prompt == "":
             bio = BytesIO()
             self.empty_audio.export(bio, format="wav")
-            yield bio.getvalue()
+            yield {"audio": bio.getvalue()}
             return
         try:
             model_name = self.model_config.get("model_name", "tts-1")
@@ -131,8 +131,10 @@ class OpenaiTTSCaller:
                             yield base64.b64decode(event["audio"])
                         # speech.audio.done (usage) ends the stream
 
+                # stream products are dicts keyed by product name —
+                # one uniform shape for every caller
                 for pcm in self._rechunk(pcm_deltas(), chunk_bytes):
-                    yield self._pcm_to_wav(pcm, sr)
+                    yield {"audio": self._pcm_to_wav(pcm, sr)}
         except Exception as e:
             self.logger.error(f"failed to stream tts: {e}")
 

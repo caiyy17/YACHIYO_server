@@ -48,6 +48,12 @@ class BaseProcessingStep:
         return list(cls.REQUIRED_CATCH_SIGNALS)
 
     @classmethod
+    def emitted_signals(cls, config):
+        """Override for config-dependent emit contracts (e.g. stream mode).
+        validate_config enforces emit_signals sources == this, exactly."""
+        return list(cls.EMIT_SIGNALS)
+
+    @classmethod
     def validate_config(cls, config):
         """Static self-check of one node's config against this class's own
         contract — run by the pipeline validator BEFORE any node is built
@@ -76,7 +82,7 @@ class BaseProcessingStep:
 
         # emit declaration: exact coverage both ways (the wire-name map is
         # entirely config-defined, no contract default)
-        emits = set(cls.EMIT_SIGNALS)
+        emits = set(cls.emitted_signals(config))
         declared = set(emit_map)
         for src in sorted(declared - emits):
             errors.append(
@@ -86,6 +92,20 @@ class BaseProcessingStep:
         for s in sorted(emits - declared):
             errors.append(
                 f"module emits '{s}' but it is not declared in emit_signals"
+            )
+
+        # outgoing wire-name clash: an emitted wire name colliding with a
+        # relayed (pass) wire name would give downstream two
+        # indistinguishable signals — an untraceable merge, same ban as
+        # many-to-one renames (rename one side via config)
+        pass_targets = set(
+            cls._check_decl_list("pass_signals",
+                                 config.get("pass_signals"), []).values())
+        for t in sorted(set(emit_map.values()) & pass_targets):
+            errors.append(
+                f"emit_signals target '{t}' collides with a pass_signals "
+                f"target — downstream could not tell the emitted signal "
+                f"from the relayed one; rename one of them"
             )
         return errors
 

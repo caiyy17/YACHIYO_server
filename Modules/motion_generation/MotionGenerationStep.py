@@ -115,12 +115,21 @@ class MotionGenerationCaller:
 
     def call_stream(self, prompt):
         """Stream motion chunks from the backend's SSE endpoint
-        (/api/generate_json_stream), yielding one payload per delta.
+        (/api/generate_json_stream).
 
-        humanoid_output: deltas are converted incrementally — prev_trans /
-        ref_y carry the cross-chunk state so the concatenation of chunk
+        stream_frames > 0: client-side EXACT re-chunking (the counterpart of
+        the TTS caller's _rechunk) — server deltas of arbitrary size (the
+        backend rounds its flushes to the model's commit size) are buffered
+        at the SMPL-H frame level and re-cut into blocks of exactly
+        `stream_frames` frames; the final block may be shorter. Losslessly:
+        the frame sequence is untouched, only the block boundaries move.
+        stream_frames == 0 (default): one payload per server delta,
+        unchanged behavior.
+
+        humanoid_output: blocks are converted incrementally — prev_trans /
+        ref_y carry the cross-block state so the concatenation of block
         conversions equals one whole-clip conversion (no root-step loss or
-        hips jump at chunk boundaries). Otherwise raw SMPL-H chunks are
+        hips jump at block boundaries). Otherwise raw SMPL-H blocks are
         yielded in the non-stream motion schema. Continuation history is
         saved from the accumulated tail exactly like call().
         """
@@ -147,6 +156,7 @@ class MotionGenerationCaller:
             stream_size = int(self.config.get("stream_size", 0))
             if stream_size > 0:
                 body["stream_size"] = stream_size
+            stream_frames = int(self.config.get("stream_frames", 0))
 
             response = requests.post(
                 self.addr_motion + "/api/generate_json_stream",
@@ -157,10 +167,35 @@ class MotionGenerationCaller:
             response.raise_for_status()
             framerate = float(response.headers.get("X-Framerate", FRAMERATE))
 
-            prev_trans = None   # last root translation of the previous chunk
-            ref_y = None        # session first-frame pelvis Y
+            state = {"prev_trans": None,  # last root translation, prev block
+                     "ref_y": None}       # session first-frame pelvis Y
             tail_poses = tail_trans = None  # rolling tail for continuation
             betas = None
+            buf_poses = buf_trans = None    # exact re-chunk buffer
+
+            def _make_block(poses, trans):
+                """Convert/package one output block, advancing the
+                incremental-conversion state at ITS boundary."""
+                n = int(poses.shape[0])
+                if self.humanoid_output:
+                    h = smplh_to_humanoid(
+                        poses, trans, n, framerate=framerate,
+                        prev_trans=state["prev_trans"], ref_y=state["ref_y"],
+                    )
+                    if state["ref_y"] is None:
+                        state["ref_y"] = float(trans[0][1])
+                    state["prev_trans"] = [float(v) for v in trans[-1]]
+                    return h
+                return {
+                    "num_frames": n,
+                    "framerate": framerate,
+                    "duration": n / framerate,
+                    "format": "smplh",
+                    "poses": _b64_encode_f32(poses),
+                    "poses_shape": list(poses.shape),
+                    "trans": _b64_encode_f32(trans),
+                    "trans_shape": list(trans.shape),
+                }
 
             for line in response.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
@@ -171,11 +206,11 @@ class MotionGenerationCaller:
                 if etype == "motion.delta":
                     if "poses" not in event:
                         # skeleton-only backend: forward the raw delta
-                        yield event
+                        # (no frame arrays to re-chunk)
+                        yield {"motion": event}
                         continue
                     poses = _b64_decode_f32(event["poses"], event["poses_shape"])
                     trans = _b64_decode_f32(event["trans"], event["trans_shape"])
-                    n = int(event["num_frames"])
 
                     if self.continuous:
                         if tail_poses is None:
@@ -186,26 +221,20 @@ class MotionGenerationCaller:
                         tail_poses = tail_poses[-self.history_size:]
                         tail_trans = tail_trans[-self.history_size:]
 
-                    if self.humanoid_output:
-                        h = smplh_to_humanoid(
-                            poses, trans, n, framerate=framerate,
-                            prev_trans=prev_trans, ref_y=ref_y,
-                        )
-                        if ref_y is None:
-                            ref_y = float(trans[0][1])
-                        prev_trans = [float(v) for v in trans[-1]]
-                        yield h
+                    if stream_frames <= 0:
+                        yield {"motion": _make_block(poses, trans)}
+                        continue
+                    # exact re-chunk: buffer frames, cut full blocks
+                    if buf_poses is None:
+                        buf_poses, buf_trans = poses, trans
                     else:
-                        yield {
-                            "num_frames": n,
-                            "framerate": framerate,
-                            "duration": n / framerate,
-                            "format": "smplh",
-                            "poses": event["poses"],
-                            "poses_shape": event["poses_shape"],
-                            "trans": event["trans"],
-                            "trans_shape": event["trans_shape"],
-                        }
+                        buf_poses = np.concatenate([buf_poses, poses])
+                        buf_trans = np.concatenate([buf_trans, trans])
+                    while buf_poses.shape[0] >= stream_frames:
+                        yield {"motion": _make_block(buf_poses[:stream_frames],
+                                                     buf_trans[:stream_frames])}
+                        buf_poses = buf_poses[stream_frames:]
+                        buf_trans = buf_trans[stream_frames:]
 
                 elif etype == "motion.done":
                     if "betas" in event:
@@ -213,7 +242,12 @@ class MotionGenerationCaller:
 
                 elif etype == "error":
                     self.logger.error(f"motion stream error: {event.get('error')}")
+                    buf_poses = buf_trans = None  # drop the partial tail
                     break
+
+            # final short block (stream ended cleanly with a remainder)
+            if buf_poses is not None and buf_poses.shape[0] > 0:
+                yield {"motion": _make_block(buf_poses, buf_trans)}
 
             if self.continuous and tail_poses is not None:
                 self.history_poses = tail_poses.copy()

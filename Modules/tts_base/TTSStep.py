@@ -34,16 +34,27 @@ class BaseTTSCaller:
             return ""
 
     def call_stream(self, prompt, language="auto", speaker=""):
-        """Yield audio chunks (WAV bytes). Base fallback: a single chunk holding
-        the full call() result, so stream mode works (degenerately) with any
-        caller; real streaming callers override this."""
+        """Yield chunks as {"audio": <WAV bytes>} — every caller's stream
+        product is a dict keyed by its product names (one uniform shape,
+        however many products a caller has). Base fallback: a single chunk
+        holding the full call() result; real streaming callers override."""
         result = self.call(prompt, language, speaker)
         if result:
-            yield result
+            yield {"audio": result}
 
 
 class TTSStep(BaseProcessingStep):
     REQUIRED_INPUTS = ["text"]
+    # Sentence-level stream envelope, emitted only in stream mode (see
+    # emitted_signals). Internal names deliberately reuse SoS/EoS ("this
+    # stream starts/ends"); the wire names MUST be renamed in config (e.g.
+    # SoS -> tts_SoS) when the turn-level SoS/EoS also passes through this
+    # node — the emit/pass wire-name clash check enforces that.
+    EMIT_SIGNALS = ["SoS", "EoS"]
+
+    @classmethod
+    def emitted_signals(cls, config):
+        return ["SoS", "EoS"] if config.get("stream") else []
 
     def custom_init(self):
         self.tts_caller = BaseTTSCaller(self.logger)
@@ -75,17 +86,23 @@ class TTSStep(BaseProcessingStep):
         return
 
     def _process_stream(self, text, language, speaker, pass_data):
-        """Emit one message per chunk (single-in-multi-out protocol). The
-        first chunk carries the per-sentence pass_vars data exactly once,
-        wrapped under the fixed "pass_data" key (shape built here by the
-        caller — same protocol as signal-borne pass data), structurally
-        separate from the chunk's own payload; later chunks carry only the
-        timestamp (cancel semantics still apply to every chunk)."""
-        first = True
+        """Single-in-multi-out protocol, same shape as the LLM turn: a
+        sentence-level SoS opens the chunk stream and carries the per-
+        sentence pass_vars data (wrapped under "pass_data"); every chunk
+        message is uniform (payload + timestamp only; cancel semantics apply
+        to each); a sentence-level EoS closes the stream so downstream knows
+        no more chunks are coming. On cancel the envelope is NOT closed —
+        the whole turn is stale anyway."""
+        start = {"timestamp": pass_data.get("timestamp")}
+        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
+        if wrapped:
+            start["pass_data"] = wrapped
+        self.emit_signal("SoS", start)
         for chunk in self.tts_caller.call_stream(text, language, speaker):
             if self.check_cancel():
                 self.logger.info("cancelled during tts stream")
                 return
+            chunk = chunk.get("audio") if isinstance(chunk, dict) else None
             if not chunk:
                 continue
             try:
@@ -95,12 +112,7 @@ class TTSStep(BaseProcessingStep):
                 continue
             output_data = {}
             self.add_output(output_data, "audio_file", chunk_b64)
-            if first:
-                wrapped = {k: v for k, v in pass_data.items()
-                           if k != "timestamp"}
-                if wrapped:
-                    output_data["pass_data"] = wrapped
-                first = False
             self.output_to_queue(output_data, pass_data,
                                  is_add_pass_data=False)
+        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

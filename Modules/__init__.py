@@ -4,6 +4,7 @@ import importlib
 
 def load_function_map(base_path, base_module):
     function_map = {}
+    caller_map = {}
 
     # Iterate through subdirectories in base_path
     for root, dirs, files in os.walk(base_path):
@@ -13,20 +14,28 @@ def load_function_map(base_path, base_module):
             try:
                 # Dynamically import module
                 module = importlib.import_module(module_path)
-                # Check if the module has a `function_map`
+                # Steps register via `function_map`; callers (streamable
+                # generators, composable by name — e.g. by the joint stream
+                # node) register via `caller_map`.
                 if hasattr(module, "function_map"):
                     function_map.update(getattr(module, "function_map"))
+                if hasattr(module, "caller_map"):
+                    caller_map.update(getattr(module, "caller_map"))
             except ModuleNotFoundError as e:
                 print(f"Error importing {module_path}: {e}")
-    return function_map
+    return function_map, caller_map
 
 
 base_path = os.path.dirname(__file__)  # Current module path
 base_module = "Modules"  # Top-level module name
-FUNCTION_MAP = load_function_map(base_path, base_module)
+FUNCTION_MAP, CALLER_MAP = load_function_map(base_path, base_module)
 
 print(FUNCTION_MAP)
 
 
 def get_function_class_by_name(func_name):
     return FUNCTION_MAP.get(func_name, FUNCTION_MAP["default"])
+
+
+def get_caller_class_by_name(caller_name):
+    return CALLER_MAP.get(caller_name)
