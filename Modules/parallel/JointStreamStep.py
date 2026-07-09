@@ -133,7 +133,7 @@ class JointStreamStep(BaseProcessingStep):
                         )
             for e in s.get("output") or []:
                 if (isinstance(e, dict) and e.get("target")
-                        and e["target"] not in output_names):
+                        and e["target"] not in output_sources):
                     errors.append(
                         f"streams[{i}] output target '{e['target']}' has "
                         f"no output_vars entry"

@@ -29,6 +29,26 @@ def _b64_decode_f32(b64_str, shape):
     )
 
 
+def _humanoid_to_frames(h):
+    """Transpose a struct-of-arrays humanoid clip (per-key per-frame arrays)
+    into a list of self-contained per-frame structs, so a frame-level
+    consumer (e.g. the webrtc splitter's data lane) can distribute them one
+    per slot without knowing the motion schema. framerate is stream-level
+    (carried once on the envelope), so it is dropped from each frame."""
+    n = int(h.get("num_frames", 0))
+    joints = h.get("joints", {})
+    return [
+        {
+            "root_xz": h["root_xz"][f],
+            "root_vel_y": h["root_vel_y"][f],
+            "root_vel_yaw": h["root_vel_yaw"][f],
+            "hips_pos": h["hips_pos"][f],
+            "joints": {b: joints[b][f] for b in joints},
+        }
+        for f in range(n)
+    ]
+
+
 class MotionGenerationCaller:
     def __init__(self, config, logger):
         self.config = config
@@ -173,9 +193,20 @@ class MotionGenerationCaller:
             betas = None
             buf_poses = buf_trans = None    # exact re-chunk buffer
 
+            # stream-level info (constant across the whole stream) — attached
+            # to the VERY FIRST frame only, so a consumer can read it once
+            # without a separate envelope. Subsequent frames carry only their
+            # per-frame data.
+            first_frame = [True]
+            stream_info = {"framerate": framerate,
+                           "format": "humanoid" if self.humanoid_output else "smplh"}
+
             def _make_block(poses, trans):
-                """Convert/package one output block, advancing the
-                incremental-conversion state at ITS boundary."""
+                """Convert/package one output block into a list of per-frame
+                structs (frame-level, schema-agnostic — the counterpart of an
+                audio chunk's frames), advancing the incremental-conversion
+                state at ITS boundary. The stream's first frame additionally
+                carries stream_info (framerate/format)."""
                 n = int(poses.shape[0])
                 if self.humanoid_output:
                     h = smplh_to_humanoid(
@@ -185,17 +216,17 @@ class MotionGenerationCaller:
                     if state["ref_y"] is None:
                         state["ref_y"] = float(trans[0][1])
                     state["prev_trans"] = [float(v) for v in trans[-1]]
-                    return h
-                return {
-                    "num_frames": n,
-                    "framerate": framerate,
-                    "duration": n / framerate,
-                    "format": "smplh",
-                    "poses": _b64_encode_f32(poses),
-                    "poses_shape": list(poses.shape),
-                    "trans": _b64_encode_f32(trans),
-                    "trans_shape": list(trans.shape),
-                }
+                    frames = _humanoid_to_frames(h)
+                else:
+                    # raw SMPL-H: one frame per element (same per-frame-list
+                    # contract as humanoid, so the data lane distributes it
+                    # the same way)
+                    frames = [{"poses": poses[f].tolist(), "trans": trans[f].tolist()}
+                              for f in range(n)]
+                if first_frame[0] and frames:
+                    frames[0] = {**stream_info, **frames[0]}
+                    first_frame[0] = False
+                return frames
 
             for line in response.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
@@ -204,11 +235,6 @@ class MotionGenerationCaller:
                 etype = event.get("type", "")
 
                 if etype == "motion.delta":
-                    if "poses" not in event:
-                        # skeleton-only backend: forward the raw delta
-                        # (no frame arrays to re-chunk)
-                        yield {"motion": event}
-                        continue
                     poses = _b64_decode_f32(event["poses"], event["poses_shape"])
                     trans = _b64_decode_f32(event["trans"], event["trans_shape"])
 

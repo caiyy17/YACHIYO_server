@@ -102,6 +102,16 @@ class FrameSplitterStep(BaseProcessingStep):
         self._group_period = self.audio_per_group * self.frame_samples / self.sample_rate
         group_ms = self._group_period * 1000
 
+        # Lane routing of inputs by target name: "audio_data" -> audio lane,
+        # "video_data" -> video lane, every OTHER input -> the data lane as a
+        # per-frame list (opaque frames, keyed by its target name). Multiple
+        # data-lane inputs (motion, expression, ...) are merged per frame:
+        # data slot f = {target: list_f for each data-lane input}.
+        self.data_lane_keys = [
+            v.get("target") for v in self.config.get("input_vars", [])
+            if v.get("target") not in ("audio_data", "video_data")
+        ]
+
         # Pre-create background templates and font for per-frame numbered overlay
         # (frames are rendered with the current counter at SEND time, not generation
         # time, so cancel-clearing the buffer never leaves gaps in the emitted seq.)
@@ -409,47 +419,66 @@ class FrameSplitterStep(BaseProcessingStep):
         self._group_buffer.append(("signal", json.dumps(msg)))
 
     def _split_to_buffer(self, data, pass_data):
-        """Buffer one message: its pass_vars data as a "meta" signal, then
-        its audio split into groups. The group data lane stays free for
-        frame-aligned payloads."""
+        """Buffer one message: its pass_vars data as a "meta" signal, then a
+        run of groups. Audio (audio_data) is split into audio frames; every
+        data-lane input (any input other than audio_data/video_data — e.g.
+        motion, expression) is a per-frame list, merged per frame into the
+        data slots. Frames are opaque to the splitter — no schema knowledge.
+
+        The run spans max(audio groups, data groups): a group past the audio
+        gets silence audio (so a data-only message — e.g. motion outlasting
+        speech — still emits groups), and a data slot past its inputs is None.
+        Data slot f = {target: list_f for each data-lane input that has frame f}."""
         self._buffer_meta_signal(pass_data)
 
         audio_data = data.get("audio_data", "")
-        if not audio_data:
-            return
+        pcm_frames = self._decode_and_split(audio_data) if audio_data else []
 
-        pcm_frames = self._decode_and_split(audio_data)
-        if not pcm_frames:
-            return
+        # per-frame lists for the data lane, keyed by input target name
+        lane = {k: (data.get(k) or []) for k in self.data_lane_keys}
+        max_frames = max((len(v) for v in lane.values()), default=0)
 
-        group_count = 0
-        for i in range(0, len(pcm_frames), self.audio_per_group):
-            group_audio = pcm_frames[i:i + self.audio_per_group]
+        apg, dpg = self.audio_per_group, self.data_per_group
+        n_audio_groups = (len(pcm_frames) + apg - 1) // apg
+        n_data_groups = (max_frames + dpg - 1) // dpg
+        n_groups = max(n_audio_groups, n_data_groups)
+        if n_groups == 0:
+            return  # nothing shippable
 
-            # Pad last group if incomplete
-            while len(group_audio) < self.audio_per_group:
+        for g in range(n_groups):
+            group_audio = pcm_frames[g * apg:(g + 1) * apg]
+            has_audio = len(group_audio) > 0
+            # pad to a full group with silence (also covers groups past the audio)
+            while len(group_audio) < apg:
                 group_audio.append(np.zeros(self.frame_samples, dtype=np.int16))
 
             audio_list = [
                 base64.b64encode(f.tobytes()).decode("ascii")
                 for f in group_audio
             ]
-            video_list = ["speak"] * self.video_per_group
+            video_list = [("speak" if has_audio else "idle")] * self.video_per_group
+
+            # data slots: for each frame index, merge the f-th frame of every
+            # data-lane input; None if no input has that frame
+            data_list = []
+            for slot in range(dpg):
+                f = g * dpg + slot
+                merged = {k: v[f] for k, v in lane.items() if f < len(v)}
+                data_list.append(merged or None)
 
             frame_data = {}
             self.add_output(frame_data, "audio", audio_list)
             self.add_output(frame_data, "video", video_list)
-            self.add_output(frame_data, "data", [None] * self.data_per_group)
+            self.add_output(frame_data, "data", data_list)
             self.add_destination(frame_data)
 
             self._group_buffer.append(("group", frame_data))
-            group_count += 1
 
-        self._stats_content += group_count
-        duration = len(pcm_frames) * self.frame_samples / self.sample_rate
+        self._stats_content += n_groups
+        adur = len(pcm_frames) * self.frame_samples / self.sample_rate
         self.logger.info(
-            f"Buffered {group_count} groups ({duration:.2f}s), "
-            f"queue={len(self._group_buffer)}"
+            f"Buffered {n_groups} groups (audio {adur:.2f}s / {max_frames} "
+            f"data frames), queue={len(self._group_buffer)}"
         )
 
     # ── Audio decoding (unchanged) ──

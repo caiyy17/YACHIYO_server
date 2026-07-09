@@ -6,41 +6,51 @@ from ..utils.functions import bytes_to_base64
 
 
 class BaseTTSCaller:
-    def __init__(self, logger):
+    def __init__(self, config, logger):
+        # (config, logger) signature, aligned with BaseMotionCaller /
+        # BaseVideoCaller so any base caller is joint-registerable the same way
+        self.config = config
         self.logger = logger
         self.repeat = 2
         self.empty_audio = AudioSegment.silent(duration=10)
-        pass
+
+    def _build_segment(self, prompt):
+        """The test clip as an AudioSegment (empty for an empty prompt)."""
+        audio = self.empty_audio
+        if prompt != "":
+            for _ in range(self.repeat):
+                audio = audio + AudioSegment.from_file("test/test_voice.wav",
+                                                       format="wav")
+        return audio
+
+    @staticmethod
+    def _seg_to_wav(seg):
+        bio = BytesIO()
+        seg.export(bio, format="wav")
+        return bio.getvalue()
 
     def call(self, prompt, language="auto", speaker=""):
         try:
-            audio_data = self.empty_audio
-            if prompt != "":
-                for i in range(self.repeat):
-                    audio = AudioSegment.from_file("test/test_voice.wav", format="wav")
-                    audio_data += audio
-
-            # Create a BytesIO object as an in-memory file
-            audio_bytes_io = BytesIO()
-
-            # Export audio data as WAV format into the BytesIO object
-            audio_data.export(audio_bytes_io, format="wav")
-
-            # Get the byte stream
-            audio_bytes = audio_bytes_io.getvalue()
-            return audio_bytes
+            return self._seg_to_wav(self._build_segment(prompt))
         except Exception as e:
             self.logger.error(f"failed to call tts: {e}")
             return ""
 
     def call_stream(self, prompt, language="auto", speaker=""):
-        """Yield chunks as {"audio": <WAV bytes>} — every caller's stream
-        product is a dict keyed by its product names (one uniform shape,
-        however many products a caller has). Base fallback: a single chunk
-        holding the full call() result; real streaming callers override."""
-        result = self.call(prompt, language, speaker)
-        if result:
-            yield {"audio": result}
+        """Chunk the test clip into `stream_chunk_ms` WAV pieces (last may be
+        shorter), one per {"audio": <WAV bytes>} — the same per-chunk shape
+        the real OpenaiTTSCaller streams (which overrides this). chunk_ms is
+        rounded to a 100ms multiple so the webrtc splitter packs whole groups."""
+        try:
+            seg = self._build_segment(prompt)
+        except Exception as e:
+            self.logger.error(f"failed to call tts: {e}")
+            return
+        raw = int(self.config.get("stream_chunk_ms", 300))
+        chunk_ms = max(100, (raw // 100) * 100)
+        for i in range(0, len(seg), chunk_ms):
+            piece = seg[i:i + chunk_ms]
+            yield {"audio": self._seg_to_wav(piece)}
 
 
 class TTSStep(BaseProcessingStep):
@@ -57,7 +67,7 @@ class TTSStep(BaseProcessingStep):
         return ["SoS", "EoS"] if config.get("stream") else []
 
     def custom_init(self):
-        self.tts_caller = BaseTTSCaller(self.logger)
+        self.tts_caller = BaseTTSCaller(self.config, self.logger)
         self.tts_caller.call("test")
 
     def process(self, data, pass_data={}):

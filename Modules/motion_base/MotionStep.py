@@ -2,34 +2,40 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 
 class BaseMotionCaller:
-    """Stub motion caller. Real implementations (e.g. MotionGenerationCaller) take a
-    text prompt and return a motion payload; optional continuation via reset_history."""
+    """Stub motion caller producing a per-frame list of neutral frames — the
+    same shape MotionGenerationCaller streams, so it stands in for testing /
+    composition without the real service. Mirrors BaseVideoCaller: call()
+    returns the whole clip, call_stream() cuts it into `stream_frames` chunks.
+    Config: framerate + duration (total frames = framerate*duration),
+    stream_frames (frames per chunk)."""
 
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.continuous = False
+        self.fps = int(config.get("framerate", 30))
+        self.default_duration = float(config.get("duration", 2.0))
+        self.continuous = bool(config.get("continuous", False))
+
+    def _stub_frame(self):
+        return {"root_xz": [0.0, 0.0], "root_vel_y": 0.0, "root_vel_yaw": 0.0,
+                "hips_pos": [0.0, 0.0, 0.0], "joints": {}}
+
+    def _total_frames(self):
+        return max(0, int(self.fps * self.default_duration))
 
     def call(self, prompt):
-        return {
-            "num_frames": 0,
-            "framerate": 30,
-            "duration": 0.0,
-            "root_xz": [],
-            "root_vel_y": [],
-            "root_vel_yaw": [],
-            "hips_pos": [],
-            "joints": {},
-        }
+        """Non-stream: the whole clip as one per-frame list."""
+        return [self._stub_frame() for _ in range(self._total_frames())]
 
     def call_stream(self, prompt):
-        """Yield chunks as {"motion": <payload>} — every caller's stream
-        product is a dict keyed by its product names (one uniform shape).
-        Base fallback: a single chunk holding the full call() result; real
-        streaming callers override."""
-        result = self.call(prompt)
-        if result != "":
-            yield {"motion": result}
+        """Yield chunks as {"motion": [frame, ...]} — each chunk is
+        `stream_frames` frames (the last may be shorter). Real streaming
+        callers (MotionGenerationCaller) override with actual generation."""
+        total = self._total_frames()
+        chunk = max(1, int(self.config.get("stream_frames", self.fps)))
+        for i in range(0, total, chunk):
+            n = min(chunk, total - i)
+            yield {"motion": [self._stub_frame() for _ in range(n)]}
 
     def reset_history(self):
         pass
