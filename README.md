@@ -80,10 +80,13 @@ Each service runs in its own conda environment. Replace any service with any Ope
 POST /register/                     Register client
 POST /init_pipeline/{client_id}     Load pipeline config (404 = config name not found, 400 = config invalid, 503 = a node's dependent service failed at init; all with details)
 WS   /ws/{client_id}                Connect WebSocket (send/receive JSON messages)
+GET  /clients/{client_id}           Client status; includes pipeline_config once initialized
 POST /unregister/                   Cleanup
 ```
 
 WebRTC: `POST /offer/{client_id}` on port 15168 for SDP exchange, then communicate via audio/video tracks and DataChannel. Browser test client available at `http://<server>:15168/`.
+
+WebRTC session timing (audio/video/data fps) lives in a top-level `webrtc` block in the pipeline config, parallel to `pipeline` — the gateway fetches it via `GET /clients/{client_id}` at offer time (single source, kept in sync with the FrameSplitter's group packing). Video resolution is the client's own choice, sent in the offer body; the gateway rescales outgoing video to it. On the DataChannel, media rides the group's audio/video lanes while per-turn/per-sentence metadata (prompt, subtitle text, action/expression) rides signals under a `pass_data` field; the group's data lane is reserved for frame-aligned payloads. Stream TTS over WebRTC (config-only, see `dev_webrtc_stream`) streams audio chunk-by-chunk with a per-sentence `tts_SoS`/`tts_EoS` envelope.
 
 ## Web UI
 

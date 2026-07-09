@@ -127,13 +127,10 @@ class OpenaiStep(LLMStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        # SoS opens the turn envelope and CARRIES this round's input prompt
-        # top-level (signal contract field, fixed name); pass_vars data
-        # rides wrapped under the fixed "pass_data" key. The shape is built
-        # HERE by the caller — emit_signal just ships what it is given.
-        # Relayed signal copies keep all fields, so everything travels on
-        # the SoS hop by hop to the client.
-        sos = {"prompt": prompt, "timestamp": pass_data.get("timestamp")}
+        # Stream envelope: pass_vars data travels once on the SoS, wrapped
+        # under the fixed "pass_data" key (shape built here; emit_signal
+        # ships flat); stream messages and EoS carry only the timestamp.
+        sos = {"timestamp": pass_data.get("timestamp")}
         wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
         if wrapped:
             sos["pass_data"] = wrapped
@@ -160,8 +157,6 @@ class OpenaiStep(LLMStep):
                 current_data = {}
                 for key, value in response.items():
                     self.add_output(current_data, key, value)
-                # single-in-multi-out protocol: stream messages and EoS
-                # carry only the timestamp (per-turn data went on the SoS)
                 self.output_to_queue(current_data, pass_data,
                                      is_add_pass_data=False)
         self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})

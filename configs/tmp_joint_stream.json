@@ -2,38 +2,17 @@
     "pipeline": [
         {
             "node_id": 1,
-            "function": "call_openai_asr",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "audio_file",
-                        "target": "audio_file"
-                    }
-                ],
-                "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "result",
-                        "target": "1_text"
-                    }
-                ],
-                "next_nodes": [2],
-                "model": "qwen_asr"
-            }
-        },
-        {
-            "node_id": 2,
             "function": "call_openai_llm",
             "config": {
                 "input_vars": [
                     {
-                        "source": "1_text",
+                        "source": "text",
                         "target": "prompt"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "source": "1_text",
+                        "source": "text",
                         "target": "prompt"
                     }
                 ],
@@ -61,7 +40,7 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [2],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -71,10 +50,10 @@
                 ],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
-                "history_length": 30,
+                "history_length": 10,
                 "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
-                "sentence_length_threshold": 5,
+                "sentence_length_threshold": 10,
                 "extra_info": {
                     "action": {
                         "start_mark": "[",
@@ -84,12 +63,11 @@
                         "start_mark": "(",
                         "end_mark": ")"
                     }
-                },
-                "tool_names": ["get_weather", "web_search"]
+                }
             }
         },
         {
-            "node_id": 3,
+            "node_id": 2,
             "function": "call_data_query_link",
             "config": {
                 "input_vars": [
@@ -128,7 +106,7 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [3],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -136,10 +114,14 @@
             }
         },
         {
-            "node_id": 4,
-            "function": "call_data_query_link",
+            "node_id": 3,
+            "function": "call_joint_stream",
             "config": {
                 "input_vars": [
+                    {
+                        "source": "3_text",
+                        "target": "text"
+                    },
                     {
                         "source": "3_action",
                         "target": "prompt"
@@ -148,80 +130,35 @@
                 "pass_vars": [
                     {
                         "source": "3_text",
-                        "target": "4_text"
-                    },
-                    {
-                        "source": "3_expression",
-                        "target": "4_expression"
-                    },
-                    {
-                        "source": "3_expression_hint",
-                        "target": "4_expression_hint"
+                        "target": "text"
                     },
                     {
                         "source": "3_action",
-                        "target": "4_action_hint"
-                    }
-                ],
-                "output_vars": [
-                    {
-                        "source": "result",
-                        "target": "4_action"
-                    }
-                ],
-                "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    }
-                ],
-                "next_nodes": [5],
-                "dataset": "unity_chan_motion_list",
-                "type": "BGE",
-                "k": 5,
-                "score_threshold": 0.6
-            }
-        },
-        {
-            "node_id": 5,
-            "function": "call_openai_tts",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "4_text",
-                        "target": "text"
-                    }
-                ],
-                "pass_vars": [
-                    {
-                        "source": "4_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "4_action",
-                        "target": "action"
-                    },
-                    {
-                        "source": "4_action_hint",
                         "target": "action_hint"
                     },
                     {
-                        "source": "4_expression",
+                        "source": "3_expression",
                         "target": "expression"
                     },
                     {
-                        "source": "4_expression_hint",
+                        "source": "3_expression_hint",
                         "target": "expression_hint"
                     }
                 ],
                 "output_vars": [
                     {
-                        "source": "audio_file",
+                        "source": "audio",
                         "target": "audio_data"
+                    },
+                    {
+                        "source": "motion",
+                        "target": "action"
+                    }
+                ],
+                "catch_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
                     }
                 ],
                 "pass_signals": [
@@ -234,9 +171,61 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [-1],
-                "model": "qwen_tts",
-                "voice": "test_cn"
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "js_SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "js_EoS"
+                    }
+                ],
+                "streams": [
+                    {
+                        "caller": "openai_tts",
+                        "input": [
+                            {
+                                "source": "text",
+                                "target": "prompt"
+                            }
+                        ],
+                        "output": [
+                            {
+                                "source": "audio",
+                                "target": "audio"
+                            }
+                        ],
+                        "config": {
+                            "model": "qwen_tts",
+                            "voice": "test_cn",
+                            "stream_chunk_ms": 300
+                        }
+                    },
+                    {
+                        "caller": "motion_generation",
+                        "input": [
+                            {
+                                "source": "prompt",
+                                "target": "prompt"
+                            }
+                        ],
+                        "output": [
+                            {
+                                "source": "motion",
+                                "target": "motion"
+                            }
+                        ],
+                        "config": {
+                            "model": "hy_motion",
+                            "duration": 5.0,
+                            "continuous": true,
+                            "history_size": 5,
+                            "stream_frames": 9
+                        }
+                    }
+                ],
+                "next_nodes": [-1]
             }
         }
     ]

@@ -348,7 +348,7 @@ R_g = \gcd(R_a, R_v, R_d) = \gcd(50, 30, 20) = 10 \;\text{Hz}, \quad T_g = \frac
 \end{equation}
 This is the \emph{finest} common synchronization granularity---any shorter period would require fractional frames in at least one modality. Each group contains $n_a = R_a/R_g = 5$ audio frames, $n_v = R_v/R_g = 3$ video frames, and $n_d = R_d/R_g = 2$ data slots.
 
-The group is the atomic synchronization unit: the client consumes one group per $T_g$, dispatching exactly $n_a$ audio frames, $n_v$ video frames, and $n_d$ data slots to their respective output channels. Metadata (text, action, emotion) is placed in the first data slot of the first group for each TTS segment; remaining data slots are null. This guarantees that no modality drifts ahead of or behind others within a group.
+The group is the atomic synchronization unit: the client consumes one group per $T_g$, dispatching exactly $n_a$ audio frames, $n_v$ video frames, and $n_d$ data slots to their respective output channels. This guarantees that no modality drifts ahead of or behind others within a group. Per-sentence metadata (text, action, emotion) rides in the first group's data slot.
 
 All frame rates and video resolution are configurable per session; the GCD calculation adapts automatically (e.g., 24\,fps video with 12\,fps data yields $R_g = 2$, $T_g = 500$\,ms).
 

@@ -34,7 +34,7 @@ class BaseProcessingStep:
     # (utils/pipeline_validator): the node's config must declare
     #   - a catch_signals entry whose TARGET covers each required catch name
     #     (handlers match target names, so renamed wiring still satisfies it)
-    #   - an input_vars entry whose input_name covers each required input
+    #   - an input_vars entry whose TARGET covers each required input
     # Validation is strictly per-node — no cross-module flow modeling; broken
     # links between nodes surface at runtime via the four-state signal rules.
     REQUIRED_CATCH_SIGNALS = []
@@ -70,14 +70,15 @@ class BaseProcessingStep:
         # catch contract: targets == required, exactly (dispatcher overrides)
         cls._validate_catch_contract(config, set(catch_map.values()), errors)
 
-        # input contract
-        input_names = {v.get("input_name")
-                       for v in config.get("input_vars", [])}
+        # input contract: input_vars are {source, target} — target is the
+        # internal name the module reads (source is the incoming field)
+        input_targets = {v.get("target")
+                         for v in config.get("input_vars", [])}
         for field in cls.required_inputs(config):
-            if field not in input_names:
+            if field not in input_targets:
                 errors.append(
                     f"module requires input '{field}' (as an input_vars "
-                    f"input_name) but it is not declared"
+                    f"target) but it is not declared"
                 )
 
         # emit declaration: exact coverage both ways (the wire-name map is
@@ -394,10 +395,12 @@ class BaseProcessingStep:
 
         input_vars = self.config.get("input_vars", [])
         for input_var in input_vars:
-            input_name = input_var["input_name"]
+            # {source, target}: read incoming field `source`, expose it to the
+            # module under internal name `target`
             source = input_var["source"]
+            target = input_var["target"]
             if source in data:
-                extracted_data[input_name] = data[source]
+                extracted_data[target] = data[source]
 
         return extracted_data
 
@@ -453,11 +456,13 @@ class BaseProcessingStep:
         self.output_dict = {}
 
         for output_var in output_vars:
-            output_name = output_var["output_name"]
+            # {source, target}: the module produces value `source`, which is
+            # placed into the outgoing message under field name `target`
+            source = output_var["source"]
             target = output_var["target"]
-            if output_name not in self.output_dict:
-                self.output_dict[output_name] = []
-            self.output_dict[output_name].append(target)
+            if source not in self.output_dict:
+                self.output_dict[source] = []
+            self.output_dict[source].append(target)
 
     def add_output(self, output_data, key, value):
         if key not in self.output_dict:

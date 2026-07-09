@@ -12,8 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ..base.BaseProcessingStep import BaseProcessingStep
 
-WEBRTC_SAMPLE_RATE = 48000
-FRAME_SAMPLES = 960  # 20ms at 48kHz
+AUDIO_SAMPLE_RATE = 48000
+AUDIO_FPS = 50  # 20ms audio frames
 VIDEO_FPS = 30
 DATA_FPS = 20
 
@@ -31,6 +31,33 @@ FONT_CANDIDATES = [
 class FrameSplitterStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["connection_start"]
     REQUIRED_INPUTS = ["audio_data"]
+    EMIT_SIGNALS = ["meta"]  # pass_vars data shipped to the client
+
+    @classmethod
+    def emitted_signals(cls, config):
+        # "meta" is only emitted when the node has pass_vars to forward
+        return ["meta"] if config.get("pass_vars") else []
+
+    @classmethod
+    def validate_config(cls, config):
+        errors = super().validate_config(config)
+        rates = {
+            "audio_sample_rate": config.get("audio_sample_rate", AUDIO_SAMPLE_RATE),
+            "audio_fps": config.get("audio_fps", AUDIO_FPS),
+            "video_fps": config.get("video_fps", VIDEO_FPS),
+            "data_fps": config.get("data_fps", DATA_FPS),
+        }
+        for name, v in rates.items():
+            if not isinstance(v, int) or v <= 0:
+                errors.append(f"{name} must be a positive integer, got {v!r}")
+                return errors
+        if rates["audio_sample_rate"] % rates["audio_fps"] != 0:
+            errors.append(
+                f"audio_sample_rate {rates['audio_sample_rate']} is not "
+                f"divisible by audio_fps {rates['audio_fps']} — the audio "
+                f"frame must be a whole number of samples"
+            )
+        return errors
 
     """
     Clock-driven group output for WebRTC streaming.
@@ -45,10 +72,10 @@ class FrameSplitterStep(BaseProcessingStep):
     Signals (SoS, EoS, etc.) are buffered in order with audio groups
     and flushed at tick boundaries to preserve ordering.
 
-    Content messages addressed to this node without audio are queued and
-    placed into the next group's free data slots, so they ride the data lane
-    in arrival order. (The round's input prompt now travels ON the SoS
-    signal itself, interleaved in group order like any signal.)
+    Pass_vars data on an incoming message ships to the client as a "meta"
+    signal (wire name from emit_signals config), interleaved in group order
+    right before that message's audio groups. The group data lane is
+    reserved for frame-aligned payloads.
 
     Group size is calculated from GCD of audio/video/data frame rates
     (all configurable via config). Standard output format:
@@ -56,15 +83,18 @@ class FrameSplitterStep(BaseProcessingStep):
     """
 
     def custom_init(self):
-        self.sample_rate = self.get_config("sample_rate", WEBRTC_SAMPLE_RATE)
-        self.frame_samples = self.get_config("frame_samples", FRAME_SAMPLES)
+        # Per-lane config: <lane>_fps, plus audio_sample_rate and the video
+        # size; frame sizes and group layout are derived from these.
+        self.sample_rate = self.get_config("audio_sample_rate", AUDIO_SAMPLE_RATE)
+        audio_fps = self.get_config("audio_fps", AUDIO_FPS)
+        self.frame_samples = self.sample_rate // audio_fps
         self.video_fps = self.get_config("video_fps", VIDEO_FPS)
         self.data_fps = self.get_config("data_fps", DATA_FPS)
         self.video_width = self.get_config("video_width", 320)
         self.video_height = self.get_config("video_height", 240)
 
-        # Calculate sync group size from GCD of all frame rates
-        audio_fps = self.sample_rate // self.frame_samples  # 50
+        # Sync group: rate = GCD of the lane rates, so every lane packs a
+        # whole number of frames per group
         g = gcd(gcd(audio_fps, self.video_fps), self.data_fps)  # gcd(50,30,20) = 10
         self.audio_per_group = audio_fps // g          # 5
         self.video_per_group = self.video_fps // g     # 3
@@ -90,17 +120,14 @@ class FrameSplitterStep(BaseProcessingStep):
         # Internal buffer: ("group", dict-with-video-markers) or ("signal", json_str)
         # Video markers are strings "idle"/"speak"; JPEGs are rendered on pop.
         self._group_buffer = deque()
-        # Client-bound content addressed to this node, waiting for data slots:
-        # deque of (timestamp, content_dict)
-        self._pending_data = deque()
         self._clock_running = False
 
         # Stats counters (reset every 100 groups in _run_clock)
         self._stats_silence = 0
         self._stats_content = 0
 
-        # Requires config: catch_signals: ["connection_start"]; broadcast
-        # signals passing through to the client (SoS/EoS/recording_*) must be
+        # Requires config: catch_signals: ["connection_start"]; signals
+        # passing through to the client (SoS/EoS/recording_*) must be
         # declared in pass_signals — they are interleaved in group order.
         self.logger.info(
             f"Sync group: {self.audio_per_group} audio + {self.video_per_group} video "
@@ -209,7 +236,6 @@ class FrameSplitterStep(BaseProcessingStep):
     def custom_cancel(self, cancel_message):
         """Clear buffers when current input is cancelled."""
         self._group_buffer.clear()
-        self._pending_data.clear()
 
     def _run_clock(self):
         """Run the 100ms clock loop until connection_stop or kill."""
@@ -338,7 +364,8 @@ class FrameSplitterStep(BaseProcessingStep):
                     )
                 return
 
-            # Valid audio data: split into groups
+            # Content message: pass_vars data ships as a "meta" signal,
+            # the audio (if any) is split into groups behind it
             filtered_data = self.extract_input_data(data)
             pass_data = self.extract_pass_data(data)
             self._split_to_buffer(filtered_data, pass_data)
@@ -346,30 +373,7 @@ class FrameSplitterStep(BaseProcessingStep):
                 # Buffer was filled — set current_timestamp for cancel tracking
                 self.current_timestamp = ts
                 return
-            # No audio in this message: client-bound content addressed here
-            # — queue for the next group's free data slots so it rides the
-            # data lane in arrival order.
-            content = {
-                k: v for k, v in data.items()
-                if k not in ("timestamp", "destination", "signal") and v
-            }
-            if content:
-                self._pending_data.append((ts, content))
-                self.logger.info(f"queued client-bound data: {content}")
-            # continue reading next message
-
-    def _fill_data_slots(self, data_list):
-        """Fill None slots from pending client-bound content (FIFO order),
-        dropping entries whose turn was cancelled after they were queued."""
-        for i in range(len(data_list)):
-            if data_list[i] is not None:
-                continue
-            while self._pending_data and self._pending_data[0][0] is not None \
-                    and self._pending_data[0][0] < self.cancel_timestamp:
-                self._pending_data.popleft()
-            if not self._pending_data:
-                break
-            data_list[i] = self._pending_data.popleft()[1]
+            # nothing shippable in this message: continue reading the next
 
     def _fill_default(self):
         """Fill buffer with default content when no input available.
@@ -378,14 +382,38 @@ class FrameSplitterStep(BaseProcessingStep):
         frame_data = {}
         self.add_output(frame_data, "audio", self._silence_audio)
         self.add_output(frame_data, "video", ["idle"] * self.video_per_group)
-        data_list = [None] * self.data_per_group
-        self._fill_data_slots(data_list)
-        self.add_output(frame_data, "data", data_list)
+        self.add_output(frame_data, "data", [None] * self.data_per_group)
         self.add_destination(frame_data)
         self._group_buffer.append(("group", frame_data))
 
+    def _buffer_meta_signal(self, pass_data):
+        """Ship pass_vars data as a "meta" signal (same shape as SoS:
+        timestamp top-level, data wrapped under "pass_data"). Buffered
+        instead of emit_signal so it stays in group order and is
+        cancel-cleared together with its groups. Empty data ships nothing."""
+        wrapped = {k: v for k, v in pass_data.items()
+                   if k != "timestamp" and v}
+        if not wrapped:
+            return
+        wire = self.emit_signal_map.get("meta")
+        if wire is None:
+            self.logger.error(
+                "emit_signal('meta') is not declared in emit_signals; "
+                "dropping — declare it in the node config"
+            )
+            return
+        msg = {"signal": wire,
+               "timestamp": pass_data.get("timestamp"),
+               "pass_data": wrapped}
+        self.add_destination(msg)
+        self._group_buffer.append(("signal", json.dumps(msg)))
+
     def _split_to_buffer(self, data, pass_data):
-        """Split TTS audio into groups and append to internal buffer."""
+        """Buffer one message: its pass_vars data as a "meta" signal, then
+        its audio split into groups. The group data lane stays free for
+        frame-aligned payloads."""
+        self._buffer_meta_signal(pass_data)
+
         audio_data = data.get("audio_data", "")
         if not audio_data:
             return
@@ -393,8 +421,6 @@ class FrameSplitterStep(BaseProcessingStep):
         pcm_frames = self._decode_and_split(audio_data)
         if not pcm_frames:
             return
-
-        meta = {k: v for k, v in pass_data.items() if v}
 
         group_count = 0
         for i in range(0, len(pcm_frames), self.audio_per_group):
@@ -410,15 +436,10 @@ class FrameSplitterStep(BaseProcessingStep):
             ]
             video_list = ["speak"] * self.video_per_group
 
-            data_list = [None] * self.data_per_group
-            if group_count == 0 and meta:
-                data_list[0] = meta
-            self._fill_data_slots(data_list)
-
             frame_data = {}
             self.add_output(frame_data, "audio", audio_list)
             self.add_output(frame_data, "video", video_list)
-            self.add_output(frame_data, "data", data_list)
+            self.add_output(frame_data, "data", [None] * self.data_per_group)
             self.add_destination(frame_data)
 
             self._group_buffer.append(("group", frame_data))

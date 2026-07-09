@@ -30,12 +30,12 @@ Config:
     ]
     input / output are RENAME LISTS (same {source, target} shape as the var
     declarations) because different streams may use the same INTERNAL names:
-      input:  source = this node's input field (an input_vars input_name),
+      input:  source = this node's input field (an input_vars target),
               target = the caller's call_stream() parameter name — the
               caller is invoked as call_stream(**{target: value, ...}), so
               multi-input callers (e.g. prompt/language/speaker) just take
               more entries.
-      output: target = an output_vars output_name for the chunk field,
+      output: target = an output_vars source for the chunk field,
               source = the caller-side name of that product. Every caller
               yields dict chunks keyed by its product names (one uniform
               shape, however many products); each entry picks chunk[source]
@@ -103,8 +103,8 @@ class JointStreamStep(BaseProcessingStep):
             errors.append("joint stream needs a non-empty 'streams' list")
             return errors
         from .. import get_caller_class_by_name
-        output_names = {v.get("output_name")
-                        for v in config.get("output_vars", [])}
+        output_sources = {v.get("source")
+                          for v in config.get("output_vars", [])}
         for i, s in enumerate(streams):
             for key in ("caller", "input", "output", "config"):
                 if not s.get(key):

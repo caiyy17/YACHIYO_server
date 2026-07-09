@@ -1630,9 +1630,9 @@ function exportJSON() {
     const emit_signals = sigDecls(nodeObj.emitSigs);
 
     const config = {
-      input_vars: nodeObj.inputs.map(inp => ({ input_name: inp.name, source: inp.source })),
+      input_vars: nodeObj.inputs.map(inp => ({ source: inp.source, target: inp.name })),
       pass_vars: nodeObj.passes.map(pv => ({ source: pv.source, target: pv.target })),
-      output_vars: nodeObj.outputs.map(out => ({ output_name: out.name, target: out.target })),
+      output_vars: nodeObj.outputs.map(out => ({ source: out.name, target: out.target })),
       ...(catch_signals.length ? { catch_signals } : {}),
       ...(pass_signals.length ? { pass_signals } : {}),
       ...(emit_signals.length ? { emit_signals } : {}),
@@ -1713,8 +1713,8 @@ function loadPipeline(data) {
     const y = CANVAS_PAD;
 
     const cfg = item.config || {};
-    const inputs  = (cfg.input_vars  || []).map(iv => ({ name: iv.input_name, source: iv.source }));
-    const outputs = (cfg.output_vars || []).map(ov => ({ name: ov.output_name, target: ov.target }));
+    const inputs  = (cfg.input_vars  || []).map(iv => ({ name: iv.target, source: iv.source }));
+    const outputs = (cfg.output_vars || []).map(ov => ({ name: ov.source, target: ov.target }));
     const passes  = (cfg.pass_vars   || []).map(pv => ({ source: pv.source, target: pv.target }));
     // Signal declarations are explicit {source, target} objects (the strict
     // config protocol — no shorthand; export always writes both fields)

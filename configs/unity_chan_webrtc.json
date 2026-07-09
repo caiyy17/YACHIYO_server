@@ -1,4 +1,11 @@
 {
+    "webrtc": {
+        "audio_sample_rate": 48000,
+        "audio_fps": 50,
+        "video_fps": 30,
+        "data_fps": 20,
+        "startup_buffer": 2
+    },
     "pipeline": [
         {
             "node_id": 1,
@@ -6,14 +13,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio",
-                        "source": "audio"
+                        "source": "audio",
+                        "target": "audio"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "audio_file",
+                        "source": "audio_file",
                         "target": "1_audio_file"
                     }
                 ],
@@ -53,14 +60,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio_file",
-                        "source": "1_audio_file"
+                        "source": "1_audio_file",
+                        "target": "audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "2_text"
                     }
                 ],
@@ -88,22 +95,27 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "2_text"
+                        "source": "2_text",
+                        "target": "prompt"
                     }
                 ],
-                "pass_vars": [],
+                "pass_vars": [
+                    {
+                        "source": "2_text",
+                        "target": "prompt"
+                    }
+                ],
                 "output_vars": [
                     {
-                        "output_name": "text",
+                        "source": "text",
                         "target": "3_text"
                     },
                     {
-                        "output_name": "action",
+                        "source": "action",
                         "target": "3_action"
                     },
                     {
-                        "output_name": "expression",
+                        "source": "expression",
                         "target": "3_expression"
                     }
                 ],
@@ -164,8 +176,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "3_expression"
+                        "source": "3_expression",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [
@@ -184,7 +196,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "4_expression"
                     }
                 ],
@@ -223,8 +235,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "4_action"
+                        "source": "4_action",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [
@@ -247,7 +259,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "5_action"
                     }
                 ],
@@ -286,8 +298,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "text",
-                        "source": "5_text"
+                        "source": "5_text",
+                        "target": "text"
                     }
                 ],
                 "pass_vars": [
@@ -314,7 +326,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "audio_file",
+                        "source": "audio_file",
                         "target": "6_audio_data"
                     }
                 ],
@@ -351,8 +363,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio_data",
-                        "source": "6_audio_data"
+                        "source": "6_audio_data",
+                        "target": "audio_data"
                     }
                 ],
                 "pass_vars": [
@@ -379,15 +391,15 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "audio",
+                        "source": "audio",
                         "target": "audio"
                     },
                     {
-                        "output_name": "video",
+                        "source": "video",
                         "target": "video"
                     },
                     {
-                        "output_name": "data",
+                        "source": "data",
                         "target": "data"
                     }
                 ],
@@ -415,9 +427,15 @@
                         "target": "recording_start"
                     }
                 ],
+                "emit_signals": [
+                    {
+                        "source": "meta",
+                        "target": "meta"
+                    }
+                ],
                 "next_nodes": [-1],
-                "sample_rate": 48000,
-                "frame_samples": 960,
+                "audio_fps": 50,
+                "audio_sample_rate": 48000,
                 "video_fps": 30,
                 "video_width": 1280,
                 "video_height": 720

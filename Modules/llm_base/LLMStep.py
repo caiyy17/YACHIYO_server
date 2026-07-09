@@ -47,7 +47,7 @@ class BaseLLMCaller:
 class LLMStep(BaseProcessingStep):
     REQUIRED_INPUTS = ["prompt"]
 
-    EMIT_SIGNALS = ["SoS", "EoS"]  # broadcast turn envelope
+    EMIT_SIGNALS = ["SoS", "EoS"]  # stream envelope: SoS opens, EoS closes
 
     def custom_init(self):
         self.llm_caller = BaseLLMCaller(self.client_id, self.config, self.logger)
@@ -57,15 +57,14 @@ class LLMStep(BaseProcessingStep):
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
-        # SoS carries the prompt top-level and pass_vars data wrapped
-        # under "pass_data" (shape built by the caller) — see OpenaiStep
-        sos = {"prompt": prompt, "timestamp": pass_data.get("timestamp")}
+        # Stream envelope: pass_vars data travels once on the SoS, wrapped
+        # under the fixed "pass_data" key (shape built here; emit_signal
+        # ships flat); stream messages and EoS carry only the timestamp.
+        sos = {"timestamp": pass_data.get("timestamp")}
         wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
         if wrapped:
             sos["pass_data"] = wrapped
         self.emit_signal("SoS", sos)
-        # single-in-multi-out protocol: per-turn data travels once, on the
-        # SoS; stream messages and EoS carry only the timestamp
         for response in self.llm_caller.call_stream(prompt):
             if self.check_cancel():
                 self.logger.info("cancel inside loop")

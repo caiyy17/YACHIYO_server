@@ -6,22 +6,22 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio_data",
-                        "source": "audio_data"
+                        "source": "audio_data",
+                        "target": "audio_data"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "audio",
+                        "source": "audio",
                         "target": "audio"
                     },
                     {
-                        "output_name": "video",
+                        "source": "video",
                         "target": "video"
                     },
                     {
-                        "output_name": "data",
+                        "source": "data",
                         "target": "data"
                     }
                 ],
@@ -32,8 +32,8 @@
                     }
                 ],
                 "next_nodes": [-1],
-                "sample_rate": 48000,
-                "frame_samples": 960,
+                "audio_sample_rate": 48000,
+                "audio_fps": 50,
                 "video_fps": 30,
                 "video_width": 320,
                 "video_height": 240

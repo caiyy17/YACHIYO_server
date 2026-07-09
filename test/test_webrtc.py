@@ -572,9 +572,8 @@ async def run_test():
                 json={
                     "sdp": pc.localDescription.sdp,
                     "type": pc.localDescription.type,
-                    "sample_rate": SAMPLE_RATE,
-                    "audio_ptime": AUDIO_PTIME,
-                    "video_fps": VIDEO_FPS,
+                    # resolution is the client's own choice; timing params
+                    # come from the config's webrtc section
                     "video_width": VIDEO_WIDTH,
                     "video_height": VIDEO_HEIGHT,
                 },
@@ -731,13 +730,22 @@ def run_single(args):
         # Find and patch FrameSplitter node
         for node in pipeline_config["pipeline"]:
             if node["function"] == "frame_splitter":
-                node["config"]["sample_rate"] = SAMPLE_RATE
-                node["config"]["frame_samples"] = AUDIO_SAMPLES
+                node["config"]["audio_sample_rate"] = SAMPLE_RATE
+                node["config"]["audio_fps"] = SAMPLE_RATE // AUDIO_SAMPLES
                 node["config"]["video_fps"] = VIDEO_FPS
                 node["config"]["video_width"] = VIDEO_WIDTH
                 node["config"]["video_height"] = VIDEO_HEIGHT
                 if args.data_fps:
                     node["config"]["data_fps"] = data_fps
+        # Timing params also go to the top-level webrtc section (the
+        # gateway's source); resolution stays client-side (offer body)
+        webrtc_sec = dict(pipeline_config.get("webrtc") or {})
+        webrtc_sec["audio_sample_rate"] = SAMPLE_RATE
+        webrtc_sec["audio_fps"] = SAMPLE_RATE // AUDIO_SAMPLES
+        webrtc_sec["video_fps"] = VIDEO_FPS
+        if args.data_fps:
+            webrtc_sec["data_fps"] = data_fps
+        pipeline_config["webrtc"] = webrtc_sec
         config_name = "test_webrtc_custom"
         config_path = os.path.join(SCRIPT_DIR, "..", "configs", f"{config_name}.json")
         with open(config_path, "w") as f:
@@ -1089,6 +1097,9 @@ def run_client_process(client_id, output_mp4, result_dict):
 
 def run_multi(args):
     """Entry for --mode multi. Mirrors original test_webrtc_multi.py main()."""
+    global WEBRTC_SERVER, PIPELINE_CONFIG
+    WEBRTC_SERVER = args.server        # honored by forked children (inherit globals)
+    PIPELINE_CONFIG = args.pipeline
     num_clients = args.num_clients
 
     print("=" * 60)
@@ -1215,18 +1226,28 @@ def fs_build_frame_splitter(logger, config_overrides=None):
     kill_event = threading.Event()
 
     config = {
-        "input_vars": [{"input_name": "audio_data", "source": "audio_data"}],
+        "input_vars": [{"source": "audio_data", "target": "audio_data"}],
         "pass_vars": [
             {"source": "text", "target": "text"},
         ],
         "output_vars": [
-            {"output_name": "audio", "target": "audio"},
-            {"output_name": "video", "target": "video"},
-            {"output_name": "data", "target": "data"},
+            {"source": "audio", "target": "audio"},
+            {"source": "video", "target": "video"},
+            {"source": "data", "target": "data"},
+        ],
+        "catch_signals": [
+            {"source": "connection_start", "target": "connection_start"},
+        ],
+        "pass_signals": [
+            {"source": "SoS", "target": "SoS"},
+            {"source": "EoS", "target": "EoS"},
+        ],
+        "emit_signals": [
+            {"source": "meta", "target": "meta"},
         ],
         "next_nodes": [-1],
-        "sample_rate": 48000,
-        "frame_samples": 960,
+        "audio_sample_rate": 48000,
+        "audio_fps": 50,
         "video_fps": 30,
         "video_width": 320,
         "video_height": 240,
@@ -1422,15 +1443,38 @@ def fs_test_audio_groups():
         print(f"  FAIL: expected ~{expected} audio groups, got {real_count}")
         ok = False
 
-    # Check first audio group has metadata
-    first_audio_idx = next((i for i, v in enumerate(audio_groups) if v), None)
-    if first_audio_idx is not None:
-        first_data = results[first_audio_idx].get("data", [])
-        has_meta = any(d is not None and isinstance(d, dict) for d in first_data if d)
-        if has_meta:
-            print(f"  Metadata in first audio group: OK")
+    # Meta signal precedes the first audio group and carries the pass data;
+    # group data slots stay empty (reserved for frame-aligned payloads)
+    meta_idx = next((i for i, r in enumerate(results)
+                     if r.get("signal") == "meta"), None)
+    first_real_idx = None
+    for i, r in enumerate(results):
+        if "audio" not in r:
+            continue
+        if any(any(b != 0 for b in base64.b64decode(f)) for f in r["audio"]):
+            first_real_idx = i
+            break
+    if meta_idx is None:
+        print(f"  FAIL: no meta signal found")
+        ok = False
+    elif first_real_idx is not None and meta_idx > first_real_idx:
+        print(f"  FAIL: meta ({meta_idx}) after first audio ({first_real_idx})")
+        ok = False
+    else:
+        pd = results[meta_idx].get("pass_data", {})
+        if pd.get("text") != "hello":
+            print(f"  FAIL: meta pass_data wrong: {pd}")
+            ok = False
         else:
-            print(f"  NOTE: no metadata in first audio group (may be in data field)")
+            print(f"  Meta signal before first audio, pass_data: {pd}")
+    slot_meta = any(
+        isinstance(d, dict)
+        for r in results if "audio" in r
+        for d in (r.get("data") or [])
+    )
+    if slot_meta:
+        print(f"  FAIL: data slots still carry meta")
+        ok = False
 
     print(f"  {'PASS' if ok else 'FAIL'}")
     return ok

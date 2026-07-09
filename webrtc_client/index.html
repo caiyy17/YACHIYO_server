@@ -207,6 +207,20 @@ async function connect() {
     log(`Pipeline: ${(await r.json()).status}`);
   } catch(e) { log(`Error: ${e.message}`); return; }
 
+  // Fetch the WebRTC session settings from the server (same single source the
+  // gateway uses: the config's top-level "webrtc" section). Timing params
+  // (video_fps here, for local capture) come from the config; resolution is
+  // the client's own choice, so it stays at a default.
+  const VIDEO_W = 1280, VIDEO_H = 720;   // default resolution
+  let videoFps = 30;
+  try {
+    const info = await (await fetch(`${mainServer}/clients/${clientId}`)).json();
+    const wr = (info.pipeline_config && info.pipeline_config.webrtc) || {};
+    if (wr.video_fps) videoFps = wr.video_fps;
+    log(`WebRTC settings: video_fps=${videoFps} (from server), ` +
+        `${VIDEO_W}x${VIDEO_H} (default)`);
+  } catch(e) { log(`WebRTC settings fetch failed, using defaults: ${e.message}`); }
+
   // Get microphone
   try {
     localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
@@ -216,7 +230,7 @@ async function connect() {
   // Create PeerConnection
   pc = new RTCPeerConnection();
   pc.addTrack(localStream.getAudioTracks()[0], localStream);
-  pc.addTrack(await getVideoTrack(1280, 720, 30));
+  pc.addTrack(await getVideoTrack(VIDEO_W, VIDEO_H, videoFps));
 
   // DataChannel
   dc = pc.createDataChannel('client-signals', {ordered: true});
@@ -242,21 +256,20 @@ async function connect() {
   // Receive DataChannel from server
   pc.ondatachannel = (e) => {
     log(`Server DC: ${e.channel.label}`);
+    // Deep-copy with long strings (e.g. base64 audio) truncated for display
+    const trunc = (v) => {
+      if (typeof v === 'string') return v.length > 60 ? v.slice(0, 57) + '...' : v;
+      if (Array.isArray(v)) return v.map(trunc);
+      if (v && typeof v === 'object') {
+        const o = {}; for (const [k, x] of Object.entries(v)) o[k] = trunc(x); return o;
+      }
+      return v;
+    };
     e.channel.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        // Skip empty data frames
-        if (Object.keys(msg).length === 0) return;
-        if (msg.signal) {
-          log(`Signal: ${msg.signal}`);
-        } else {
-          const display = {};
-          for (const [k,v] of Object.entries(msg)) {
-            if (typeof v === 'string' && v.length > 60) display[k] = v.substring(0,57) + '...';
-            else display[k] = v;
-          }
-          log(`Data: ${JSON.stringify(display)}`);
-        }
+        if (Object.keys(msg).length === 0) return;   // skip empty frames
+        log(JSON.stringify(trunc(msg)));              // print the whole message, as-is
       } catch(err) {}
     };
   };
@@ -282,8 +295,9 @@ async function connect() {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         sdp: pc.localDescription.sdp, type: pc.localDescription.type,
-        sample_rate: 48000, audio_ptime: 0.02,
-        video_fps: 30, video_width: 1280, video_height: 720, data_fps: 20
+        // only resolution is the client's choice; timing comes from the
+        // config's webrtc section (the gateway reads it server-side)
+        video_width: VIDEO_W, video_height: VIDEO_H
       })
     });
     const answer = await r.json();

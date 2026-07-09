@@ -250,9 +250,28 @@ class ClientConnection:
             if self.kill_event.is_set():
                 break
 
+            # Socket-level receive: any failure here means the connection is
+            # gone (abrupt close raises a RuntimeError, not WebSocketDisconnect)
+            # — stop the loop instead of spinning on the same error forever,
+            # which would starve the event loop and hang dispose/unregister.
             try:
-                data = await self.websocket.receive_text()
-                data = json.loads(data)
+                raw = await self.websocket.receive_text()
+            except WebSocketDisconnect:
+                self.log_info(f"Received: Client {self.client_id} disconnected")
+                self.connected = False
+                for q in self.cancel_queues:
+                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
+                break
+            except Exception as e:
+                self.logger.error(f"Received: socket receive failed, stopping: {e}")
+                self.connected = False
+                for q in self.cancel_queues:
+                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
+                break
+
+            # Message-level parsing/handling: a bad message is skipped, not fatal
+            try:
+                data = json.loads(raw)
                 if "timestamp" not in data:
                     self.logger.error(f"Received: missing timestamp in message: {data}")
                     continue
@@ -274,17 +293,9 @@ class ClientConnection:
                 self.log_info(f"Received: message from {self.client_id}, {data}")
 
                 # Put data into the first input queue
-                data = json.dumps(data)
-                self.queues[0].put(data)
-
-            except WebSocketDisconnect:
-                self.connected = False
-                self.log_info(f"Received: Client {self.client_id} disconnected")
-                for q in self.cancel_queues:
-                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
-                break
+                self.queues[0].put(json.dumps(data))
             except Exception as e:
-                self.logger.error(f"Received: {e}")
+                self.logger.error(f"Received (message): {e}")
 
     async def dispose(self):
         self.log_info(f"Dispose: Disposing client {self.client_id}")
@@ -461,7 +472,12 @@ async def get_clients():
 async def get_client(client_id: str):
     if client_id not in manager.clients:
         return {"status": "not connected", "client_id": client_id}
-    return {"status": "connected", "client_id": client_id}
+    response = {"status": "connected", "client_id": client_id}
+    # present once the pipeline has been initialized
+    config = getattr(manager.clients[client_id], "pipeline_config", None)
+    if config is not None:
+        response["pipeline_config"] = config
+    return response
 
 
 @app.get("/logs/{client_id}")

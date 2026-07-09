@@ -6,22 +6,27 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "text"
+                        "source": "text",
+                        "target": "prompt"
                     }
                 ],
-                "pass_vars": [],
+                "pass_vars": [
+                    {
+                        "source": "text",
+                        "target": "prompt"
+                    }
+                ],
                 "output_vars": [
                     {
-                        "output_name": "text",
+                        "source": "text",
                         "target": "1_text"
                     },
                     {
-                        "output_name": "action",
+                        "source": "action",
                         "target": "1_action"
                     },
                     {
-                        "output_name": "expression",
+                        "source": "expression",
                         "target": "1_expression"
                     }
                 ],
@@ -68,8 +73,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "1_expression"
+                        "source": "1_expression",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [
@@ -88,7 +93,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "2_expression"
                     }
                 ],
@@ -115,8 +120,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "2_action"
+                        "source": "2_action",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [
@@ -139,7 +144,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "action"
                     }
                 ],

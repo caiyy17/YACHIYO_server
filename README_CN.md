@@ -80,10 +80,13 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 POST /register/                     注册客户端
 POST /init_pipeline/{client_id}     加载 pipeline 配置（404 = 配置名不存在，400 = 配置校验失败，503 = 节点依赖服务 init 失败；均带明细）
 WS   /ws/{client_id}                连接 WebSocket（收发 JSON 消息）
+GET  /clients/{client_id}           客户端状态；初始化后附带 pipeline_config
 POST /unregister/                   清理
 ```
 
 WebRTC：在端口 15168 上 `POST /offer/{client_id}` 进行 SDP 交换，之后通过 audio/video track 和 DataChannel 通信。浏览器测试客户端：`http://<服务器>:15168/`。
+
+WebRTC 会话的帧率参数（audio/video/data fps）写在 pipeline 配置里与 `pipeline` 平行的顶层 `webrtc` 段——网关在 offer 时经 `GET /clients/{client_id}` 读取（单一来源，与 FrameSplitter 的分组打包保持一致）。视频分辨率由客户端自定（offer body 携带），网关将输出视频缩放到该尺寸。DataChannel 上，媒体走分组的 audio/video 车道，而每轮/每句的元数据（prompt、字幕文本、动作/表情）搭在信号的 `pass_data` 字段上；分组的 data 车道保留给帧对齐载荷。stream TTS 接 WebRTC（纯配置，见 `dev_webrtc_stream`）按块流式发音频，每句带 `tts_SoS`/`tts_EoS` 包络。
 
 ## Web UI
 

@@ -42,6 +42,15 @@ Standard frame format:
 Client is responsible for register/init_pipeline/unregister via server_fastapi's REST API.
 server_webrtc only handles WebRTC ↔ pipeline WebSocket bridging.
 
+Session params:
+  Timing (audio_sample_rate / audio_fps / video_fps / data_fps /
+  startup_buffer) comes from the top-level "webrtc" section of the client's
+  pipeline config, fetched from the main server at offer time — it must agree
+  with the FrameSplitter's group packing, so the config file is the single
+  source. Resolution (video_width / video_height) is the client's own choice,
+  passed in the offer body; the video track rescales every outgoing frame to
+  it regardless of what the pipeline renders.
+
 Usage:
   python server_webrtc.py [--port 15168] [--main-server http://localhost:8910]
 """
@@ -59,6 +68,7 @@ from math import gcd
 from queue import Queue, Empty
 from collections import deque
 
+import aiohttp
 import av
 import numpy as np
 from aiohttp import web
@@ -387,7 +397,7 @@ class WebRTCSession:
 
         # Audio params
         self.sample_rate = sample_rate
-        self.audio_samples = int(sample_rate * audio_ptime)
+        self.audio_samples = int(round(sample_rate * audio_ptime))
 
         # Video params
         self.video_fps = video_fps
@@ -985,18 +995,62 @@ class WebRTCServer:
         self.main_server_url = main_server_url
         self.sessions = {}
 
+    async def _fetch_webrtc_section(self, client_id):
+        """Read the top-level "webrtc" section of the client's pipeline
+        config from the main server. Empty dict (→ defaults) if the client,
+        its pipeline, or the section doesn't exist."""
+        url = f"{self.main_server_url}/clients/{client_id}"
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)
+                ) as r:
+                    info = await r.json()
+            return (info.get("pipeline_config") or {}).get("webrtc") or {}
+        except Exception as e:
+            logger.warning(
+                f"[{client_id}] failed to fetch pipeline config: {e}"
+            )
+            return {}
+
     async def handle_offer(self, request):
-        """POST /offer/{client_id} - WebRTC signaling endpoint."""
+        """POST /offer/{client_id} - WebRTC signaling endpoint.
+
+        Timing params come from the config's "webrtc" section (single source
+        with the splitter's packing); resolution comes from the offer body
+        (the client's own choice, rescaled by the video track)."""
         client_id = request.match_info["client_id"]
         body = await request.json()
 
         if client_id in self.sessions:
             await self.sessions[client_id].cleanup()
 
-        # Optional session params from request body
-        session_kwargs = {}
-        for key in ("sample_rate", "audio_ptime", "video_fps",
-                     "video_width", "video_height", "data_fps", "startup_buffer"):
+        sec = await self._fetch_webrtc_section(client_id)
+        sample_rate = sec.get("audio_sample_rate", DEFAULT_SAMPLE_RATE)
+        audio_fps = sec.get("audio_fps", int(round(1 / DEFAULT_AUDIO_PTIME)))
+        rates = {"audio_sample_rate": sample_rate, "audio_fps": audio_fps,
+                 "video_fps": sec.get("video_fps", DEFAULT_VIDEO_FPS),
+                 "data_fps": sec.get("data_fps", DEFAULT_DATA_FPS)}
+        for name, v in rates.items():
+            if not isinstance(v, int) or v <= 0:
+                return web.json_response(
+                    {"error": f"webrtc.{name} must be a positive integer, "
+                              f"got {v!r}"}, status=400)
+        if sample_rate % audio_fps:
+            return web.json_response(
+                {"error": f"webrtc.audio_sample_rate {sample_rate} is not "
+                          f"divisible by audio_fps {audio_fps}"}, status=400)
+
+        session_kwargs = {
+            "sample_rate": sample_rate,
+            "audio_ptime": 1 / audio_fps,
+            "video_fps": rates["video_fps"],
+            "data_fps": rates["data_fps"],
+        }
+        if "startup_buffer" in sec:
+            session_kwargs["startup_buffer"] = sec["startup_buffer"]
+        # resolution is the client's own choice
+        for key in ("video_width", "video_height"):
             if key in body:
                 session_kwargs[key] = body[key]
 

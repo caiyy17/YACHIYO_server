@@ -8,6 +8,8 @@
 
 ## 配置范围约定
 
+- **节点 config 键序标准**:`input_vars → pass_vars → output_vars → catch_signals → pass_signals → emit_signals → (dispatch_vars/dispatch_signals/streams) → next_nodes → 模块参数`。程序化改 config 后必须保持此序,不允许把键追加到末尾。
+
 - `configs/` 里 **`dev_*` 开头的 config 是开发实验配置,不在 sync 范围内**:不纳入 `test/test_all_configs.py` 的正式在册列表,文档/测试同步时跳过。正式范围 = demo + unity_chan_* 系列。
 - `loopback.json` / `test_frame_splitter.json` 是工具 config,不适用语音 e2e。
 
@@ -27,3 +29,4 @@
 
 - 系统语义(信号四态/路由/校验)的权威文档是 `technical_report/main.tex`,README 只放概览 bullet
 - 改动记入 `PROGRESS.md`(只保留最新版本要求,不堆历史)
+- 代码注释必须简洁、自包含:不写 "see X" 式交叉引用,不写"不再是什么"的历史对比;演进历史只进 PROGRESS.md

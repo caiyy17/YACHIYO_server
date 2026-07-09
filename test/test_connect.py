@@ -817,14 +817,14 @@ def test_basic_backpressure():
         (StreamProducer, 1, {
             "num_outputs": NUM_CHUNKS,
             "output_delay": 0.02,
-            "output_vars": [{"output_name": "text", "target": "1_text"}],
+            "output_vars": [{"source": "text", "target": "1_text"}],
             "next_nodes": [3],
         }),
         (SlowConsumer, 3, {
             "max_queue_size": MAX_Q,
             "process_time": 0.15,
-            "input_vars": [{"input_name": "text", "source": "1_text"}],
-            "output_vars": [{"output_name": "result", "target": "result"}],
+            "input_vars": [{"source": "1_text", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "result"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -882,14 +882,14 @@ def test_no_backpressure_baseline():
         (StreamProducer, 1, {
             "num_outputs": NUM_CHUNKS,
             "output_delay": 0.02,
-            "output_vars": [{"output_name": "text", "target": "1_text"}],
+            "output_vars": [{"source": "text", "target": "1_text"}],
             "next_nodes": [3],
         }),
         (SlowConsumer, 3, {
             # No max_queue_size — unbounded
             "process_time": 0.15,
-            "input_vars": [{"input_name": "text", "source": "1_text"}],
-            "output_vars": [{"output_name": "result", "target": "result"}],
+            "input_vars": [{"source": "1_text", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "result"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -935,14 +935,14 @@ def test_cancel_during_backpressure():
         (StreamProducer, 1, {
             "num_outputs": 50,
             "output_delay": 0.02,
-            "output_vars": [{"output_name": "text", "target": "1_text"}],
+            "output_vars": [{"source": "text", "target": "1_text"}],
             "next_nodes": [3],
         }),
         (SlowConsumer, 3, {
             "max_queue_size": 2,
             "process_time": 0.5,
-            "input_vars": [{"input_name": "text", "source": "1_text"}],
-            "output_vars": [{"output_name": "result", "target": "result"}],
+            "input_vars": [{"source": "1_text", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "result"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -988,14 +988,14 @@ def test_multiple_inputs():
         (StreamProducer, 1, {
             "num_outputs": NUM_CHUNKS,
             "output_delay": 0.02,
-            "output_vars": [{"output_name": "text", "target": "1_text"}],
+            "output_vars": [{"source": "text", "target": "1_text"}],
             "next_nodes": [3],
         }),
         (SlowConsumer, 3, {
             "max_queue_size": MAX_Q,
             "process_time": 0.08,
-            "input_vars": [{"input_name": "text", "source": "1_text"}],
-            "output_vars": [{"output_name": "result", "target": "result"}],
+            "input_vars": [{"source": "1_text", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "result"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -1052,21 +1052,21 @@ def test_three_stage_pipeline():
         (StreamProducer, 1, {
             "num_outputs": NUM_CHUNKS,
             "output_delay": 0.02,
-            "output_vars": [{"output_name": "text", "target": "1_text"}],
+            "output_vars": [{"source": "text", "target": "1_text"}],
             "next_nodes": [3],
         }),
         (SlowConsumer, 3, {
             # Mid-stage: fast processing, but blocks on output to stage 3
             "process_time": 0.02,
-            "input_vars": [{"input_name": "text", "source": "1_text"}],
-            "output_vars": [{"output_name": "result", "target": "3_result"}],
+            "input_vars": [{"source": "1_text", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "3_result"}],
             "next_nodes": [5],
         }),
         (SlowConsumer, 5, {
             "max_queue_size": MAX_Q,
             "process_time": 0.2,
-            "input_vars": [{"input_name": "text", "source": "3_result"}],
-            "output_vars": [{"output_name": "result", "target": "result"}],
+            "input_vars": [{"source": "3_result", "target": "text"}],
+            "output_vars": [{"source": "result", "target": "result"}],
             "next_nodes": [-1],
         }),
     ], logger)

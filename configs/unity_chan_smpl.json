@@ -6,14 +6,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio_file",
-                        "source": "audio_file"
+                        "source": "audio_file",
+                        "target": "audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "1_text"
                     }
                 ],
@@ -27,22 +27,27 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "1_text"
+                        "source": "1_text",
+                        "target": "prompt"
                     }
                 ],
-                "pass_vars": [],
+                "pass_vars": [
+                    {
+                        "source": "1_text",
+                        "target": "prompt"
+                    }
+                ],
                 "output_vars": [
                     {
-                        "output_name": "text",
+                        "source": "text",
                         "target": "2_text"
                     },
                     {
-                        "output_name": "action",
+                        "source": "action",
                         "target": "2_action"
                     },
                     {
-                        "output_name": "expression",
+                        "source": "expression",
                         "target": "2_expression"
                     }
                 ],
@@ -89,8 +94,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "2_expression"
+                        "source": "2_expression",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [
@@ -109,7 +114,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "3_expression"
                     }
                 ],
@@ -136,12 +141,12 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "text",
-                        "source": "3_text"
+                        "source": "3_text",
+                        "target": "text"
                     },
                     {
-                        "input_name": "action",
-                        "source": "3_action"
+                        "source": "3_action",
+                        "target": "action"
                     }
                 ],
                 "pass_vars": [
@@ -164,11 +169,11 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "text",
+                        "source": "text",
                         "target": "4_audio_text"
                     },
                     {
-                        "output_name": "action",
+                        "source": "action",
                         "target": "4_action"
                     }
                 ],
@@ -202,14 +207,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "4_action"
+                        "source": "4_action",
+                        "target": "prompt"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "motion",
+                        "source": "motion",
                         "target": "5_action"
                     }
                 ],
@@ -224,14 +229,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "text",
-                        "source": "4_audio_text"
+                        "source": "4_audio_text",
+                        "target": "text"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "audio_file",
+                        "source": "audio_file",
                         "target": "6_audio"
                     }
                 ],
@@ -246,12 +251,12 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio",
-                        "source": "6_audio"
+                        "source": "6_audio",
+                        "target": "audio"
                     },
                     {
-                        "input_name": "action",
-                        "source": "5_action"
+                        "source": "5_action",
+                        "target": "action"
                     }
                 ],
                 "pass_vars": [
@@ -274,11 +279,11 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "audio",
+                        "source": "audio",
                         "target": "audio_data"
                     },
                     {
-                        "output_name": "action",
+                        "source": "action",
                         "target": "action"
                     }
                 ],

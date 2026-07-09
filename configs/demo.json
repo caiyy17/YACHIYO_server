@@ -6,14 +6,14 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "audio_file",
-                        "source": "audio_file"
+                        "source": "audio_file",
+                        "target": "audio_file"
                     }
                 ],
                 "pass_vars": [],
                 "output_vars": [
                     {
-                        "output_name": "result",
+                        "source": "result",
                         "target": "1_text"
                     }
                 ],
@@ -27,14 +27,19 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "prompt",
-                        "source": "1_text"
+                        "source": "1_text",
+                        "target": "prompt"
                     }
                 ],
-                "pass_vars": [],
+                "pass_vars": [
+                    {
+                        "source": "1_text",
+                        "target": "prompt"
+                    }
+                ],
                 "output_vars": [
                     {
-                        "output_name": "text",
+                        "source": "text",
                         "target": "2_text"
                     }
                 ],
@@ -63,8 +68,8 @@
             "config": {
                 "input_vars": [
                     {
-                        "input_name": "text",
-                        "source": "2_text"
+                        "source": "2_text",
+                        "target": "text"
                     }
                 ],
                 "pass_vars": [
@@ -75,7 +80,7 @@
                 ],
                 "output_vars": [
                     {
-                        "output_name": "audio_file",
+                        "source": "audio_file",
                         "target": "audio_data"
                     }
                 ],
