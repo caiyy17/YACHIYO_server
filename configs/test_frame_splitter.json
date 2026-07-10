@@ -32,7 +32,6 @@
                     }
                 ],
                 "next_nodes": [-1],
-                "audio_sample_rate": 48000,
                 "audio_fps": 50,
                 "video_fps": 30,
                 "video_width": 320,

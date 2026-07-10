@@ -708,7 +708,6 @@ def run_single(args):
     WEBRTC_SERVER = args.server
     TEST_DURATION = args.duration
 
-    if args.sample_rate: SAMPLE_RATE = args.sample_rate
     if args.audio_ptime: AUDIO_PTIME = args.audio_ptime
     AUDIO_SAMPLES = int(SAMPLE_RATE * AUDIO_PTIME)
     AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
@@ -722,7 +721,7 @@ def run_single(args):
     data_fps = args.data_fps or 20
 
     # If custom params, generate matching pipeline config based on the base pipeline
-    if any([args.sample_rate, args.video_fps, args.video_width, args.video_height, args.data_fps]):
+    if any([args.audio_ptime, args.video_fps, args.video_width, args.video_height, args.data_fps]):
         # Load base pipeline config and patch FrameSplitter's params
         base_config_path = os.path.join(SCRIPT_DIR, "..", "configs", f"{args.pipeline}.json")
         with open(base_config_path) as f:
@@ -730,7 +729,6 @@ def run_single(args):
         # Find and patch FrameSplitter node
         for node in pipeline_config["pipeline"]:
             if node["function"] == "frame_splitter":
-                node["config"]["audio_sample_rate"] = SAMPLE_RATE
                 node["config"]["audio_fps"] = SAMPLE_RATE // AUDIO_SAMPLES
                 node["config"]["video_fps"] = VIDEO_FPS
                 node["config"]["video_width"] = VIDEO_WIDTH
@@ -740,7 +738,6 @@ def run_single(args):
         # Timing params also go to the top-level webrtc section (the
         # gateway's source); resolution stays client-side (offer body)
         webrtc_sec = dict(pipeline_config.get("webrtc") or {})
-        webrtc_sec["audio_sample_rate"] = SAMPLE_RATE
         webrtc_sec["audio_fps"] = SAMPLE_RATE // AUDIO_SAMPLES
         webrtc_sec["video_fps"] = VIDEO_FPS
         if args.data_fps:
@@ -1246,7 +1243,6 @@ def fs_build_frame_splitter(logger, config_overrides=None):
             {"source": "meta", "target": "meta"},
         ],
         "next_nodes": [-1],
-        "audio_sample_rate": 48000,
         "audio_fps": 50,
         "video_fps": 30,
         "video_width": 320,
@@ -1745,8 +1741,6 @@ def main():
                         help="[single] Base pipeline config name")
     parser.add_argument("--duration", type=int, default=TEST_DURATION,
                         help="[single] Test duration in seconds")
-    parser.add_argument("--sample-rate", type=int, default=None,
-                        help="[single] Override audio sample rate")
     parser.add_argument("--audio-ptime", type=float, default=None,
                         help="[single] Override audio packet time")
     parser.add_argument("--video-fps", type=int, default=None,

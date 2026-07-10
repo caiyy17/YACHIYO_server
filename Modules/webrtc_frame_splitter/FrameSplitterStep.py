@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ..base.BaseProcessingStep import BaseProcessingStep
 
-AUDIO_SAMPLE_RATE = 48000
+AUDIO_SAMPLE_RATE = 48000  # fixed by WebRTC: Opus runs at a 48kHz clock, not configurable
 AUDIO_FPS = 50  # 20ms audio frames
 VIDEO_FPS = 30
 DATA_FPS = 20
@@ -42,7 +42,6 @@ class FrameSplitterStep(BaseProcessingStep):
     def validate_config(cls, config):
         errors = super().validate_config(config)
         rates = {
-            "audio_sample_rate": config.get("audio_sample_rate", AUDIO_SAMPLE_RATE),
             "audio_fps": config.get("audio_fps", AUDIO_FPS),
             "video_fps": config.get("video_fps", VIDEO_FPS),
             "data_fps": config.get("data_fps", DATA_FPS),
@@ -51,10 +50,10 @@ class FrameSplitterStep(BaseProcessingStep):
             if not isinstance(v, int) or v <= 0:
                 errors.append(f"{name} must be a positive integer, got {v!r}")
                 return errors
-        if rates["audio_sample_rate"] % rates["audio_fps"] != 0:
+        if AUDIO_SAMPLE_RATE % rates["audio_fps"] != 0:
             errors.append(
-                f"audio_sample_rate {rates['audio_sample_rate']} is not "
-                f"divisible by audio_fps {rates['audio_fps']} — the audio "
+                f"audio_fps {rates['audio_fps']} does not divide the fixed "
+                f"{AUDIO_SAMPLE_RATE}Hz WebRTC sample rate — the audio "
                 f"frame must be a whole number of samples"
             )
         return errors
@@ -83,9 +82,10 @@ class FrameSplitterStep(BaseProcessingStep):
     """
 
     def custom_init(self):
-        # Per-lane config: <lane>_fps, plus audio_sample_rate and the video
-        # size; frame sizes and group layout are derived from these.
-        self.sample_rate = self.get_config("audio_sample_rate", AUDIO_SAMPLE_RATE)
+        # Per-lane config: <lane>_fps plus the video size; frame sizes and
+        # group layout are derived from these. The audio sample rate is
+        # fixed at 48kHz by WebRTC and is not a config key.
+        self.sample_rate = AUDIO_SAMPLE_RATE
         audio_fps = self.get_config("audio_fps", AUDIO_FPS)
         self.frame_samples = self.sample_rate // audio_fps
         self.video_fps = self.get_config("video_fps", VIDEO_FPS)

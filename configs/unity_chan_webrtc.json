@@ -1,10 +1,10 @@
 {
     "webrtc": {
-        "audio_sample_rate": 48000,
         "audio_fps": 50,
         "video_fps": 30,
         "data_fps": 20,
-        "startup_buffer": 2
+        "startup_buffer": 2,
+        "dc_offset_ms": 200
     },
     "pipeline": [
         {
@@ -50,8 +50,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [2],
-                "sample_rate": 48000
+                "next_nodes": [2]
             }
         },
         {
@@ -435,7 +434,6 @@
                 ],
                 "next_nodes": [-1],
                 "audio_fps": 50,
-                "audio_sample_rate": 48000,
                 "video_fps": 30,
                 "video_width": 1280,
                 "video_height": 720

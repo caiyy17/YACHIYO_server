@@ -5,7 +5,7 @@ import numpy as np
 
 from ..base.SpanProcessingStep import SpanProcessingStep
 
-SAMPLE_RATE = 48000  # WebRTC default sample rate
+SAMPLE_RATE = 48000  # fixed by WebRTC: Opus runs at a 48kHz clock, not configurable
 
 
 class AudioCollectorStep(SpanProcessingStep):
@@ -37,7 +37,7 @@ class AudioCollectorStep(SpanProcessingStep):
         # Requires config: catch_signals: ["recording_start", "recording_end"]
         # (NOT pass — this node re-emits them manually for custom ordering:
         # recording_end must go out BEFORE the assembled WAV)
-        self.sample_rate = self.get_config("sample_rate", SAMPLE_RATE)
+        self.sample_rate = SAMPLE_RATE
         self.audio_buffer = []
 
     def span_process(self, data, pass_data={}):
