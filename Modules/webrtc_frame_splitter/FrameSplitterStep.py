@@ -30,7 +30,7 @@ FONT_CANDIDATES = [
 
 class FrameSplitterStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["connection_start"]
-    REQUIRED_INPUTS = ["audio_data"]
+    REQUIRED_INPUTS = []  # at least one lane input, validated below
     EMIT_SIGNALS = ["meta"]  # pass_vars data shipped to the client
 
     @classmethod
@@ -41,6 +41,11 @@ class FrameSplitterStep(BaseProcessingStep):
     @classmethod
     def validate_config(cls, config):
         errors = super().validate_config(config)
+        if not config.get("input_vars"):
+            errors.append(
+                "at least one input must be declared: audio_data, "
+                "video_data, or a data-lane key"
+            )
         rates = {
             "audio_fps": config.get("audio_fps", AUDIO_FPS),
             "video_fps": config.get("video_fps", VIDEO_FPS),
@@ -65,16 +70,24 @@ class FrameSplitterStep(BaseProcessingStep):
     Paused until connection_start signal; pauses on connection_stop.
 
     Each tick outputs exactly one group:
-      - Audio group from TTS when available
-      - Default silence group when idle
+      - Content groups from input messages when available
+      - Default group (silence + idle-blue video) when idle
 
-    Signals (SoS, EoS, etc.) are buffered in order with audio groups
+    Lanes of a content message: audio_data (one WAV, split into PCM frames),
+    video_data (a frame list; slots past it repeat the message's last frame;
+    a message with no video gets green placeholders), every other input is
+    a data-lane per-frame list. A content group's missing audio is silence.
+
+    Signals (SoS, EoS, etc.) are buffered in order with the groups
     and flushed at tick boundaries to preserve ordering.
 
     Pass_vars data on an incoming message ships to the client as a "meta"
     signal (wire name from emit_signals config), interleaved in group order
     right before that message's audio groups. The group data lane is
     reserved for frame-aligned payloads.
+
+    add_frame_index (config, default off) overlays the running frame number
+    on every outgoing video frame — placeholders and real frames alike.
 
     Group size is calculated from GCD of audio/video/data frame rates
     (all configurable via config). Standard output format:
@@ -112,14 +125,16 @@ class FrameSplitterStep(BaseProcessingStep):
             if v.get("target") not in ("audio_data", "video_data")
         ]
 
-        # Pre-create background templates and font for per-frame numbered overlay
-        # (frames are rendered with the current counter at SEND time, not generation
-        # time, so cancel-clearing the buffer never leaves gaps in the emitted seq.)
+        # Pre-create background templates and font. Frames are rendered at
+        # SEND time (not generation time) with the current counter, so
+        # cancel-clearing the buffer never leaves gaps in the emitted seq.
+        self.add_frame_index = self.get_config("add_frame_index", False)
         self._idle_base = Image.new("RGB", (self.video_width, self.video_height), IDLE_COLOR)
         self._speak_base = Image.new("RGB", (self.video_width, self.video_height), SPEAK_COLOR)
         font_size = max(40, min(self.video_width, self.video_height) // 8)
         self._font = self._load_font(font_size)
         self._video_frame_counter = 0
+        self._marker_jpeg_cache = {}  # plain (un-numbered) placeholder JPEGs
 
         self._silence_audio = [
             base64.b64encode(
@@ -127,8 +142,9 @@ class FrameSplitterStep(BaseProcessingStep):
             ).decode("ascii")
         ] * self.audio_per_group
 
-        # Internal buffer: ("group", dict-with-video-markers) or ("signal", json_str)
-        # Video markers are strings "idle"/"speak"; JPEGs are rendered on pop.
+        # Internal buffer: ("group", dict) or ("signal", json_str). Video
+        # slots hold real b64 JPEG frames and/or "idle"/"speak" markers;
+        # markers are rendered to placeholder JPEGs on pop.
         self._group_buffer = deque()
         self._clock_running = False
 
@@ -154,36 +170,67 @@ class FrameSplitterStep(BaseProcessingStep):
                 continue
         return ImageFont.load_default()
 
-    def _render_jpeg_b64(self, kind, frame_num):
-        """Render a numbered frame. kind in {"idle","speak"}.
-        ~1-2ms per frame at 1280x720 on a modern CPU; called lazily at send time."""
-        base = self._speak_base if kind == "speak" else self._idle_base
-        img = base.copy()
+    def _draw_index(self, img, frame_num):
+        """Overlay the frame number, centered, black outline + white fill."""
         draw = ImageDraw.Draw(img)
         text = f"#{frame_num}"
-        # Center the text
         bbox = draw.textbbox((0, 0), text, font=self._font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         x = (self.video_width - tw) // 2 - bbox[0]
         y = (self.video_height - th) // 2 - bbox[1]
-        # Black outline (4-direction) + white fill for visibility on any background
         for dx, dy in ((-3, 0), (3, 0), (0, -3), (0, 3)):
             draw.text((x + dx, y + dy), text, fill=(0, 0, 0), font=self._font)
         draw.text((x, y), text, fill=(255, 255, 255), font=self._font)
+
+    @staticmethod
+    def _encode_jpeg_b64(img):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
+    def _render_placeholder(self, kind, frame_num):
+        """Placeholder JPEG for a marker ("idle" = blue, "speak" = green).
+        Numbered when add_frame_index; plain ones are rendered once and
+        cached (~1-2ms per numbered frame at 1280x720, at send time)."""
+        if self.add_frame_index:
+            img = (self._speak_base if kind == "speak"
+                   else self._idle_base).copy()
+            self._draw_index(img, frame_num)
+            return self._encode_jpeg_b64(img)
+        cached = self._marker_jpeg_cache.get(kind)
+        if cached is None:
+            cached = self._encode_jpeg_b64(
+                self._speak_base if kind == "speak" else self._idle_base)
+            self._marker_jpeg_cache[kind] = cached
+        return cached
+
+    def _number_real_frame(self, jpeg_b64, frame_num):
+        """add_frame_index on a real input frame: decode -> draw -> re-encode
+        (~1-2ms per 720p frame — enable the flag only when debugging)."""
+        img = Image.open(
+            io.BytesIO(base64.b64decode(jpeg_b64))).convert("RGB")
+        self._draw_index(img, frame_num)
+        return self._encode_jpeg_b64(img)
+
     def _render_group_videos(self, group_dict):
-        """Replace "idle"/"speak" markers with numbered JPEG frames, incrementing
-        the counter once per frame. Called at pop time so cancel never wastes ids."""
+        """Resolve a group's video slots at pop time: markers become
+        placeholder JPEGs, real frames pass through (numbered when
+        add_frame_index). The counter advances once per frame at SEND time,
+        so cancel-clearing the buffer never leaves gaps in the emitted seq."""
         for target in self.output_dict.get("video", []):
-            markers = group_dict.get(target)
-            if not isinstance(markers, list):
+            items = group_dict.get(target)
+            if not isinstance(items, list):
                 continue
             rendered = []
-            for marker in markers:
-                rendered.append(self._render_jpeg_b64(marker, self._video_frame_counter))
+            for item in items:
+                if item in ("idle", "speak"):
+                    rendered.append(self._render_placeholder(
+                        item, self._video_frame_counter))
+                elif self.add_frame_index:
+                    rendered.append(self._number_real_frame(
+                        item, self._video_frame_counter))
+                else:
+                    rendered.append(item)
                 self._video_frame_counter += 1
             group_dict[target] = rendered
 
@@ -420,34 +467,39 @@ class FrameSplitterStep(BaseProcessingStep):
 
     def _split_to_buffer(self, data, pass_data):
         """Buffer one message: its pass_vars data as a "meta" signal, then a
-        run of groups. Audio (audio_data) is split into audio frames; every
-        data-lane input (any input other than audio_data/video_data — e.g.
-        motion, expression) is a per-frame list, merged per frame into the
-        data slots. Frames are opaque to the splitter — no schema knowledge.
+        run of groups. Audio (audio_data) is split into audio frames;
+        video_data is a frame list; every other input (e.g. motion,
+        expression) is a data-lane per-frame list, merged per frame into
+        the data slots. Frames are opaque to the splitter — no schema
+        knowledge.
 
-        The run spans max(audio groups, data groups): a group past the audio
-        gets silence audio (so a data-only message — e.g. motion outlasting
-        speech — still emits groups), and a data slot past its inputs is None.
+        The run spans max(audio, video, data groups): a group past the audio
+        gets silence, video slots past the input repeat the message's last
+        frame (green placeholders when the message has no video), and a data
+        slot past its inputs is None.
         Data slot f = {target: list_f for each data-lane input that has frame f}."""
         self._buffer_meta_signal(pass_data)
 
         audio_data = data.get("audio_data", "")
         pcm_frames = self._decode_and_split(audio_data) if audio_data else []
 
+        video_frames = data.get("video_data") or []
+
         # per-frame lists for the data lane, keyed by input target name
         lane = {k: (data.get(k) or []) for k in self.data_lane_keys}
         max_frames = max((len(v) for v in lane.values()), default=0)
 
-        apg, dpg = self.audio_per_group, self.data_per_group
+        apg, vpg, dpg = (self.audio_per_group, self.video_per_group,
+                         self.data_per_group)
         n_audio_groups = (len(pcm_frames) + apg - 1) // apg
+        n_video_groups = (len(video_frames) + vpg - 1) // vpg
         n_data_groups = (max_frames + dpg - 1) // dpg
-        n_groups = max(n_audio_groups, n_data_groups)
+        n_groups = max(n_audio_groups, n_video_groups, n_data_groups)
         if n_groups == 0:
             return  # nothing shippable
 
         for g in range(n_groups):
             group_audio = pcm_frames[g * apg:(g + 1) * apg]
-            has_audio = len(group_audio) > 0
             # pad to a full group with silence (also covers groups past the audio)
             while len(group_audio) < apg:
                 group_audio.append(np.zeros(self.frame_samples, dtype=np.int16))
@@ -456,7 +508,16 @@ class FrameSplitterStep(BaseProcessingStep):
                 base64.b64encode(f.tobytes()).decode("ascii")
                 for f in group_audio
             ]
-            video_list = [("speak" if has_audio else "idle")] * self.video_per_group
+
+            # video: real frames while the message has them, then repeat the
+            # message's last frame; a message with no video at all gets
+            # "speak" (green) placeholders
+            if video_frames:
+                video_list = video_frames[g * vpg:(g + 1) * vpg]
+                while len(video_list) < vpg:
+                    video_list.append(video_frames[-1])
+            else:
+                video_list = ["speak"] * vpg
 
             # data slots: for each frame index, merge the f-th frame of every
             # data-lane input; None if no input has that frame

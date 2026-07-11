@@ -21,6 +21,7 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 class ReceiverStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["dispatch_start", "dispatch_end"]
+    LOG_CONTENT = False  # branch payloads are b64 audio / pose data
 
     """Requires config: catch_signals: ["dispatch_start", "dispatch_end"]."""
 

@@ -33,10 +33,13 @@ Standard frame format:
      "data": [{...}, null], "timestamp": ...}
     {"signal": "recording_start/recording_end", "timestamp": ...}
   Input uses the same group structure as output.
-  Signals are standalone WebSocket messages (not grouped). Every incoming
-  DataChannel message (signal or data) is held dc_offset after arrival: due
-  signals flush at the next group boundary (FIFO), due data items are packed
-  into the group's data lane.
+  Signals are standalone WebSocket messages (not grouped): held
+  assembler_offset + dc_offset after arrival, due ones flush at the next
+  group boundary (FIFO).
+  Data items are stamped with arrival time and window-matched into the
+  group carrying media of the same client-side moment (window lags the
+  tick grid by dc_offset); overflow/late items are dropped, gaps repeat
+  the last item — same semantics as the video lane.
   Output (pipeline → WebRTC):
     {"audio": ["<pcm1>", ...], "video": ["<jpeg1>", ...],
      "data": [{...}, null]}
@@ -50,9 +53,10 @@ Session params:
   "webrtc" section of the client's pipeline config, fetched from the main
   server at offer time — they must agree with the FrameSplitter's group
   packing, so the config file is the single source. Gateway-only tunables
-  (startup_buffer / assembler_offset_ms / dc_offset_ms) live in the same
-  section but have no splitter counterpart. The audio sample rate is not
-  configurable: WebRTC/Opus fixes it at 48kHz.
+  (startup_buffer / assembler_offset_ms and the trims audio_offset_ms /
+  video_offset_ms / dc_offset_ms / cancel_offset_ms, all defaulting to 0)
+  live in the same section but have no splitter counterpart. The audio
+  sample rate is not configurable: WebRTC/Opus fixes it at 48kHz.
   Resolution (video_width / video_height) is the client's own choice,
   passed in the offer body; the video track rescales every outgoing frame to
   it regardless of what the pipeline renders.
@@ -98,8 +102,10 @@ DEFAULT_DATA_FPS = 20
 DEFAULT_STARTUP_BUFFER = 2
 DEFAULT_CONSUMER_OFFSET = 0.005   # consumer fills buffers 5ms before tracks consume
 DEFAULT_ASSEMBLER_OFFSET = 0.1    # assembler waits this long past each group end
-DEFAULT_DC_OFFSET = 0.1           # DataChannel msgs held this long (media lags the DC)
-CANCEL_TIMESTAMP_OFFSET = -0.15   # cancel stamped back past the group-boundary race
+DEFAULT_AUDIO_OFFSET = 0.0        # per-lane window trim beyond the tick grid
+DEFAULT_VIDEO_OFFSET = 0.0
+DEFAULT_DC_OFFSET = 0.0           # data window lag; signal hold adds assembler_offset
+DEFAULT_CANCEL_OFFSET = 0         # added to cancel's stamp; 0: FIFO flush order protects the paired start
 
 logger = logging.getLogger("server_webrtc")
 stats_logger = logging.getLogger("webrtc_stats")
@@ -384,7 +390,10 @@ class WebRTCSession:
                  startup_buffer=DEFAULT_STARTUP_BUFFER,
                  consumer_offset=DEFAULT_CONSUMER_OFFSET,
                  assembler_offset=DEFAULT_ASSEMBLER_OFFSET,
+                 audio_offset=DEFAULT_AUDIO_OFFSET,
+                 video_offset=DEFAULT_VIDEO_OFFSET,
                  dc_offset=DEFAULT_DC_OFFSET,
+                 cancel_offset=DEFAULT_CANCEL_OFFSET,
                  on_session_end=None):
         self.client_id = client_id
         self.main_server_url = main_server_url
@@ -410,14 +419,19 @@ class WebRTCSession:
         self.data_per_group = data_fps // group_fps
         self.group_period = 1.0 / group_fps
 
-        # Startup buffer and timing offsets
+        # Startup buffer and timing offsets. Per-lane offsets are trims
+        # beyond the tick grid: audio/video shift their PTS windows, dc
+        # shifts the data window and adds to the signal hold (total hold =
+        # assembler_offset + dc_offset). The signal hold must exceed the
+        # media path's total lag (arrival lead ~80ms + assembler_offset +
+        # one group period) for e.g. recording_end to land after the tail.
         self.startup_buffer = startup_buffer
         self.consumer_offset = consumer_offset
         self.assembler_offset = assembler_offset
-        # Must exceed the media path's total lag (arrival lead ~80ms +
-        # assembler_offset + one group period) for a held DC message to land
-        # after the media it refers to (e.g. recording_end after the tail)
+        self.audio_offset = audio_offset
+        self.video_offset = video_offset
         self.dc_offset = dc_offset
+        self.cancel_offset = cancel_offset
 
         logger.info(
             f"[{client_id}] Session params: "
@@ -441,9 +455,10 @@ class WebRTCSession:
         self._input_audio_buffer = deque()   # (pts, b64_pcm) from audio track
         self._input_video_buffer = deque()   # (pts, b64_jpeg) from video track
         self._last_video_frame = None        # Last received video frame (for drop fill)
-        self._input_data_buffer = deque()    # (due_time, data dict) from DataChannel
-        # Client signals waiting for next group boundary: (due_time, raw_msg).
-        # Every DataChannel message is due dc_offset after arrival.
+        self._input_data_buffer = deque()    # (arrival_ts, data dict) from DataChannel
+        self._last_data_item = None          # Last received data item (for gap fill)
+        # Client signals waiting for next group boundary: (due_time, raw_msg),
+        # due dc_offset after arrival.
         self._input_signal_buffer = deque()
         self.cancel_timestamp = 0            # Output-side cancel filtering
         self._audio_pts_origin = None        # First audio PTS (for gap detection)
@@ -616,18 +631,21 @@ class WebRTCSession:
 
     async def _forward_dc_message(self, raw_msg):
         """Handle DataChannel message from client.
-        Both lanes are held dc_offset: due signals flush at group boundaries
-        (FIFO); due data items become eligible for group packing."""
+        Signals are held assembler_offset + dc_offset and flush at group
+        boundaries (FIFO). Data items are stamped with arrival time and
+        window-matched into the group carrying media of the same
+        client-side moment."""
         try:
             msg = json.loads(raw_msg)
         except json.JSONDecodeError:
             return
 
-        due = time.time() + self.dc_offset
         if msg.get("signal"):
-            self._input_signal_buffer.append((due, raw_msg))
+            self._input_signal_buffer.append(
+                (time.time() + self.assembler_offset + self.dc_offset,
+                 raw_msg))
         else:
-            self._input_data_buffer.append((due, msg))
+            self._input_data_buffer.append((time.time(), msg))
 
     async def _relay_audio_input(self, track):
         """Receive audio frames and buffer with PTS for group assembler."""
@@ -674,19 +692,41 @@ class WebRTCSession:
         silence_b64 = base64.b64encode(
             np.zeros(self.audio_samples, dtype=np.int16).tobytes()
         ).decode("ascii")
+        # Healthy margin band is (0, 2x offset). Correction targets carry
+        # the same half-frame phase (and per-lane trim) the alignment
+        # origin establishes, so a re-anchor lands frames at window
+        # centers too, not on boundaries.
+        margin_upper_ms = 2 * self.assembler_offset * 1000
+        a_target_margin = (int((self.assembler_offset + self.audio_offset)
+                               * self.sample_rate)
+                           - self.audio_samples // 2)
+        v_target_margin = (int((self.assembler_offset + self.video_offset)
+                               * VIDEO_CLOCK_RATE)
+                           - video_pts_per_frame // 2)
 
-        # Wait for both audio and video to have data before starting
+        # Wait until both lanes hold one full group of frames before starting
         while self.connected:
-            if self._input_audio_buffer and self._input_video_buffer:
+            if (len(self._input_audio_buffer) >= self.audio_per_group
+                    and len(self._input_video_buffer) >= self.video_per_group):
                 break
             await asyncio.sleep(0.005)
         if not self.connected:
             return
 
-        # Align to the LATEST frames in buffer (not oldest) so wall time
-        # matches current content, not stale frames from before pipeline was ready
-        audio_pts_origin = self._input_audio_buffer[-1][0]
-        video_pts_origin = self._input_video_buffer[-1][0]
+        # Align at the moment both lanes hold a full group: each origin is
+        # placed so group 0 is exactly the group already buffered — the
+        # first tick then waits only assembler_offset instead of offset +
+        # one group period. Boundaries are pulled back a further half frame
+        # so nominal frame instants sit at window centers: sender-side ms
+        # quantization of pts (e.g. video 2970/3060 around the 3000 grid)
+        # then never flips a frame across a window boundary. Per-lane
+        # offsets shift each window by the lane's trim.
+        audio_pts_origin = (self._input_audio_buffer[-1][0]
+                            + self.audio_samples // 2 - group_audio_span
+                            - int(self.audio_offset * self.sample_rate))
+        video_pts_origin = (self._input_video_buffer[-1][0]
+                            + video_pts_per_frame // 2 - group_video_span
+                            - int(self.video_offset * VIDEO_CLOCK_RATE))
         wall_origin = time.time()
         # Clear data buffer — discard anything that arrived before alignment
         self._input_data_buffer.clear()
@@ -706,15 +746,18 @@ class WebRTCSession:
         _audio_stale = 0     # stale frames discarded
         _video_fill = 0      # video slots filled with last frame
         _video_real = 0      # real video frames used
+        _data_real = 0       # data items window-matched into slots
+        _data_fill = 0       # data slots filled with last item (or None)
+        _data_stale = 0      # data items dropped (window passed / overflow)
         _a_margin_min_ms = float('inf')   # min(latest_audio_pts - audio_pts_end) in ms
         _a_margin_max_ms = float('-inf')
         _v_margin_min_ms = float('inf')
         _v_margin_max_ms = float('-inf')
 
         while self.connected:
-            # Wait for group to complete before processing:
-            # (group_index+1)*period = group end time, +offset = extra margin
-            target = wall_origin + (group_index + 1) * self.group_period + self.assembler_offset
+            # Group k's frames are due at k*period (group 0 was pre-buffered
+            # at alignment); +offset = arrival margin
+            target = wall_origin + group_index * self.group_period + self.assembler_offset
             wait = target - time.time()
             if wait > 0:
                 await asyncio.sleep(wait)
@@ -729,14 +772,9 @@ class WebRTCSession:
             video_pts_start = video_pts_origin + group_index * group_video_span
             video_pts_end = video_pts_start + group_video_span
 
-            # Measure margin before processing (save for post-process correction).
-            # Healthy margin band is (0, 2x offset) — symmetric around the
-            # target margin (= offset); a correction re-centers to the target.
+            # Measure margin before processing (save for post-process correction)
             a_m = None
             v_m = None
-            margin_upper_ms = 2 * self.assembler_offset * 1000
-            a_target_margin = int(self.assembler_offset * self.sample_rate)
-            v_target_margin = int(self.assembler_offset * VIDEO_CLOCK_RATE)
             saved_a_latest = self._input_audio_buffer[-1][0] if self._input_audio_buffer else None
             saved_v_latest = self._input_video_buffer[-1][0] if self._input_video_buffer else None
             if saved_a_latest is not None:
@@ -808,15 +846,36 @@ class WebRTCSession:
                 video_group.append(self._last_video_frame)
                 _video_fill += 1
 
-            # === Data: take due items (dc_offset hold), arrival order ===
-            data_group = []
-            now = time.time()
-            for _ in range(self.data_per_group):
-                if self._input_data_buffer and \
-                        self._input_data_buffer[0][0] <= now:
-                    data_group.append(self._input_data_buffer.popleft()[1])
+            # === Data: window-matched by arrival time (video-like: stale
+            # dropped, overflow dropped, gaps filled with the last item).
+            # The window lags the tick grid by dc_offset, so a data item
+            # rides the group carrying media captured at the same
+            # client-side moment and stays level with same-moment signals
+            # (held assembler_offset + dc_offset). ===
+            data_win_end = wall_origin + group_index * self.group_period \
+                - self.dc_offset
+            data_win_start = data_win_end - self.group_period
+            while self._input_data_buffer:
+                ts, _ = self._input_data_buffer[0]
+                if ts < data_win_start:
+                    self._input_data_buffer.popleft()
+                    _data_stale += 1
                 else:
-                    data_group.append(None)
+                    break
+            data_group = []
+            while len(data_group) < self.data_per_group \
+                    and self._input_data_buffer:
+                ts, item = self._input_data_buffer[0]
+                if ts < data_win_end:
+                    self._input_data_buffer.popleft()
+                    data_group.append(item)
+                    self._last_data_item = item
+                    _data_real += 1
+                else:
+                    break
+            while len(data_group) < self.data_per_group:
+                data_group.append(self._last_data_item)
+                _data_fill += 1
 
             # === Flush pending signals at group boundary ===
             # Timestamp set at send time, same basis as group timestamp.
@@ -827,7 +886,7 @@ class WebRTCSession:
                 sig = json.loads(self._input_signal_buffer.popleft()[1])
                 sig["timestamp"] = time.time()
                 if sig.get("signal") == "cancel":
-                    sig["timestamp"] += CANCEL_TIMESTAMP_OFFSET
+                    sig["timestamp"] += self.cancel_offset
                     self.cancel_timestamp = sig["timestamp"]
                 if self.ws:
                     await self.ws.send(json.dumps(sig))
@@ -879,6 +938,8 @@ class WebRTCSession:
                     f"in_vbuf={len(self._input_video_buffer)} "
                     f"audio_match={_audio_match} silence={_audio_silence} stale={_audio_stale} "
                     f"video_real={_video_real} video_fill={_video_fill} "
+                    f"data_real={_data_real} data_fill={_data_fill} "
+                    f"data_stale={_data_stale} "
                     f"a_margin=[{_a_margin_min_ms:.1f},{_a_margin_max_ms:.1f}]ms "
                     f"v_margin=[{_v_margin_min_ms:.1f},{_v_margin_max_ms:.1f}]ms "
                     f"av_gap={av_gap_str}ms "
@@ -890,6 +951,9 @@ class WebRTCSession:
                 _audio_stale = 0
                 _video_real = 0
                 _video_fill = 0
+                _data_real = 0
+                _data_fill = 0
+                _data_stale = 0
                 _a_margin_min_ms = float('inf')
                 _a_margin_max_ms = float('-inf')
                 _v_margin_min_ms = float('inf')
@@ -1057,27 +1121,60 @@ class WebRTCServer:
         # interval of arrival quantization per lane, else the assembler
         # corrects (and shifts the PTS origin) on nearly every tick. The
         # default is checked too: very low lane fps needs an explicit key.
-        offset_ms = sec.get("assembler_offset_ms",
-                            DEFAULT_ASSEMBLER_OFFSET * 1000)
+        assembler_ms = sec.get("assembler_offset_ms",
+                               DEFAULT_ASSEMBLER_OFFSET * 1000)
         min_ms = max(1000 / audio_fps, 1000 / rates["video_fps"])
-        if isinstance(offset_ms, bool) or \
-                not isinstance(offset_ms, (int, float)) or \
-                not isfinite(offset_ms) or offset_ms < min_ms:
+        if isinstance(assembler_ms, bool) or \
+                not isinstance(assembler_ms, (int, float)) or \
+                not isfinite(assembler_ms) or assembler_ms < min_ms:
             return web.json_response(
                 {"error": f"webrtc.assembler_offset_ms must be a finite "
                           f"number >= one frame interval ({min_ms:.1f}ms),"
-                          f" got {offset_ms!r}"}, status=400)
-        session_kwargs["assembler_offset"] = offset_ms / 1000
-        if "dc_offset_ms" in sec:
-            offset_ms = sec["dc_offset_ms"]
-            if isinstance(offset_ms, bool) or \
-                    not isinstance(offset_ms, (int, float)) or \
-                    not isfinite(offset_ms) or offset_ms < 0:
+                          f" got {assembler_ms!r}"}, status=400)
+        session_kwargs["assembler_offset"] = assembler_ms / 1000
+        # Per-lane trims beyond the tick grid (default 0): audio/video
+        # shift their PTS windows, dc shifts the data window and adds to
+        # the signal hold (total hold = assembler_offset + dc_offset).
+        for cfg_key, kwarg, frame_ms in (
+                ("audio_offset_ms", "audio_offset", 1000 / audio_fps),
+                ("video_offset_ms", "video_offset",
+                 1000 / rates["video_fps"]),
+                ("dc_offset_ms", "dc_offset", None)):
+            lane_ms = sec.get(cfg_key, 0)
+            if isinstance(lane_ms, bool) or \
+                    not isinstance(lane_ms, (int, float)) or \
+                    not isfinite(lane_ms):
                 return web.json_response(
-                    {"error": f"webrtc.dc_offset_ms must be a finite "
-                              f"non-negative number, got {offset_ms!r}"},
-                    status=400)
-            session_kwargs["dc_offset"] = offset_ms / 1000
+                    {"error": f"webrtc.{cfg_key} must be a finite number, "
+                              f"got {lane_ms!r}"}, status=400)
+            if frame_ms is None:
+                # dc: signal hold (assembler + dc) must stay non-negative
+                if assembler_ms + lane_ms < 0:
+                    return web.json_response(
+                        {"error": f"webrtc.{cfg_key} {lane_ms!r} makes the "
+                                  f"signal hold negative (assembler_offset "
+                                  f"{assembler_ms}ms + dc)"}, status=400)
+            else:
+                # audio/video: margin target (assembler + trim − half a
+                # frame) must stay inside the correction band
+                target_ms = assembler_ms + lane_ms - frame_ms / 2
+                if not (0 < target_ms < 2 * assembler_ms):
+                    return web.json_response(
+                        {"error": f"webrtc.{cfg_key} {lane_ms!r} puts the "
+                                  f"margin target ({target_ms:.1f}ms) outside "
+                                  f"(0, {2 * assembler_ms:.0f}ms)"},
+                        status=400)
+            session_kwargs[kwarg] = lane_ms / 1000
+        # Signed trim added to cancel's flush stamp (no semantic guard:
+        # backdating widens the kill range, 0 relies on FIFO order)
+        cancel_ms = sec.get("cancel_offset_ms", DEFAULT_CANCEL_OFFSET * 1000)
+        if isinstance(cancel_ms, bool) or \
+                not isinstance(cancel_ms, (int, float)) or \
+                not isfinite(cancel_ms):
+            return web.json_response(
+                {"error": f"webrtc.cancel_offset_ms must be a finite number,"
+                          f" got {cancel_ms!r}"}, status=400)
+        session_kwargs["cancel_offset"] = cancel_ms / 1000
         # resolution is the client's own choice
         for key in ("video_width", "video_height"):
             if key in body:

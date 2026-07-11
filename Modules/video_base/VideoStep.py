@@ -102,7 +102,8 @@ class VideoStep(BaseProcessingStep):
                 continue
             output_data = {}
             self.add_output(output_data, "video", chunk)
+            # stream chunks carry b64 frames — never log the payload
             self.output_to_queue(output_data, pass_data,
-                                 is_add_pass_data=False)
+                                 is_add_pass_data=False, is_log=False)
         self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

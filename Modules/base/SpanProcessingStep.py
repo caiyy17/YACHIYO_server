@@ -116,7 +116,8 @@ class SpanProcessingStep(BaseProcessingStep):
                 # Normal messages: filter through input_vars/pass_vars
                 filtered_data = self.extract_input_data(data)
                 pass_data = self.extract_pass_data(data)
-                self.logger.info(f"processing data: {filtered_data}")
+                if self.LOG_CONTENT:
+                    self.logger.info(f"processing data: {filtered_data}")
                 self.span_process(filtered_data, pass_data)
 
                 # Don't reset current_timestamp — span_process manages it

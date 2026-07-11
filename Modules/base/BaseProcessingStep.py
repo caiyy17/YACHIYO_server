@@ -39,6 +39,9 @@ class BaseProcessingStep:
     # links between nodes surface at runtime via the four-state signal rules.
     REQUIRED_CATCH_SIGNALS = []
     REQUIRED_INPUTS = []
+    # Modules on a constant content stream (e.g. 10 audio chunks/s) set this
+    # False: per-message content logs are suppressed, signal logs remain.
+    LOG_CONTENT = True
 
     @classmethod
     def required_catch_signals(cls, config):
@@ -328,7 +331,8 @@ class BaseProcessingStep:
                 # Normal messages: filter through input_vars/pass_vars
                 filtered_data = self.extract_input_data(data)
                 pass_data = self.extract_pass_data(data)
-                self.logger.info(f"processing data: {filtered_data}")
+                if self.LOG_CONTENT:
+                    self.logger.info(f"processing data: {filtered_data}")
                 self.process(filtered_data, pass_data)
                 self.current_timestamp = None
             except queue.Empty:
