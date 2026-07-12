@@ -285,9 +285,9 @@ class FrameSplitterStep(BaseProcessingStep):
             if signal in self.pass_signal_set:
                 self._relay_caught(data, signal)
             else:
-                self.logger.error(
-                    f"undeclared/uncatchable signal '{signal}' at paused "
-                    f"splitter; dropping"
+                self.logger.warning(
+                    f"undeclared signal '{signal}' at paused splitter; "
+                    f"dropped"
                 )
 
     def custom_cancel(self, cancel_message):
@@ -415,9 +415,10 @@ class FrameSplitterStep(BaseProcessingStep):
                     self._group_buffer.append(("signal", json.dumps(data)))
                     self.current_timestamp = ts
                 else:
-                    self.logger.error(
-                        f"undeclared signal '{signal}' at splitter; dropping "
-                        f"— declare it in catch_signals or pass_signals"
+                    self.logger.warning(
+                        f"undeclared signal '{signal}' at splitter; dropped "
+                        f"(declare it in catch_signals or pass_signals to "
+                        f"handle or forward)"
                     )
                 return
 

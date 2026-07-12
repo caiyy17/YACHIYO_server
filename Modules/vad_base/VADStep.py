@@ -46,7 +46,6 @@ class VADStep(SpanProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["recording_start", "recording_end"]
     REQUIRED_INPUTS = ["audio_data"]
     EMIT_SIGNALS = ["vad_start", "vad_end"]
-    LOG_CONTENT = False  # 10 chunks/s of b64 WAV — signals still log
 
     @classmethod
     def validate_config(cls, config):
@@ -234,7 +233,7 @@ class VADStep(SpanProcessingStep):
             self.add_output(output_data, "audio_file", self._pcm_to_wav(pcm))
             segment_pass = dict(self._start_pass)
             segment_pass["timestamp"] = self._mark_ts
-            self.output_to_queue(output_data, segment_pass, is_log=False)
+            self.output_to_queue(output_data, segment_pass, log_level=0)
         self.end_span()
         self._reset_turn()
 
@@ -242,7 +241,7 @@ class VADStep(SpanProcessingStep):
         output_data = {}
         self.add_output(output_data, "audio_file", self._pcm_to_wav(pcm))
         self.output_to_queue(output_data, {"timestamp": self._mark_ts},
-                             is_add_pass_data=False, is_log=False)
+                             is_add_pass_data=False, log_level=0)
 
     def _pcm_to_wav(self, pcm):
         bio = io.BytesIO()

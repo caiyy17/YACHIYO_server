@@ -7,19 +7,33 @@ MESSAGE_MAX_LENGTH = 200
 
 
 class CustomLogger:
-    def __init__(self, logger, name):
+    """Name-prefixed, truncating logger with per-message verbosity levels.
+    A message prints when its level >= the pipeline's __debug_level
+    threshold. Defaults: info 1, warning 5, error 10; per-chunk stream
+    logs pass level=0, so the default threshold (1) hides them and
+    __debug_level: 0 shows everything."""
+
+    def __init__(self, logger, name, threshold=1):
         self.logger = logger
         self.name = name
+        self.threshold = threshold
 
-    def info(self, message, cut=True):
+    def _format(self, message, cut):
         if cut and len(message) > MESSAGE_MAX_LENGTH:
             message = message[:MESSAGE_MAX_LENGTH] + "..."
-        self.logger.info(f"{self.name}: {message}")
+        return f"{self.name}: {message}"
 
-    def error(self, message, cut=True):
-        if cut and len(message) > MESSAGE_MAX_LENGTH:
-            message = message[:MESSAGE_MAX_LENGTH] + "..."
-        self.logger.error(f"{self.name}: {message}")
+    def info(self, message, cut=True, level=1):
+        if level >= self.threshold:
+            self.logger.info(self._format(message, cut))
+
+    def warning(self, message, cut=True, level=5):
+        if level >= self.threshold:
+            self.logger.warning(self._format(message, cut))
+
+    def error(self, message, cut=True, level=10):
+        if level >= self.threshold:
+            self.logger.error(self._format(message, cut))
 
 
 class BaseProcessingStep:
@@ -39,9 +53,11 @@ class BaseProcessingStep:
     # links between nodes surface at runtime via the four-state signal rules.
     REQUIRED_CATCH_SIGNALS = []
     REQUIRED_INPUTS = []
-    # Modules on a constant content stream (e.g. 10 audio chunks/s) set this
-    # False: per-message content logs are suppressed, signal logs remain.
-    LOG_CONTENT = True
+    # Verbosity level of per-message input logs ("processing data"):
+    # 0 = hidden at the default threshold (outputs, signals and
+    # milestones still log at 1); raise per module if its input is
+    # worth recording.
+    CONTENT_LOG_LEVEL = 0
 
     @classmethod
     def required_catch_signals(cls, config):
@@ -190,6 +206,12 @@ class BaseProcessingStep:
         self.current_timestamp = None
         self.kill_event = kill_event
         self.config = config or {}  # Mutable settings, defaults to empty dict
+        # Pipeline-wide log threshold (config top-level __debug_level,
+        # injected per node at init): messages print when their level >=
+        # this. 0 shows per-chunk stream logs, 1 (default) hides them,
+        # 5/10 keep only warnings/errors.
+        self.debug_level = int(self.config.get("__debug_level", 1) or 0)
+        self.logger.threshold = self.debug_level
         self.reserved_input_vars = [
             "destination",
             "signal",
@@ -297,7 +319,8 @@ class BaseProcessingStep:
                 #   catch only        -> consume (terminate)
                 #   catch + pass      -> consume, then relay (renamed)
                 #   pass only         -> relay (renamed), no processing
-                #   undeclared        -> wiring error: drop loudly
+                #   undeclared        -> warn + drop (a signal addressed to
+                #                        a node that doesn't want it dies here)
                 # This applies to directed signals too (destination surviving
                 # here equals self.index): the relayed copy is re-addressed to
                 # this node's first edge, so signals travel edge by edge
@@ -320,10 +343,11 @@ class BaseProcessingStep:
                     if signal in self.pass_signal_set:
                         self._relay_caught(data, signal)
                     elif not caught:
-                        self.logger.error(
+                        self.logger.warning(
                             f"undeclared signal '{signal}' at node "
-                            f"{self.index}; dropping — declare it in "
-                            f"catch_signals or pass_signals"
+                            f"{self.index}; dropped (declare it in "
+                            f"catch_signals or pass_signals to handle "
+                            f"or forward)"
                         )
                     self.current_timestamp = None
                     continue
@@ -331,8 +355,8 @@ class BaseProcessingStep:
                 # Normal messages: filter through input_vars/pass_vars
                 filtered_data = self.extract_input_data(data)
                 pass_data = self.extract_pass_data(data)
-                if self.LOG_CONTENT:
-                    self.logger.info(f"processing data: {filtered_data}")
+                self.logger.info(f"processing data: {filtered_data}",
+                                 level=self.CONTENT_LOG_LEVEL)
                 self.process(filtered_data, pass_data)
                 self.current_timestamp = None
             except queue.Empty:
@@ -484,7 +508,7 @@ class BaseProcessingStep:
         is_add_destination=True,
         destination_index=0,
         is_add_pass_data=True,
-        is_log=True,
+        log_level=1,
         direct_send=False,
     ):
         if is_add_destination:
@@ -496,12 +520,12 @@ class BaseProcessingStep:
                 data["timestamp"] = pass_data["timestamp"]
 
         if direct_send:
-            if is_log:
-                self.logger.info(f"directly send data: {data}")
+            self.logger.info(f"directly send data: {data}",
+                             level=log_level)
             self.send_queue.put(json.dumps(data))
         else:
-            if is_log:
-                self.logger.info(f"output data: {data}")
+            self.logger.info(f"output data: {data}",
+                             level=log_level)
             self.output_queue.put(json.dumps(data))
         return
 

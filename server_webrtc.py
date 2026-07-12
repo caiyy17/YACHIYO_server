@@ -17,7 +17,8 @@ Audio-Video-Data Synchronization:
      "data": [{...}, null]}
 
   A group consumer task runs at group_fps:
-    - Dequeue one pipeline group, or fill with empty data (silence/black/null)
+    - Dequeue one pipeline group when available; on underrun the send
+      points fall back themselves (audio silence / idle frame / {})
     - Fill audio/video/data buffers atomically from the same group
   Audio/video/data consumers independently pop from their buffers at their own fps.
 
@@ -142,15 +143,16 @@ class GroupDispatcher:
         self._data_per_group = data_per_group
 
     def fill_next_group(self, cancel_timestamp=0):
-        """Dequeue one media group into buffers, or fill with empty data.
+        """Dequeue one media group into buffers when available.
         Signal-only messages fire callback and are skipped.
         Groups with timestamp < cancel_timestamp are discarded."""
         while True:
             try:
                 msg = self._group_queue.get_nowait()
             except Empty:
-                # No group available — fill with empty data
-                self._fill_empty()
+                # No group available — leave the buffers as they are; the
+                # send points fall back on their own (audio: silence,
+                # video: idle frame, data: {})
                 return False
 
             # Discard cancelled groups
@@ -196,15 +198,6 @@ class GroupDispatcher:
             if has_media:
                 return True
             # Signal-only message — continue to next
-
-    def _fill_empty(self):
-        """Fill all buffers with one group of empty data."""
-        for _ in range(self._audio_per_group):
-            self._audio_buffer.append(np.zeros(self._audio_samples, dtype=np.int16))
-        for _ in range(self._video_per_group):
-            self._video_buffer.append(None)
-        for _ in range(self._data_per_group):
-            self._data_buffer.append(None)
 
     def get_audio(self):
         """Pop next audio frame. Returns ndarray (silence if buffer empty)."""
@@ -481,10 +474,16 @@ class WebRTCSession:
     async def _group_consumer(self, dispatcher):
         """Fill dispatcher buffers at group rate.
         This is the sole driver of group unpacking — consumers never trigger it.
-        Startup: fills empty until group_queue has enough groups (jitter buffer).
+        Startup: waits until group_queue has enough groups (jitter buffer).
         consumer_offset: fills slightly before track consumes to avoid race."""
-        if dispatcher.start_time is None:
-            dispatcher.start_time = time.time()
+        # The clock origin is established by the first track recv() — which
+        # aiortc only calls once the connection is up. Setting it here (the
+        # task starts at offer time, before the handshake completes) would
+        # start the grid early and force the tracks into a catch-up burst.
+        while dispatcher.start_time is None and self.connected:
+            await asyncio.sleep(0.005)
+        if not self.connected:
+            return
 
         group_index = 0
         buffering = True
@@ -518,7 +517,6 @@ class WebRTCSession:
                         f"({qs} groups)"
                     )
                 else:
-                    dispatcher._fill_empty()
                     _empty += 1
                     group_index += 1
                     continue

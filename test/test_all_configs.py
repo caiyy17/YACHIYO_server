@@ -50,7 +50,7 @@ CONFIGS = {
     },
 }
 
-# Skip webrtc for now (needs special audio_collector setup)
+# Skip webrtc (group-framed input needs the gateway; tested via test_webrtc.py)
 SKIP_CONFIGS = {"unity_chan_webrtc"}
 
 

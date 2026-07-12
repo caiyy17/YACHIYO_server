@@ -33,7 +33,6 @@ class FrameCollectorStep(BaseProcessingStep):
     """
 
     REQUIRED_INPUTS = []  # lane presence is validated pairwise below
-    LOG_CONTENT = False   # one group per 100ms — signals still log
 
     @classmethod
     def validate_config(cls, config):
@@ -97,7 +96,7 @@ class FrameCollectorStep(BaseProcessingStep):
 
         if output_data:
             # one message per group (10/s) — never log the payload
-            self.output_to_queue(output_data, pass_data, is_log=False)
+            self.output_to_queue(output_data, pass_data, log_level=0)
 
     @staticmethod
     def _frames_to_wav(frames):

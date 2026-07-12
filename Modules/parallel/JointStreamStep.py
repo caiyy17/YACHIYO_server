@@ -76,7 +76,6 @@ _DONE = object()
 
 
 class JointStreamStep(BaseProcessingStep):
-    LOG_CONTENT = False  # consumes chunk streams (b64 audio / pose data)
     # Sentence-level stream envelope (this node is inherently streaming)
     EMIT_SIGNALS = ["SoS", "EoS"]
 
@@ -244,7 +243,7 @@ class JointStreamStep(BaseProcessingStep):
             if pack:
                 # paired chunks carry b64 audio + pose data — never log
                 self.output_to_queue(pack, pass_data,
-                                     is_add_pass_data=False, is_log=False)
+                                     is_add_pass_data=False, log_level=0)
 
         self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

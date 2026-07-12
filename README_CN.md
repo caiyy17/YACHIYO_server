@@ -64,7 +64,8 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 
 | 模块                     | 函数名                              | 说明                                                 |
 | ------------------------ | ----------------------------------- | ---------------------------------------------------- |
-| `webrtc_audio_collector` | `audio_collector`                   | 在 recording_start/recording_end 之间收集 WebRTC 音频帧合成 WAV  |
+| `webrtc_frame_collector` | `frame_collector`                   | 逐组变换 WebRTC 车道:音频帧拼 WAV 块、视频/数据按 key 拆分  |
+| `vad_base`               | `vad`                               | 环形缓冲语音切段,由 recording_start/end 信号驱动(支持前后回溯、流式或整段输出)  |
 | `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                    |
 | `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取 |
 | `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                   |

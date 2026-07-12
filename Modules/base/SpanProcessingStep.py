@@ -106,18 +106,19 @@ class SpanProcessingStep(BaseProcessingStep):
                     if signal in self.pass_signal_set:
                         self._relay_caught(data, signal)
                     elif not caught:
-                        self.logger.error(
+                        self.logger.warning(
                             f"undeclared signal '{signal}' at node "
-                            f"{self.index}; dropping — declare it in "
-                            f"catch_signals or pass_signals"
+                            f"{self.index}; dropped (declare it in "
+                            f"catch_signals or pass_signals to handle "
+                            f"or forward)"
                         )
                     continue
 
                 # Normal messages: filter through input_vars/pass_vars
                 filtered_data = self.extract_input_data(data)
                 pass_data = self.extract_pass_data(data)
-                if self.LOG_CONTENT:
-                    self.logger.info(f"processing data: {filtered_data}")
+                self.logger.info(f"processing data: {filtered_data}",
+                                 level=self.CONTENT_LOG_LEVEL)
                 self.span_process(filtered_data, pass_data)
 
                 # Don't reset current_timestamp — span_process manages it

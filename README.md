@@ -64,7 +64,8 @@ Each service runs in its own conda environment. Replace any service with any Ope
 
 | Module                   | Function Name                       | Description                                                          |
 | ------------------------ | ----------------------------------- | -------------------------------------------------------------------- |
-| `webrtc_audio_collector` | `audio_collector`                   | Assembles WebRTC audio frames between recording_start/recording_end into WAV     |
+| `webrtc_frame_collector` | `frame_collector`                   | Per-group transform of WebRTC lanes: audio frames→WAV chunk, video/data demux |
+| `vad_base`               | `vad`                               | Ring-buffered voice segmentation driven by recording_start/end signals (pre/post-roll, stream or whole-utterance output) |
 | `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                             |
 | `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction |
 | `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                        |

@@ -81,10 +81,18 @@ class ClientConnection:
         self.threads = []
         self.websocket = None
         self.last_timestamp = 0
+        # Per-pipeline log threshold (config top-level __debug_level, set at
+        # init): messages print when their level >= this; 0 = everything,
+        # 1 (default) = hide per-message content traffic
+        self.debug_level = 1
 
         self.logger.info(f"Client {self.client_id} created")
 
-    def log_info(self, message, cut=True):
+    def log_info(self, message, cut=True, level=1):
+        # message prints when its level >= the pipeline's __debug_level
+        # threshold (per-message content traffic passes level=0)
+        if level < self.debug_level:
+            return
         if cut and len(message) > MESSAGE_MAX_LENGTH:
             message = message[:MESSAGE_MAX_LENGTH] + "..."
         self.logger.info(f"{message}")
@@ -99,6 +107,7 @@ class ClientConnection:
                 return
 
         self.pipeline_config = pipeline_config
+        self.debug_level = int(pipeline_config.get("__debug_level", 1) or 0)
         self.log_info(
             f"Init: Initializing client {self.client_id} with pipeline: {self.pipeline_config}",
             cut=False,
@@ -146,7 +155,10 @@ class ClientConnection:
         for i, node in enumerate(pipeline):
             func_name = node["function"]  # Get current node's function name
             func_class = get_function_class_by_name(func_name)  # Get corresponding class
-            config = node.get("config", {})  # Get config
+            # Copy so the stored pipeline_config stays as loaded; nodes see
+            # the pipeline-wide debug level as a config key
+            config = dict(node.get("config", {}))
+            config["__debug_level"] = self.debug_level
             self.log_info(
                 f"Init: Creating thread for function {func_name} with config: {config}"
             )
@@ -214,7 +226,7 @@ class ClientConnection:
                     continue
                 data_dict = json.loads(data)
                 if data_dict.get("timestamp", float("inf")) < cancel_timestamp:
-                    self.log_info(f"Sent: Skipping data: {data}")
+                    self.log_info(f"Sent: Skipping data: {data}", level=0)
                     continue
 
                 # Strip internal pipeline fields before sending to client
@@ -223,10 +235,9 @@ class ClientConnection:
 
                 # Send data to client
                 await self.websocket.send_text(data)
-                # Calculate data size
-                data_size = len(data.encode("utf-8"))
-                self.log_info(f"Sent: message to {self.client_id}: {data_size} bytes")
-                self.log_info(f"Sent: message to {self.client_id}: {data}")
+                self.log_info(f"Sent: message to {self.client_id}: "
+                              f"{len(data.encode('utf-8'))} bytes: {data}",
+                              level=0)
 
             except asyncio.TimeoutError:
                 pass
@@ -242,7 +253,7 @@ class ClientConnection:
             cancel_timestamp = cancel["timestamp"]
         while not self.send_queue.empty():
             data = self.send_queue.get()
-            self.log_info(f"Sent: Skipping data: {data}")
+            self.log_info(f"Sent: Skipping data: {data}", level=0)
         self.log_info(f"Sent: Client {self.client_id} disconnected")
 
     async def receive_data(self):
@@ -290,7 +301,9 @@ class ClientConnection:
                     )
                     continue
                 self.last_timestamp = data["timestamp"]
-                self.log_info(f"Received: message from {self.client_id}, {data}")
+                self.log_info(
+                    f"Received: message from {self.client_id}, {data}",
+                    level=0)
 
                 # Put data into the first input queue
                 self.queues[0].put(json.dumps(data))

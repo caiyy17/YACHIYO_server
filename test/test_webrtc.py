@@ -1034,6 +1034,7 @@ def run_client_process(client_id, output_mp4, result_dict):
         # Send speech
         test_start = time.time()
         client_dc.send(json.dumps({"signal": "recording_start"}))
+        send_audio.speaking = True  # start sending speech after recording_start
         print(f"[{client_id}] recording_start sent")
 
         while not send_audio.finished_speech:
@@ -1080,7 +1081,10 @@ def run_client_process(client_id, output_mp4, result_dict):
 
         # Store results
         result_dict["dc_msgs"] = len(recv_dc_messages)
-        result_dict["text_msgs"] = sum(1 for m in recv_dc_messages if "text" in m)
+        # pass_vars data rides wrapped under "pass_data" (meta/SoS protocol)
+        result_dict["text_msgs"] = sum(
+            1 for m in recv_dc_messages
+            if "text" in m or "text" in (m.get("pass_data") or {}))
         result_dict["eos"] = eos_seen
         result_dict["audio_frames"] = len(recv_audio_frames)
         result_dict["non_silent"] = sum(1 for p in recv_audio_frames if np.any(p != 0))
@@ -1126,9 +1130,15 @@ def run_multi(args):
     for p in processes:
         p.start()
 
-    # Wait for all to finish
+    # Wait for all to finish; a stuck child must not wedge the suite (it
+    # would also block interpreter exit), so terminate leftovers
     for p in processes:
         p.join(timeout=CLIENT_TEST_DURATION + 60)
+    for p in processes:
+        if p.is_alive():
+            print(f"  [WARN] client process {p.pid} timed out; terminating")
+            p.terminate()
+            p.join(timeout=10)
 
     print("\n" + "=" * 60)
     print("MULTI-USER RESULTS")

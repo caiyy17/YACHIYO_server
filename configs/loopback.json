@@ -2,10 +2,9 @@
     "pipeline": [
         {
             "node_id": 1,
-            "function": "default",
+            "function": "frame_collector",
             "config": {
-                "input_vars": [],
-                "pass_vars": [
+                "input_vars": [
                     {
                         "source": "audio",
                         "target": "audio"
@@ -19,7 +18,70 @@
                         "target": "data"
                     }
                 ],
-                "output_vars": [],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "source": "audio_data",
+                        "target": "1_audio_data"
+                    },
+                    {
+                        "source": "video_data",
+                        "target": "1_video_data"
+                    },
+                    {
+                        "source": "payload",
+                        "target": "1_payload"
+                    }
+                ],
+                "pass_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    }
+                ],
+                "next_nodes": [2]
+            }
+        },
+        {
+            "node_id": 2,
+            "function": "frame_splitter",
+            "config": {
+                "input_vars": [
+                    {
+                        "source": "1_audio_data",
+                        "target": "audio_data"
+                    },
+                    {
+                        "source": "1_video_data",
+                        "target": "video_data"
+                    },
+                    {
+                        "source": "1_payload",
+                        "target": "payload"
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "source": "audio",
+                        "target": "audio"
+                    },
+                    {
+                        "source": "video",
+                        "target": "video"
+                    },
+                    {
+                        "source": "data",
+                        "target": "data"
+                    }
+                ],
+                "catch_signals": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    }
+                ],
+                "pass_signals": [],
                 "next_nodes": [-1]
             }
         }

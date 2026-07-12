@@ -124,6 +124,6 @@ class TTSStep(BaseProcessingStep):
             self.add_output(output_data, "audio_file", chunk_b64)
             # stream chunks carry b64 audio — never log the payload
             self.output_to_queue(output_data, pass_data,
-                                 is_add_pass_data=False, is_log=False)
+                                 is_add_pass_data=False, log_level=0)
         self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

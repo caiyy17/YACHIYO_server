@@ -117,6 +117,6 @@ class MotionStep(BaseProcessingStep):
             self.add_output(output_data, "motion", chunk)
             # stream chunks carry bulky pose data — never log the payload
             self.output_to_queue(output_data, pass_data,
-                                 is_add_pass_data=False, is_log=False)
+                                 is_add_pass_data=False, log_level=0)
         self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
         return

@@ -399,7 +399,6 @@ path.selected { stroke: #f00 !important; }
 //  Constants & State
 // ─────────────────────────────────────────────
 const FUNCTIONS = [
-  'audio_collector',
   'call_danmaku_buffer',
   'call_data_query_link',
   'call_dispatcher',
@@ -409,7 +408,9 @@ const FUNCTIONS = [
   'call_openai_tts',
   'call_receiver',
   'default',
+  'frame_collector',
   'frame_splitter',
+  'vad',
   'call_memory_manager',
 ];
 
@@ -422,7 +423,7 @@ const FUNCTIONS = [
 const MODULE_EMITS = {
   call_llm:        [{ name: 'SoS' }, { name: 'EoS' }],
   call_openai_llm: [{ name: 'SoS' }, { name: 'EoS' }],
-  audio_collector: [{ name: 'recording_start' }, { name: 'recording_end' }],
+  vad:             [{ name: 'vad_start' }, { name: 'vad_end' }],
   call_dispatcher: [{ name: 'dispatch_start', directed: true },
                     { name: 'dispatch_end',   directed: true }],
 };
