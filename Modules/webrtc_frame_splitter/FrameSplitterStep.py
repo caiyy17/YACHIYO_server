@@ -152,8 +152,7 @@ class FrameSplitterStep(BaseProcessingStep):
         self.add_frame_index = self.get_config("add_frame_index", False)
         self._idle_base = Image.new("RGB", (self.video_width, self.video_height), IDLE_COLOR)
         self._active_base = Image.new("RGB", (self.video_width, self.video_height), ACTIVE_COLOR)
-        font_size = max(40, min(self.video_width, self.video_height) // 8)
-        self._font = self._load_font(font_size)
+        self._fonts = {}  # size -> font; sized per drawn image, cached
         self._video_frame_counter = 0
         self._marker_jpeg_cache = {}  # plain (un-numbered) placeholder JPEGs
 
@@ -191,17 +190,30 @@ class FrameSplitterStep(BaseProcessingStep):
                 continue
         return ImageFont.load_default()
 
+    def _font_for(self, img):
+        """Index font sized to the image being drawn on (1/8 of its short
+        side, floor 40) — input frames may differ from the configured
+        resolution. Cached per size."""
+        size = max(40, min(img.width, img.height) // 8)
+        font = self._fonts.get(size)
+        if font is None:
+            font = self._load_font(size)
+            self._fonts[size] = font
+        return font
+
     def _draw_index(self, img, frame_num):
-        """Overlay the frame number, centered, black outline + white fill."""
+        """Overlay the frame number, centered on the actual image, black
+        outline + white fill."""
+        font = self._font_for(img)
         draw = ImageDraw.Draw(img)
         text = f"#{frame_num}"
-        bbox = draw.textbbox((0, 0), text, font=self._font)
+        bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = (self.video_width - tw) // 2 - bbox[0]
-        y = (self.video_height - th) // 2 - bbox[1]
+        x = (img.width - tw) // 2 - bbox[0]
+        y = (img.height - th) // 2 - bbox[1]
         for dx, dy in ((-3, 0), (3, 0), (0, -3), (0, 3)):
-            draw.text((x + dx, y + dy), text, fill=(0, 0, 0), font=self._font)
-        draw.text((x, y), text, fill=(255, 255, 255), font=self._font)
+            draw.text((x + dx, y + dy), text, fill=(0, 0, 0), font=font)
+        draw.text((x, y), text, fill=(255, 255, 255), font=font)
 
     @staticmethod
     def _encode_jpeg_b64(img):
