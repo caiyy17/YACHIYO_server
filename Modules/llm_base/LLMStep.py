@@ -49,6 +49,12 @@ class LLMStep(BaseProcessingStep):
 
     EMIT_SIGNALS = ["SoS", "EoS"]  # stream envelope: SoS opens, EoS closes
 
+    @classmethod
+    def module_outputs(cls, config):
+        # per-sentence fields: the cutter's text/raw_text plus every
+        # config-defined extra_info command channel (action, expression, ...)
+        return ["text", "raw_text"] + list(config.get("extra_info") or {})
+
     def custom_init(self):
         self.llm_caller = BaseLLMCaller(self.client_id, self.config, self.logger)
 

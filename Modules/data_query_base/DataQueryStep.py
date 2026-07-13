@@ -11,6 +11,9 @@ class BaseDataQueryCaller:
 
 
 class DataQueryStep(BaseProcessingStep):
+    REQUIRED_INPUTS = ["prompt"]
+    OUTPUTS = ["result"]
+
     def custom_init(self):
         self.data_query_caller = BaseDataQueryCaller()
 

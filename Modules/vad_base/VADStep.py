@@ -45,6 +45,7 @@ class VADStep(SpanProcessingStep):
 
     REQUIRED_CATCH_SIGNALS = ["recording_start", "recording_end"]
     REQUIRED_INPUTS = ["audio_data"]
+    OUTPUTS = ["audio_file"]
     EMIT_SIGNALS = ["vad_start", "vad_end"]
 
     @classmethod

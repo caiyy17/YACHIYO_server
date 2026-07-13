@@ -25,46 +25,55 @@ class FrameCollectorStep(BaseProcessingStep):
     and cancel needs no custom handling.
 
     Config contract (validated at init):
-      - at least one lane input (audio / video / data) is declared
-      - lanes are declared on BOTH sides: "audio" input <-> "audio_data"
+      - all three lane inputs (audio / video / data) are declared; a lane
+        is WIRED when its source is non-null, and at least one must be
+      - lanes are wired on BOTH sides: "audio" input <-> "audio_data"
         output, "video" input <-> "video_data" output, "data" input <-> at
         least one demux-key output (any source name other than the reserved
-        audio_data / video_data)
+        audio_data / video_data); a null on either side counts as absent
     """
 
-    REQUIRED_INPUTS = []  # lane presence is validated pairwise below
+    REQUIRED_INPUTS = ["audio", "video", "data"]  # null source = lane off
+    OUTPUTS = ["audio_data", "video_data"]
+    FREE_OUTPUTS = True  # demux keys are config-defined output sources
 
     @classmethod
     def validate_config(cls, config):
         errors = super().validate_config(config)
-        in_targets = {v.get("target") for v in config.get("input_vars", [])}
-        out_sources = {v.get("source") for v in config.get("output_vars", [])}
+        # wired = declared with a non-null wire side (null = lane off)
+        in_wired = {v.get("target") for v in config.get("input_vars", [])
+                    if v.get("source") is not None}
+        out_wired = {v.get("source") for v in config.get("output_vars", [])
+                     if v.get("target") is not None}
 
-        if not in_targets & {"audio", "video", "data"}:
+        if not in_wired & {"audio", "video", "data"}:
             errors.append(
                 "at least one lane input (audio / video / data) must be "
-                "declared as an input_vars target"
+                "wired (declared with a non-null source)"
             )
         for lane, out in MEDIA_PAIRS:
-            if (lane in in_targets) != (out in out_sources):
+            if (lane in in_wired) != (out in out_wired):
                 errors.append(
-                    f"lane '{lane}' must be declared on both sides: input "
-                    f"target '{lane}' <-> output source '{out}'"
+                    f"lane '{lane}' must be wired on both sides: input "
+                    f"target '{lane}' <-> output source '{out}' "
+                    f"(null counts as absent)"
                 )
-        demux_keys = out_sources - {out for _, out in MEDIA_PAIRS}
-        if ("data" in in_targets) != bool(demux_keys):
+        demux_keys = out_wired - {out for _, out in MEDIA_PAIRS}
+        if ("data" in in_wired) != bool(demux_keys):
             errors.append(
-                "lane 'data' must be declared on both sides: input target "
+                "lane 'data' must be wired on both sides: input target "
                 "'data' <-> at least one demux-key output (a source other "
-                "than the reserved audio_data / video_data)"
+                "than the reserved audio_data / video_data; null counts "
+                "as absent)"
             )
         return errors
 
     def custom_init(self):
-        out_sources = {v.get("source")
-                       for v in self.config.get("output_vars", [])}
+        out_wired = {v.get("source")
+                     for v in self.config.get("output_vars", [])
+                     if v.get("target") is not None}
         self.demux_keys = sorted(
-            out_sources - {out for _, out in MEDIA_PAIRS})
+            out_wired - {out for _, out in MEDIA_PAIRS})
         self.logger.info(
             f"frame collector: lanes audio={'audio' in self.input_targets()} "
             f"video={'video' in self.input_targets()} "
@@ -72,7 +81,9 @@ class FrameCollectorStep(BaseProcessingStep):
         )
 
     def input_targets(self):
-        return {v.get("target") for v in self.config.get("input_vars", [])}
+        """Wired lane inputs (null-source declarations are lane off)."""
+        return {v.get("target") for v in self.config.get("input_vars", [])
+                if v.get("source") is not None}
 
     def process(self, data, pass_data={}):
         output_data = {}

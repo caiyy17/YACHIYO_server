@@ -81,11 +81,21 @@ class JointStreamStep(BaseProcessingStep):
 
     @classmethod
     def required_inputs(cls, config):
-        # every configured stream's input sources must be wired
-        return [e.get("source")
-                for s in config.get("streams", [])
-                for e in (s.get("input") or [])
-                if isinstance(e, dict) and e.get("source")]
+        # every configured stream's input sources must be declared
+        names = [e.get("source")
+                 for s in config.get("streams", [])
+                 for e in (s.get("input") or [])
+                 if isinstance(e, dict) and e.get("source")]
+        return list(dict.fromkeys(names))
+
+    @classmethod
+    def module_outputs(cls, config):
+        # every configured stream's output targets are this node's products
+        names = [e.get("target")
+                 for s in config.get("streams", [])
+                 for e in (s.get("output") or [])
+                 if isinstance(e, dict) and e.get("target")]
+        return list(dict.fromkeys(names))
 
     @classmethod
     def required_catch_signals(cls, config):
@@ -103,8 +113,6 @@ class JointStreamStep(BaseProcessingStep):
             errors.append("joint stream needs a non-empty 'streams' list")
             return errors
         from .. import get_caller_class_by_name
-        output_sources = {v.get("source")
-                          for v in config.get("output_vars", [])}
         for i, s in enumerate(streams):
             for key in ("caller", "input", "output", "config"):
                 if not s.get(key):
@@ -131,13 +139,6 @@ class JointStreamStep(BaseProcessingStep):
                             f"streams[{i}] {key} entry {e!r} is not an "
                             f'explicit {{"source", "target"}} object'
                         )
-            for e in s.get("output") or []:
-                if (isinstance(e, dict) and e.get("target")
-                        and e["target"] not in output_sources):
-                    errors.append(
-                        f"streams[{i}] output target '{e['target']}' has "
-                        f"no output_vars entry"
-                    )
         return errors
 
     def custom_init(self):

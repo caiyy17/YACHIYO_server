@@ -19,8 +19,11 @@ def _green_frame_b64(width, height):
 class BaseVideoCaller:
     """Placeholder video generator — emits a fixed green frame. Mirrors the
     TTS caller: call() returns the whole clip, call_stream() yields chunks.
-    A video product is a per-frame list (like motion), so a chunk is a list
-    of frames; the uniform caller contract wraps it as {"video": [...]}.
+    A video product is a per-frame list (like motion); each frame is a dict
+    {"image": <b64 jpeg>}, and the FIRST frame of a clip/stream additionally
+    carries "framerate" (same first-frame-info contract as motion). A chunk
+    is a list of frames; the uniform caller contract wraps it as
+    {"video": [...]}.
     Config: video_width/video_height (frame size), video_fps, stream_frames
     (frames per chunk), duration (fallback clip length in seconds). Duration
     is normally an INPUT (so the clip length can be driven dynamically, e.g.
@@ -40,21 +43,35 @@ class BaseVideoCaller:
         return max(0, int(self.fps * d))
 
     def call(self, prompt, duration=None):
-        """Non-stream: the whole clip as one per-frame list of green frames."""
-        return [self._green for _ in range(self._total_frames(duration))]
+        """Non-stream: the whole clip as one per-frame list of green frames;
+        the first frame additionally carries framerate and duration (the
+        streaming path omits duration — unknown upfront)."""
+        frames = [{"image": self._green}
+                  for _ in range(self._total_frames(duration))]
+        if frames:
+            frames[0] = {"framerate": self.fps,
+                         "duration": len(frames) / self.fps, **frames[0]}
+        return frames
 
     def call_stream(self, prompt, duration=None):
         """Yield chunks as {"video": [frame, ...]} — each chunk is
-        `stream_frames` green frames (the last may be shorter)."""
+        `stream_frames` green frames (the last may be shorter); the stream's
+        very first frame additionally carries framerate."""
         total = self._total_frames(duration)
         chunk = max(1, int(self.config.get("stream_frames", self.fps)))
+        first = True
         for i in range(0, total, chunk):
             n = min(chunk, total - i)
-            yield {"video": [self._green for _ in range(n)]}
+            frames = [{"image": self._green} for _ in range(n)]
+            if first and frames:
+                frames[0] = {"framerate": self.fps, **frames[0]}
+                first = False
+            yield {"video": frames}
 
 
 class VideoStep(BaseProcessingStep):
-    REQUIRED_INPUTS = ["prompt"]
+    REQUIRED_INPUTS = ["prompt", "duration"]
+    OUTPUTS = ["video"]
     # Sentence-level stream envelope, emitted only in stream mode (same as
     # TTS/Motion; wire names renamed in config when a turn-level SoS/EoS also
     # passes through this node).

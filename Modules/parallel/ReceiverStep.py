@@ -21,6 +21,10 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 class ReceiverStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["dispatch_start", "dispatch_end"]
+    # pure merger: expected branch fields and their output names are
+    # entirely config-defined
+    FREE_INPUTS = True
+    FREE_OUTPUTS = True
 
     """Requires config: catch_signals: ["dispatch_start", "dispatch_end"]."""
 

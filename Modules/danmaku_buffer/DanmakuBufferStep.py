@@ -9,7 +9,9 @@ TIMESTAMP_EPSILON = 1e-3
 
 class DanmakuBufferStep(SpanProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["playback_complete"]
-    REQUIRED_INPUTS = ["text"]
+    REQUIRED_INPUTS = ["text", "user", "msg_type", "price",
+                       "guard_level", "num"]
+    OUTPUTS = ["prompt"]
 
     """
     Buffers incoming danmaku messages and releases batches to the LLM at intervals.

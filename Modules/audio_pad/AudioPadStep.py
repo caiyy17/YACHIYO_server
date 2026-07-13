@@ -13,6 +13,13 @@ class AudioPadStep(BaseProcessingStep):
     Otherwise passes through unchanged.
     """
 
+    @classmethod
+    def required_inputs(cls, config):
+        # the two inputs are read under config-named keys
+        keys = [config.get("audio_key", "audio_data"),
+                config.get("action_key", "action")]
+        return list(dict.fromkeys(keys))
+
     def custom_init(self):
         self.audio_key = self.config.get("audio_key", "audio_data")
         self.action_key = self.config.get("action_key", "action")

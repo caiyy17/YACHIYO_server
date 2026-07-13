@@ -29,6 +29,19 @@ def _b64_decode_f32(b64_str, shape):
     )
 
 
+def _frames_with_info(frames, framerate, fmt, duration=None):
+    """Attach clip-level info (framerate/format) to the FIRST frame of a
+    per-frame list — the same contract the streaming path uses, so stream
+    and non-stream consumers read one format. duration is only known for a
+    whole clip (non-stream); streaming leaves it out."""
+    if frames:
+        info = {"framerate": framerate, "format": fmt}
+        if duration is not None:
+            info["duration"] = duration
+        frames[0] = {**info, **frames[0]}
+    return frames
+
+
 def _humanoid_to_frames(h):
     """Transpose a struct-of-arrays humanoid clip (per-key per-frame arrays)
     into a list of self-contained per-frame structs, so a frame-level
@@ -39,9 +52,9 @@ def _humanoid_to_frames(h):
     joints = h.get("joints", {})
     return [
         {
-            "root_xz": h["root_xz"][f],
-            "root_vel_y": h["root_vel_y"][f],
-            "root_vel_yaw": h["root_vel_yaw"][f],
+            "root_dxz": h["root_dxz"][f],
+            "root_dy": h["root_dy"][f],
+            "root_dyaw": h["root_dyaw"][f],
             "hips_pos": h["hips_pos"][f],
             "joints": {b: joints[b][f] for b in joints},
         }
@@ -123,15 +136,35 @@ class MotionGenerationCaller:
             if self.continuous and isinstance(result, dict) and "error" not in result:
                 self._save_history(result)
 
-            if self.humanoid_output:
-                return self._to_humanoid(result)
-            # raw path: emit only the motion payload (num_frames/framerate/duration + SMPL-H)
-            if isinstance(result, dict) and "motion" in result:
-                return result["motion"]
-            return result
+            return self._package(result)
         except Exception as e:
             self.logger.error(f"Failed to call motion generation: {e}")
             return ""
+
+    def _package(self, result):
+        """Backend JSON -> per-frame list, same format as the streaming path
+        (self-contained frame structs; the first frame carries framerate,
+        format and duration). Errors / unexpected shapes pass through
+        unchanged."""
+        if self.humanoid_output:
+            h = self._to_humanoid(result)
+            if not (isinstance(h, dict) and "joints" in h):
+                return h  # error / passthrough
+            frames = _humanoid_to_frames(h)
+            fr = h.get("framerate", FRAMERATE)
+            return _frames_with_info(frames, fr, "humanoid",
+                                     h.get("duration", len(frames) / fr))
+        # raw path: per-frame SMPL-H structs (same contract as streaming)
+        if isinstance(result, dict) and "motion" in result:
+            m = result["motion"]
+            poses = _b64_decode_f32(m["poses"], m["poses_shape"])
+            trans = _b64_decode_f32(m["trans"], m["trans_shape"])
+            frames = [{"poses": poses[f].tolist(), "trans": trans[f].tolist()}
+                      for f in range(int(poses.shape[0]))]
+            fr = m.get("framerate", FRAMERATE)
+            return _frames_with_info(frames, fr, "smplh",
+                                     m.get("duration", len(frames) / fr))
+        return result
 
     def call_stream(self, prompt):
         """Stream motion chunks from the backend's SSE endpoint
@@ -149,9 +182,10 @@ class MotionGenerationCaller:
         humanoid_output: blocks are converted incrementally — prev_trans /
         ref_y carry the cross-block state so the concatenation of block
         conversions equals one whole-clip conversion (no root-step loss or
-        hips jump at block boundaries). Otherwise raw SMPL-H blocks are
-        yielded in the non-stream motion schema. Continuation history is
-        saved from the accumulated tail exactly like call().
+        hips jump at block boundaries). Otherwise per-frame raw SMPL-H
+        structs are yielded (same shape as the non-stream raw path).
+        Continuation history is saved from the accumulated tail exactly
+        like call().
         """
         try:
             body = {

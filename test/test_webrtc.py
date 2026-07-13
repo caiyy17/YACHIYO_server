@@ -758,6 +758,269 @@ def run_single(args):
 
 
 # ============================================================
+# Mode: cancel  (DC-path cancel semantics, cancel_offset_ms = 0)
+# ============================================================
+CANCEL_CLIENT_ID = "test_webrtc_cancel"
+
+
+async def run_cancel_test():
+    """Four cancel scenarios over one real session:
+      1. idle cancel         — no active turn, must be a harmless no-op
+      2. baseline turn       — speak/reply proves the pipeline works after 1
+      3. interrupt mid-reply — cancel kills the playing reply quickly; the
+                               immediately following start (client interrupt
+                               order: cancel first) must survive the cancel
+      4. cancel while recording — vad mark cleared, recording_end ignored,
+                               no reply is produced
+    Log-side assertions (vad mark clear / end ignored / lookback / ERROR)
+    are done by the run_cancel() wrapper after the session closes."""
+    if not os.path.exists(TEST_WAV):
+        print(f"[FAIL] Test audio not found: {TEST_WAV}")
+        return False
+    audio_frames = load_test_audio(TEST_WAV)
+    speech_duration = len(audio_frames) * AUDIO_PTIME
+    print("=" * 60)
+    print("WebRTC Cancel Test (real pipeline)")
+    print(f"  Pipeline: {PIPELINE_CONFIG}, speech clip {speech_duration:.1f}s")
+    print("=" * 60)
+
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{MAIN_SERVER}/register/",
+                                json={"client_id": CANCEL_CLIENT_ID}) as resp:
+            print(f"[Client] Register: {await resp.json()}")
+        async with session.post(
+            f"{MAIN_SERVER}/init_pipeline/{CANCEL_CLIENT_ID}",
+            json={"config": PIPELINE_CONFIG, "force": True},
+        ) as resp:
+            if resp.status != 200:
+                print(f"[FAIL] Init pipeline failed: {resp.status}")
+                return False
+
+    pc = RTCPeerConnection()
+    send_audio = TestAudioTrack(audio_frames)
+    send_video = TestVideoTrack(send_audio)
+    pc.addTrack(send_audio)
+    pc.addTrack(send_video)
+
+    recv_audio = []      # (wall time, nonsilent) per received audio frame
+    dc_timeline = []     # (wall time, parsed message)
+
+    async def _recv_audio(track):
+        try:
+            while True:
+                frame = await track.recv()
+                pcm = frame.to_ndarray().flatten().astype(np.int16)
+                if frame.layout.name == "stereo":
+                    pcm = pcm[::2]
+                recv_audio.append((time.time(), bool(np.any(pcm != 0))))
+        except Exception:
+            pass
+
+    async def _drain(track):
+        try:
+            while True:
+                await track.recv()
+        except Exception:
+            pass
+
+    @pc.on("track")
+    def on_track(track):
+        if track.kind == "audio":
+            asyncio.ensure_future(_recv_audio(track))
+        else:
+            asyncio.ensure_future(_drain(track))
+
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        @channel.on("message")
+        def on_message(msg):
+            try:
+                dc_timeline.append((time.time(), json.loads(msg)))
+            except Exception:
+                pass
+
+    client_dc = pc.createDataChannel("client-signals", ordered=True)
+
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{WEBRTC_SERVER}/offer/{CANCEL_CLIENT_ID}",
+            json={"sdp": pc.localDescription.sdp,
+                  "type": pc.localDescription.type,
+                  "video_width": VIDEO_WIDTH,
+                  "video_height": VIDEO_HEIGHT},
+        ) as resp:
+            if resp.status != 200:
+                print(f"[FAIL] WebRTC server returned {resp.status}")
+                await pc.close()
+                return False
+            answer = await resp.json()
+    await pc.setRemoteDescription(
+        RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
+
+    for _ in range(50):
+        if pc.connectionState == "connected":
+            break
+        await asyncio.sleep(0.1)
+    for _ in range(50):
+        if client_dc.readyState == "open":
+            break
+        await asyncio.sleep(0.1)
+    if pc.connectionState != "connected" or client_dc.readyState != "open":
+        print("[FAIL] connection/DataChannel not ready")
+        await pc.close()
+        return False
+
+    failures = []
+
+    def send_signal(name):
+        client_dc.send(json.dumps({"signal": name}))
+
+    def reset_speech():
+        send_audio._index = 0
+        send_audio.finished_speech = False
+        send_audio.speaking = True
+
+    def nonsilent_after(t0):
+        return [t for t, ns in recv_audio if ns and t >= t0]
+
+    def sos_after(t0):
+        return [m for t, m in dc_timeline
+                if t >= t0 and m.get("signal") == "SoS"]
+
+    def eos_after(t0):
+        return [m for t, m in dc_timeline
+                if t >= t0 and m.get("signal") == "EoS"]
+
+    async def wait_for(cond, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cond():
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def speak_turn():
+        """One full utterance: start -> clip -> end. Returns end wall time."""
+        reset_speech()
+        send_signal("recording_start")
+        while not send_audio.finished_speech:
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
+        send_signal("recording_end")
+        return time.time()
+
+    await asyncio.sleep(2.0)  # let the session clock settle
+
+    # --- 1. idle cancel: harmless no-op ---
+    print("[1] idle cancel")
+    send_signal("cancel")
+    await asyncio.sleep(1.5)  # held 200ms at the gateway; nothing may break
+    if pc.connectionState != "connected":
+        failures.append("idle cancel broke the connection")
+
+    # --- 2. baseline turn: reply arrives ---
+    print("[2] baseline turn")
+    t_end_a = await speak_turn()
+    if not await wait_for(lambda: nonsilent_after(t_end_a), 25):
+        # without a playing reply the interrupt scenario is meaningless
+        print("[FAIL] baseline reply never arrived")
+        await pc.close()
+        return False
+    t_onset_a = nonsilent_after(t_end_a)[0]
+    print(f"    reply A onset after {t_onset_a - t_end_a:.1f}s")
+
+    # --- 3. interrupt mid-reply, immediately start the next turn ---
+    print("[3] cancel mid-reply + immediate new turn")
+    await asyncio.sleep(0.6)  # let reply A play a little
+    t_cancel = time.time()
+    send_signal("cancel")
+    # client interrupt order: cancel first, then the new recording_start
+    t_end_b = await speak_turn()
+    if not await wait_for(lambda: nonsilent_after(t_end_b), 25):
+        failures.append("reply B never arrived - new turn killed by cancel")
+        t_onset_b = time.time()
+    else:
+        t_onset_b = nonsilent_after(t_end_b)[0]
+        print(f"    reply B onset after {t_onset_b - t_end_b:.1f}s")
+    # reply A must stop quickly: hold 200ms + tick + in-flight frames only
+    leak = [t for t in nonsilent_after(t_cancel + 1.5) if t < t_onset_b - 0.1]
+    if leak:
+        failures.append(
+            f"reply A kept playing {leak[-1] - t_cancel:.1f}s after cancel")
+    else:
+        played = [t for t in nonsilent_after(t_cancel) if t < t_onset_b - 0.1]
+        last = (played[-1] - t_cancel) if played else 0.0
+        print(f"    reply A stopped {last:.2f}s after cancel")
+
+    # let reply B drain fully before the last scenario
+    await wait_for(lambda: eos_after(t_end_b), 20)
+    await wait_for(lambda: not nonsilent_after(time.time() - 1.5), 15)
+
+    # --- 4. cancel while recording: no reply may be produced ---
+    print("[4] cancel while recording")
+    t_start_c = time.time()
+    reset_speech()
+    send_signal("recording_start")
+    await asyncio.sleep(1.0)          # 1s of speech
+    send_signal("cancel")
+    await asyncio.sleep(0.1)
+    send_signal("recording_end")      # must be ignored by vad
+    send_audio.speaking = False
+    await asyncio.sleep(10.0)
+    if sos_after(t_start_c):
+        failures.append("cancelled recording still produced a reply (SoS)")
+    if nonsilent_after(t_start_c):
+        failures.append("cancelled recording still produced reply audio")
+
+    await pc.close()
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{MAIN_SERVER}/unregister/",
+                                json={"client_id": CANCEL_CLIENT_ID}) as resp:
+            print(f"[Client] Unregister: {await resp.json()}")
+
+    for f in failures:
+        print(f"[FAIL] {f}")
+    return not failures
+
+
+def run_cancel(args):
+    """Entry for --mode cancel."""
+    global WEBRTC_SERVER, PIPELINE_CONFIG
+    WEBRTC_SERVER = args.server
+    PIPELINE_CONFIG = args.pipeline
+
+    # the client log is deleted and recreated at registration, so after the
+    # run it contains exactly this run
+    log_path = os.path.join(SCRIPT_DIR, "..", "logs",
+                            f"client_{CANCEL_CLIENT_ID}.log")
+
+    ok = asyncio.run(run_cancel_test())
+
+    try:
+        with open(log_path) as f:
+            log = f.read()
+    except OSError as e:
+        print(f"[FAIL] cannot read client log: {e}")
+        return False
+    checks = [
+        ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
+        ("recording_end after cancel ignored",
+         "recording_end without active mark - ignored" in log),
+        ("vad start lookback 200ms live", "(lookback 0.20s)" in log),
+        ("no ERROR in client log", "ERROR" not in log),
+    ]
+    print()
+    for name, passed in checks:
+        print(f"  {'PASS' if passed else 'FAIL'}: {name}")
+        ok = ok and passed
+    print(f"\n  {'Cancel test passed!' if ok else 'Cancel test FAILED.'}")
+    return ok
+
+
+# ============================================================
 # Mode: lifecycle  (from test_webrtc_lifecycle.py test_lifecycle)
 # ============================================================
 async def test_lifecycle():
@@ -1737,10 +2000,10 @@ def run_framesplitter(args):
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Consolidated WebRTC test (modes: single | lifecycle | multi | framesplitter)"
+        description="Consolidated WebRTC test (modes: single | cancel | lifecycle | multi | framesplitter)"
     )
     parser.add_argument(
-        "--mode", choices=["single", "lifecycle", "multi", "framesplitter"], default="single",
+        "--mode", choices=["single", "cancel", "lifecycle", "multi", "framesplitter"], default="single",
         help="Which test to run (default: single)",
     )
 
@@ -1770,6 +2033,8 @@ def main():
 
     if args.mode == "single":
         result = run_single(args)
+    elif args.mode == "cancel":
+        result = run_cancel(args)
     elif args.mode == "lifecycle":
         result = run_lifecycle(args)
     elif args.mode == "multi":

@@ -47,6 +47,10 @@ class DispatcherStep(BaseProcessingStep):
     # what makes NESTED dispatcher/receiver brackets wireable without the
     # inner envelope colliding with the outer one.
     EMIT_SIGNALS = ["dispatch_start", "dispatch_end"]
+    # pure router: its whole data interface is config-defined (input_vars
+    # feed output_vars, dispatch_vars slice them per branch)
+    FREE_INPUTS = True
+    FREE_OUTPUTS = True
 
     @classmethod
     def validate_config(cls, config):

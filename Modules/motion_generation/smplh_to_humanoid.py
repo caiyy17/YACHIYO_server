@@ -4,7 +4,7 @@ SMPL-H -> engine-native humanoid motion format.
 Converts SMPL-H pose params (axis-angle, local-to-parent) + root translation into the
 humanoid format consumed by HumanoidMotionPlayer on the Unity client:
   - per-bone WORLD-space deformation quaternions keyed by HumanBodyBones name
-  - root motion as per-frame deltas (root_xz / root_vel_y / root_vel_yaw)
+  - root motion as per-frame deltas (root_dxz / root_dy / root_dyaw)
   - body offset (~Unity bodyPosition) carried on the hips (hips_pos)
 
 The math mirrors the Unity client's conversion exactly:
@@ -85,7 +85,7 @@ def smplh_to_humanoid(poses, trans, num_frames, framerate=30,
 
     Streaming continuation (both default to the original whole-clip behavior):
       prev_trans: last [x, y, z] root translation of the PREVIOUS chunk. When
-        given, frame 0's root_xz becomes the real step from that frame instead
+        given, frame 0's root_dxz becomes the real step from that frame instead
         of [0, 0], so concatenated chunk conversions equal one whole-clip
         conversion.
       ref_y: pelvis Y of the SESSION's first frame. When given, hips_pos is
@@ -96,9 +96,9 @@ def smplh_to_humanoid(poses, trans, num_frames, framerate=30,
     out = {
         "num_frames": n,
         "framerate": int(framerate) if framerate else 30,
-        "root_xz": [],
-        "root_vel_y": [0.0] * n,
-        "root_vel_yaw": [0.0] * n,
+        "root_dxz": [],
+        "root_dy": [0.0] * n,
+        "root_dyaw": [0.0] * n,
         "hips_pos": [],
         "joints": {name: [] for name in BONES},
     }
@@ -126,12 +126,12 @@ def smplh_to_humanoid(poses, trans, num_frames, framerate=30,
         sx = tf[f * 3]; sy = tf[f * 3 + 1]; sz = tf[f * 3 + 2]
         if f == 0:
             if prev_trans is None:
-                out["root_xz"].append([0.0, 0.0])
+                out["root_dxz"].append([0.0, 0.0])
             else:  # streaming: real step from the previous chunk's last frame
-                out["root_xz"].append([-(sx - prev_trans[0]), (sz - prev_trans[2])])
+                out["root_dxz"].append([-(sx - prev_trans[0]), (sz - prev_trans[2])])
         else:
             px = tf[(f - 1) * 3]; pz = tf[(f - 1) * 3 + 2]
-            out["root_xz"].append([-(sx - px), (sz - pz)])   # X-mirrored frame-to-frame step
+            out["root_dxz"].append([-(sx - px), (sz - pz)])   # X-mirrored frame-to-frame step
         out["hips_pos"].append([0.0, sy - t0y, 0.0])         # vertical bob, referenced to frame 0
 
     return out

@@ -14,6 +14,7 @@ class BaseASRCaller:
 
 class ASRStep(BaseProcessingStep):
     REQUIRED_INPUTS = ["audio_file"]
+    OUTPUTS = ["result", "language"]
 
     def custom_init(self):
         self.asr_caller = BaseASRCaller()

@@ -28,6 +28,10 @@
                     {
                         "source": "expression",
                         "target": "1_expression"
+                    },
+                    {
+                        "source": "raw_text",
+                        "target": null
                     }
                 ],
                 "emit_signals": [

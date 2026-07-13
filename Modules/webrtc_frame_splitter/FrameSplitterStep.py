@@ -19,7 +19,7 @@ DATA_FPS = 20
 
 # Frame background colors (RGB)
 IDLE_COLOR = (173, 216, 230)   # light blue
-SPEAK_COLOR = (144, 238, 144)  # light green
+ACTIVE_COLOR = (144, 238, 144)  # light green
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -30,7 +30,12 @@ FONT_CANDIDATES = [
 
 class FrameSplitterStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["connection_start"]
-    REQUIRED_INPUTS = []  # at least one lane input, validated below
+    # media lanes are fixed contract inputs (null source = lane off); the
+    # data lane is free-form (any extra input target becomes a data key).
+    # At least one wired input overall, validated below.
+    REQUIRED_INPUTS = ["audio_data", "video_data"]
+    FREE_INPUTS = True
+    OUTPUTS = ["audio", "video", "data"]
     EMIT_SIGNALS = ["meta"]  # pass_vars data shipped to the client
 
     @classmethod
@@ -41,10 +46,12 @@ class FrameSplitterStep(BaseProcessingStep):
     @classmethod
     def validate_config(cls, config):
         errors = super().validate_config(config)
-        if not config.get("input_vars"):
+        wired = [v for v in config.get("input_vars", [])
+                 if v.get("source") is not None]
+        if not wired:
             errors.append(
-                "at least one input must be declared: audio_data, "
-                "video_data, or a data-lane key"
+                "at least one input must be wired (non-null source): "
+                "audio_data, video_data, or a data-lane key"
             )
         rates = {
             "audio_fps": config.get("audio_fps", AUDIO_FPS),
@@ -123,6 +130,7 @@ class FrameSplitterStep(BaseProcessingStep):
         self.data_lane_keys = [
             v.get("target") for v in self.config.get("input_vars", [])
             if v.get("target") not in ("audio_data", "video_data")
+            and v.get("source") is not None  # null source = lane off
         ]
 
         # Pre-create background templates and font. Frames are rendered at
@@ -130,7 +138,7 @@ class FrameSplitterStep(BaseProcessingStep):
         # cancel-clearing the buffer never leaves gaps in the emitted seq.
         self.add_frame_index = self.get_config("add_frame_index", False)
         self._idle_base = Image.new("RGB", (self.video_width, self.video_height), IDLE_COLOR)
-        self._speak_base = Image.new("RGB", (self.video_width, self.video_height), SPEAK_COLOR)
+        self._active_base = Image.new("RGB", (self.video_width, self.video_height), ACTIVE_COLOR)
         font_size = max(40, min(self.video_width, self.video_height) // 8)
         self._font = self._load_font(font_size)
         self._video_frame_counter = 0
@@ -143,7 +151,7 @@ class FrameSplitterStep(BaseProcessingStep):
         ] * self.audio_per_group
 
         # Internal buffer: ("group", dict) or ("signal", json_str). Video
-        # slots hold real b64 JPEG frames and/or "idle"/"speak" markers;
+        # slots hold real b64 JPEG frames and/or "idle"/"active" markers;
         # markers are rendered to placeholder JPEGs on pop.
         self._group_buffer = deque()
         self._clock_running = False
@@ -189,18 +197,18 @@ class FrameSplitterStep(BaseProcessingStep):
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _render_placeholder(self, kind, frame_num):
-        """Placeholder JPEG for a marker ("idle" = blue, "speak" = green).
+        """Placeholder JPEG for a marker ("idle" = blue, "active" = green).
         Numbered when add_frame_index; plain ones are rendered once and
         cached (~1-2ms per numbered frame at 1280x720, at send time)."""
         if self.add_frame_index:
-            img = (self._speak_base if kind == "speak"
+            img = (self._active_base if kind == "active"
                    else self._idle_base).copy()
             self._draw_index(img, frame_num)
             return self._encode_jpeg_b64(img)
         cached = self._marker_jpeg_cache.get(kind)
         if cached is None:
             cached = self._encode_jpeg_b64(
-                self._speak_base if kind == "speak" else self._idle_base)
+                self._active_base if kind == "active" else self._idle_base)
             self._marker_jpeg_cache[kind] = cached
         return cached
 
@@ -223,7 +231,7 @@ class FrameSplitterStep(BaseProcessingStep):
                 continue
             rendered = []
             for item in items:
-                if item in ("idle", "speak"):
+                if item in ("idle", "active"):
                     rendered.append(self._render_placeholder(
                         item, self._video_frame_counter))
                 elif self.add_frame_index:
@@ -331,7 +339,7 @@ class FrameSplitterStep(BaseProcessingStep):
                 if entry_type == "signal":
                     self.output_queue.put(entry)  # forward signal immediately (json str)
                     continue
-                # Media group: entry is a dict with "idle"/"speak" markers; render now
+                # Media group: entry is a dict with "idle"/"active" markers; render now
                 self._render_group_videos(entry)
                 group_to_send = json.dumps(entry)
 
@@ -484,7 +492,12 @@ class FrameSplitterStep(BaseProcessingStep):
         audio_data = data.get("audio_data", "")
         pcm_frames = self._decode_and_split(audio_data) if audio_data else []
 
-        video_frames = data.get("video_data") or []
+        # video frames arrive as {"image": b64} dicts (video product; the
+        # first frame may carry extra info like framerate — the splitter
+        # paces by its own config, so it is dropped here) or as bare b64
+        # strings (webrtc echo path via frame_collector)
+        video_frames = [f.get("image", "") if isinstance(f, dict) else f
+                        for f in (data.get("video_data") or [])]
 
         # per-frame lists for the data lane, keyed by input target name
         lane = {k: (data.get(k) or []) for k in self.data_lane_keys}
@@ -512,13 +525,13 @@ class FrameSplitterStep(BaseProcessingStep):
 
             # video: real frames while the message has them, then repeat the
             # message's last frame; a message with no video at all gets
-            # "speak" (green) placeholders
+            # "active" (green) placeholders
             if video_frames:
                 video_list = video_frames[g * vpg:(g + 1) * vpg]
                 while len(video_list) < vpg:
                     video_list.append(video_frames[-1])
             else:
-                video_list = ["speak"] * vpg
+                video_list = ["active"] * vpg
 
             # data slots: for each frame index, merge the f-th frame of every
             # data-lane input; None if no input has that frame

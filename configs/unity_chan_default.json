@@ -15,6 +15,10 @@
                     {
                         "source": "result",
                         "target": "1_text"
+                    },
+                    {
+                        "source": "language",
+                        "target": null
                     }
                 ],
                 "next_nodes": [2],
@@ -49,6 +53,10 @@
                     {
                         "source": "expression",
                         "target": "2_expression"
+                    },
+                    {
+                        "source": "raw_text",
+                        "target": null
                     }
                 ],
                 "emit_signals": [
@@ -194,6 +202,14 @@
                     {
                         "source": "4_text",
                         "target": "text"
+                    },
+                    {
+                        "source": null,
+                        "target": "language"
+                    },
+                    {
+                        "source": null,
+                        "target": "speaker"
                     }
                 ],
                 "pass_vars": [
@@ -222,6 +238,10 @@
                     {
                         "source": "audio_file",
                         "target": "audio_data"
+                    },
+                    {
+                        "source": "duration",
+                        "target": null
                     }
                 ],
                 "pass_signals": [

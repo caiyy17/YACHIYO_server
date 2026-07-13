@@ -17,15 +17,21 @@ class BaseMotionCaller:
         self.continuous = bool(config.get("continuous", False))
 
     def _stub_frame(self):
-        return {"root_xz": [0.0, 0.0], "root_vel_y": 0.0, "root_vel_yaw": 0.0,
+        return {"root_dxz": [0.0, 0.0], "root_dy": 0.0, "root_dyaw": 0.0,
                 "hips_pos": [0.0, 0.0, 0.0], "joints": {}}
 
     def _total_frames(self):
         return max(0, int(self.fps * self.default_duration))
 
     def call(self, prompt):
-        """Non-stream: the whole clip as one per-frame list."""
-        return [self._stub_frame() for _ in range(self._total_frames())]
+        """Non-stream: the whole clip as one per-frame list; the first frame
+        carries framerate/format/duration (same contract as the streaming
+        path, which omits duration — unknown upfront)."""
+        frames = [self._stub_frame() for _ in range(self._total_frames())]
+        if frames:
+            frames[0] = {"framerate": self.fps, "format": "humanoid",
+                         "duration": len(frames) / self.fps, **frames[0]}
+        return frames
 
     def call_stream(self, prompt):
         """Yield chunks as {"motion": [frame, ...]} — each chunk is
@@ -48,6 +54,7 @@ class MotionStep(BaseProcessingStep):
         return ["SoS"] if config.get("continuous") else []
 
     REQUIRED_INPUTS = ["prompt"]
+    OUTPUTS = ["motion"]
     # Sentence-level stream envelope, emitted only in stream mode (see
     # emitted_signals); wire names must be renamed in config when the
     # turn-level SoS/EoS also passes through (clash check enforces it).

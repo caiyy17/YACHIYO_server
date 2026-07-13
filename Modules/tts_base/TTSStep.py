@@ -1,3 +1,4 @@
+import wave
 from pydub import AudioSegment
 from io import BytesIO
 
@@ -54,7 +55,8 @@ class BaseTTSCaller:
 
 
 class TTSStep(BaseProcessingStep):
-    REQUIRED_INPUTS = ["text"]
+    REQUIRED_INPUTS = ["text", "language", "speaker"]
+    OUTPUTS = ["audio_file", "duration"]
     # Sentence-level stream envelope, emitted only in stream mode (see
     # emitted_signals). Internal names deliberately reuse SoS/EoS ("this
     # stream starts/ends"); the wire names MUST be renamed in config (e.g.
@@ -84,6 +86,10 @@ class TTSStep(BaseProcessingStep):
             return
 
         tts_result = self.tts_caller.call(text, language, speaker)
+        # clip length in seconds, read from the WAV header (same info a
+        # consumer could derive itself; exposed as an optional output so a
+        # config can wire it without decoding the audio)
+        duration = self._wav_duration(tts_result)
         try:
             tts_result = bytes_to_base64(tts_result)
         except Exception as e:
@@ -92,8 +98,18 @@ class TTSStep(BaseProcessingStep):
         # Put data into output_queue
         output_data = {}
         self.add_output(output_data, "audio_file", tts_result)
+        self.add_output(output_data, "duration", duration)
         self.output_to_queue(output_data, pass_data)
         return
+
+    @staticmethod
+    def _wav_duration(wav_bytes):
+        """Duration in seconds from the WAV header; 0.0 when unreadable."""
+        try:
+            with wave.open(BytesIO(wav_bytes), "rb") as wf:
+                return wf.getnframes() / wf.getframerate()
+        except Exception:
+            return 0.0
 
     def _process_stream(self, text, language, speaker, pass_data):
         """Single-in-multi-out protocol, same shape as the LLM turn: a

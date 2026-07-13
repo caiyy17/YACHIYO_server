@@ -8,6 +8,10 @@
                     {
                         "source": "audio_data",
                         "target": "audio_data"
+                    },
+                    {
+                        "source": null,
+                        "target": "video_data"
                     }
                 ],
                 "pass_vars": [],

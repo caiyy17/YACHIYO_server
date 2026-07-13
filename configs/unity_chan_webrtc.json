@@ -15,6 +15,14 @@
                     {
                         "source": "audio",
                         "target": "audio"
+                    },
+                    {
+                        "source": null,
+                        "target": "video"
+                    },
+                    {
+                        "source": null,
+                        "target": "data"
                     }
                 ],
                 "pass_vars": [],
@@ -22,6 +30,10 @@
                     {
                         "source": "audio_data",
                         "target": "1_audio_data"
+                    },
+                    {
+                        "source": "video_data",
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -84,7 +96,8 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [3]
+                "next_nodes": [3],
+                "start_offset_ms": 200
             }
         },
         {
@@ -102,6 +115,10 @@
                     {
                         "source": "result",
                         "target": "3_text"
+                    },
+                    {
+                        "source": "language",
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -150,6 +167,10 @@
                     {
                         "source": "expression",
                         "target": "4_expression"
+                    },
+                    {
+                        "source": "raw_text",
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -333,6 +354,14 @@
                     {
                         "source": "6_text",
                         "target": "text"
+                    },
+                    {
+                        "source": null,
+                        "target": "language"
+                    },
+                    {
+                        "source": null,
+                        "target": "speaker"
                     }
                 ],
                 "pass_vars": [
@@ -361,6 +390,10 @@
                     {
                         "source": "audio_file",
                         "target": "7_audio_data"
+                    },
+                    {
+                        "source": "duration",
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -398,6 +431,10 @@
                     {
                         "source": "7_audio_data",
                         "target": "audio_data"
+                    },
+                    {
+                        "source": null,
+                        "target": "video_data"
                     }
                 ],
                 "pass_vars": [

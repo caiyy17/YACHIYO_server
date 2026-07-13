@@ -6,6 +6,11 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 
 class MemoryManagerStep(BaseProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["SoS", "EoS"]
+    REQUIRED_INPUTS = ["text"]
+    # observer/passthrough: forwards every declared field unchanged, so
+    # the rest of its interface is config-defined
+    FREE_INPUTS = True
+    FREE_OUTPUTS = True
 
     """
     Tracks LLM responses and decides what to store in memory.
