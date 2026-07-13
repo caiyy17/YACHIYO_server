@@ -40,40 +40,42 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 
 ## 模型服务
 
-| 服务                  | 目录                                 | 说明                                     | 协议                                                                  |
-| --------------------- | ------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------- |
-| ASR (Qwen3-ASR)       | `Modules_standalone/QwenASR/`        | Qwen3-ASR 的 OpenAI Whisper 兼容 wrapper | [Apache 2.0](https://github.com/QwenLM/Qwen3-ASR)                     |
-| LLM (vLLM)            | `Modules_standalone/VLLM/`           | vLLM 原生 OpenAI API 的配置文件          | [Apache 2.0](https://github.com/vllm-project/vllm)                    |
-| TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | Qwen3-TTS 的 OpenAI TTS 兼容 wrapper     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                     |
-| MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | 文本到动作生成的 REST API wrapper        | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) |
+| 服务                  | 目录                                 | 说明                                     | 协议                                                                                         |
+| --------------------- | ------------------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| ASR (Qwen3-ASR)       | `Modules_standalone/QwenASR/`        | Qwen3-ASR 的 OpenAI Whisper 兼容 wrapper | [Apache 2.0](https://github.com/QwenLM/Qwen3-ASR)                                            |
+| LLM (vLLM)            | `Modules_standalone/VLLM/`           | vLLM 原生 OpenAI API 的配置文件          | [Apache 2.0](https://github.com/vllm-project/vllm)                                           |
+| TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | Qwen3-TTS 的 OpenAI TTS 兼容 wrapper     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                                            |
+| MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | 文本到动作生成的 REST API wrapper        | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0)                        |
 | 向量数据库            | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS 相似度搜索服务            | [MIT](https://huggingface.co/BAAI/bge-m3) / [MIT](https://github.com/facebookresearch/faiss) |
 
 每个服务有独立的 conda 环境。替换任何服务只需编辑 `configs/settings/settings.json` 中的 HTTP 地址。
 
 ## Pipeline 配置
 
-| 配置                | Pipeline                                                     | 说明                   |
-| ------------------- | ------------------------------------------------------------ | ---------------------- |
-| `demo`                | ASR → LLM → TTS                                                       | 最小对话               |
-| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                           | 对话 + RAG 表情/动作匹配    |
-| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → DataQuery → TTS → FrameSplitter          | WebRTC 帧级流式传输    |
-| `unity_chan_smpl`     | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive          | SMPLH 动作生成（并行） |
-| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber 弹幕直播        |
+| 配置                  | Pipeline                                                                               | 说明                     |
+| --------------------- | -------------------------------------------------------------------------------------- | ------------------------ |
+| `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
+| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
+| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC 帧级流式传输      |
+| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | SMPLH 动作生成（并行）   |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber 弹幕直播          |
 
 ## 节点类型
 
-| 模块                     | 函数名                              | 说明                                                 |
-| ------------------------ | ----------------------------------- | ---------------------------------------------------- |
-| `webrtc_frame_collector` | `frame_collector`                   | 逐组变换 WebRTC 车道:音频帧拼 WAV 块、视频/数据按 key 拆分  |
-| `vad_base`               | `vad`                               | 环形缓冲语音切段,由 recording_start/end 信号驱动(支持前后回溯、流式或整段输出)  |
-| `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                    |
-| `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取 |
-| `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                   |
-| `danmaku_buffer`         | `call_danmaku_buffer`               | 缓冲和筛选弹幕用于 VTuber 回复                       |
-| `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成动作；默认返回 Unity humanoid 格式（可选原始 SMPL-H） |
-| `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                    |
-| `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组              |
-| `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                |
+| 模块                     | 函数名                              | 说明                                                                           |
+| ------------------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
+| `webrtc_frame_collector` | `frame_collector`                   | 逐组变换 WebRTC 车道:音频帧拼 WAV 块、视频/数据按 key 拆分                     |
+| `vad_base`               | `vad`                               | 环形缓冲语音切段,由 recording_start/end 信号驱动(支持前后回溯、流式或整段输出) |
+| `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                                              |
+| `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取                           |
+| `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                                             |
+| `danmaku_buffer`         | `call_danmaku_buffer`               | 缓冲和筛选弹幕用于 VTuber 回复                                                 |
+| `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成动作；默认返回 Unity humanoid 格式（可选原始 SMPL-H）   |
+| `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                                              |
+| `video_base`             | `call_video`                        | 占位视频生成:纯色帧(config `color`),片长由参考时长驱动                         |
+| `pad`                    | `pad`                               | 同消息内各产物(音频 WAV + 帧列表)时长对齐:最长/最短/锚定三模式,每车道可关 cut/extend |
+| `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组                                        |
+| `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                                          |
 
 ## API
 

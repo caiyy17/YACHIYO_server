@@ -24,8 +24,8 @@ SUPPORTED_LANE_FPS = (10, 12, 15, 16, 18, 20, 24, 25, 30, 36, 40, 45, 48,
                       50, 60)
 
 # Frame background colors (RGB)
-IDLE_COLOR = (173, 216, 230)   # light blue
-ACTIVE_COLOR = (144, 238, 144)  # light green
+IDLE_COLOR = (0, 0, 255)     # pure blue
+ACTIVE_COLOR = (0, 255, 0)   # pure green
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",

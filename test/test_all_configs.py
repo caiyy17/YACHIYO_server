@@ -36,7 +36,7 @@ CONFIGS = {
         "expected_final": ["audio_data", "text", "action", "action_hint",
                           "expression", "expression_hint"],
     },
-    "unity_chan_smpl": {
+    "unity_chan_humanoid": {
         "input_type": "audio",
         "expected_streaming": ["text"],
         "expected_final": ["audio_data", "action",

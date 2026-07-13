@@ -50,9 +50,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ]
+                "next_nodes": [2]
             }
         },
         {
@@ -98,9 +96,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    3
-                ],
+                "next_nodes": [3],
                 "start_offset_ms": 200
             }
         },
@@ -139,9 +135,7 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [
-                    4
-                ],
+                "next_nodes": [4],
                 "model": "qwen_asr"
             }
         },
@@ -203,9 +197,7 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [
-                    5
-                ],
+                "next_nodes": [5],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -229,10 +221,7 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": [
-                    "get_weather",
-                    "web_search"
-                ]
+                "tool_names": ["get_weather", "web_search"]
             }
         },
         {
@@ -287,9 +276,7 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [
-                    6
-                ],
+                "next_nodes": [6],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -352,9 +339,7 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [
-                    7
-                ],
+                "next_nodes": [7],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
@@ -412,7 +397,7 @@
                     },
                     {
                         "source": "duration",
-                        "target": null
+                        "target": "7_duration"
                     }
                 ],
                 "pass_signals": [
@@ -437,15 +422,94 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [
-                    8
-                ],
+                "next_nodes": [8],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
         },
         {
             "node_id": 8,
+            "function": "call_video",
+            "config": {
+                "input_vars": [
+                    {
+                        "source": null,
+                        "target": "prompt"
+                    },
+                    {
+                        "source": "7_duration",
+                        "target": "duration"
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "source": "7_audio_data",
+                        "target": "7_audio_data"
+                    },
+                    {
+                        "source": "7_text",
+                        "target": "7_text"
+                    },
+                    {
+                        "source": "7_action",
+                        "target": "7_action"
+                    },
+                    {
+                        "source": "7_action_hint",
+                        "target": "7_action_hint"
+                    },
+                    {
+                        "source": "7_expression",
+                        "target": "7_expression"
+                    },
+                    {
+                        "source": "7_expression_hint",
+                        "target": "7_expression_hint"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "source": "video",
+                        "target": "8_video"
+                    },
+                    {
+                        "source": "duration",
+                        "target": null
+                    }
+                ],
+                "catch_signals": [],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    }
+                ],
+                "emit_signals": [],
+                "next_nodes": [9],
+                "video_fps": 30,
+                "video_width": 640,
+                "video_height": 320,
+                "color": [128, 0, 128]
+            }
+        },
+        {
+            "node_id": 9,
             "function": "frame_splitter",
             "config": {
                 "input_vars": [
@@ -454,7 +518,7 @@
                         "target": "audio_data"
                     },
                     {
-                        "source": null,
+                        "source": "8_video",
                         "target": "video_data"
                     }
                 ],
@@ -524,9 +588,7 @@
                         "target": "meta"
                     }
                 ],
-                "next_nodes": [
-                    -1
-                ],
+                "next_nodes": [-1],
                 "audio_fps": 50,
                 "video_fps": 30,
                 "video_width": 1280,

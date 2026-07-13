@@ -75,7 +75,7 @@ import json
 import logging
 import os
 import time
-from math import gcd, isfinite
+from math import ceil, gcd, isfinite
 from queue import Queue, Empty
 from collections import deque
 
@@ -393,6 +393,7 @@ class WebRTCSession:
                  video_offset=DEFAULT_VIDEO_OFFSET,
                  dc_offset=DEFAULT_DC_OFFSET,
                  cancel_offset=DEFAULT_CANCEL_OFFSET,
+                 expect_data=False,
                  on_session_end=None):
         self.client_id = client_id
         self.main_server_url = main_server_url
@@ -409,6 +410,9 @@ class WebRTCSession:
 
         # Data params
         self.data_fps = data_fps
+        # whether the pipeline consumes the data lane (collector data lane
+        # wired): gates the startup wait on data accumulation
+        self.expect_data = expect_data
 
         # Group structure (GCD-based)
         audio_fps = sample_rate // self.audio_samples
@@ -708,11 +712,34 @@ class WebRTCSession:
                                * VIDEO_CLOCK_RATE)
                            - video_pts_per_frame // 2)
 
-        # Wait until both lanes hold one full group of frames before starting
+        # Wait until every lane holds one full group PLUS its own lane
+        # offset worth of content: a lane's group-0 window is shifted back
+        # by its trim (media) / dc_offset (data), so that extra depth is
+        # exactly what makes window 0 fully covered. The data lane only
+        # counts when the pipeline consumes it (expect_data).
+        audio_need = self.audio_per_group + max(0, ceil(
+            self.audio_offset * self.sample_rate / self.audio_samples))
+        video_need = self.video_per_group + max(0, ceil(
+            self.video_offset * self.video_fps))
+        data_need = (self.data_per_group + max(0, ceil(
+            self.dc_offset * self.data_fps))) if self.expect_data else 0
+        _wait_start = time.time()
+        _next_warn = 5.0
         while self.connected:
-            if (len(self._input_audio_buffer) >= self.audio_per_group
-                    and len(self._input_video_buffer) >= self.video_per_group):
+            if (len(self._input_audio_buffer) >= audio_need
+                    and len(self._input_video_buffer) >= video_need
+                    and len(self._input_data_buffer) >= data_need):
                 break
+            waited = time.time() - _wait_start
+            if waited >= _next_warn:
+                logger.warning(
+                    f"[{self.client_id}] still waiting for startup "
+                    f"accumulation ({waited:.0f}s): audio "
+                    f"{len(self._input_audio_buffer)}/{audio_need}, video "
+                    f"{len(self._input_video_buffer)}/{video_need}, data "
+                    f"{len(self._input_data_buffer)}/{data_need}"
+                )
+                _next_warn += 5.0
             await asyncio.sleep(0.005)
         if not self.connected:
             return
@@ -732,8 +759,11 @@ class WebRTCSession:
                             + video_pts_per_frame // 2 - group_video_span
                             - int(self.video_offset * VIDEO_CLOCK_RATE))
         wall_origin = time.time()
-        # Clear data buffer — discard anything that arrived before alignment
-        self._input_data_buffer.clear()
+        # The data buffer is NOT cleared: the data windows lag the grid by
+        # dc_offset (data arrives that much earlier than the media of the
+        # same client moment), so group 0's data window is covered by items
+        # that arrived BEFORE alignment; anything older dies in the per-tick
+        # stale check.
         logger.info(
             f"[{self.client_id}] Group assembler aligned: "
             f"audio_pts0={audio_pts_origin}, video_pts0={video_pts_origin}, "
@@ -1293,6 +1323,16 @@ class WebRTCServer:
                 {"error": f"webrtc.cancel_offset_ms must be a finite number,"
                           f" got {cancel_ms!r}"}, status=400)
         session_kwargs["cancel_offset"] = cancel_ms / 1000
+        # the startup wait covers the data lane only when the pipeline
+        # actually consumes it (collector data lane wired)
+        expect_data = False
+        for n in ((conf or {}).get("pipeline") or []):
+            if n.get("function") == "frame_collector":
+                expect_data = any(
+                    v.get("target") == "data" and v.get("source") is not None
+                    for v in (n.get("config") or {}).get("input_vars", []))
+                break
+        session_kwargs["expect_data"] = expect_data
         # resolution is the client's own choice
         for key in ("video_width", "video_height"):
             if key in body:

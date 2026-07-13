@@ -614,6 +614,23 @@ async def run_test():
         await pc.close()
         return False
 
+    # --- Data lane feed: one {"payload": n} per data period. Configs whose
+    # collector consumes the data lane (e.g. loopback) need it flowing for
+    # startup accumulation and echo; others group-and-ignore it. ---
+    data_fps = 20
+
+    async def _send_data():
+        n = 0
+        try:
+            while client_dc.readyState == "open":
+                client_dc.send(json.dumps({"payload": n}))
+                n += 1
+                await asyncio.sleep(1 / data_fps)
+        except Exception:
+            pass
+
+    data_task = asyncio.ensure_future(_send_data())
+
     # --- Wait for initial silence period (visible in recording) ---
     SILENCE_BEFORE_SPEECH = 3  # seconds of silence before recording_start
     print(f"[Client] Waiting {SILENCE_BEFORE_SPEECH}s silence before speech...")
@@ -665,6 +682,10 @@ async def run_test():
     print(f"  Video: {len(recv_video_frames)} frames "
           f"({len(recv_video_frames) / VIDEO_FPS:.1f}s)")
     print(f"  DataChannel: {len(recv_dc_messages)} messages")
+    # data slots are dispatched one DC message per slot, the slot dict as-is
+    echoed = sum(1 for m in recv_dc_messages
+                 if isinstance(m, dict) and "payload" in m)
+    print(f"  Data slots with echoed payload: {echoed}")
     for msg in recv_dc_messages:
         display = {k: (v[:80] + "..." if isinstance(v, str) and len(v) > 80 else v)
                    for k, v in msg.items()}
@@ -680,6 +701,7 @@ async def run_test():
         output_path=OUTPUT_MP4,
     )
 
+    data_task.cancel()
     await pc.close()
 
     # --- Unregister ---

@@ -40,40 +40,42 @@ Each client gets an isolated pipeline instance (threads + queues). Compute-heavy
 
 ## Model Services
 
-| Service               | Directory                            | Description                                     | License                                                               |
-| --------------------- | ------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------------- |
-| ASR (Qwen3-ASR)       | `Modules_standalone/QwenASR/`        | OpenAI Whisper-compatible wrapper for Qwen3-ASR | [Apache 2.0](https://github.com/QwenLM/Qwen3-ASR)                     |
-| LLM (vLLM)            | `Modules_standalone/VLLM/`           | Config files for vLLM's native OpenAI API       | [Apache 2.0](https://github.com/vllm-project/vllm)                    |
-| TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | OpenAI TTS-compatible wrapper for Qwen3-TTS     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                     |
-| MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation  | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) |
+| Service               | Directory                            | Description                                     | License                                                                                      |
+| --------------------- | ------------------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| ASR (Qwen3-ASR)       | `Modules_standalone/QwenASR/`        | OpenAI Whisper-compatible wrapper for Qwen3-ASR | [Apache 2.0](https://github.com/QwenLM/Qwen3-ASR)                                            |
+| LLM (vLLM)            | `Modules_standalone/VLLM/`           | Config files for vLLM's native OpenAI API       | [Apache 2.0](https://github.com/vllm-project/vllm)                                           |
+| TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | OpenAI TTS-compatible wrapper for Qwen3-TTS     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                                            |
+| MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation  | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0)                        |
 | Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server         | [MIT](https://huggingface.co/BAAI/bge-m3) / [MIT](https://github.com/facebookresearch/faiss) |
 
 Each service runs in its own conda environment. Replace any service with any OpenAI-compatible implementation by editing `configs/settings/settings.json`.
 
 ## Pipeline Configurations
 
-| Config              | Pipeline                                                     | Description                           |
-| ------------------- | ------------------------------------------------------------ | ------------------------------------- |
-| `demo`                | ASR → LLM → TTS                                                       | Minimal conversation                  |
-| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                           | Conversation with RAG expression + action matching |
-| `unity_chan_webrtc`   | AudioCollector → ASR → LLM → DataQuery → DataQuery → TTS → FrameSplitter          | WebRTC frame-level streaming          |
-| `unity_chan_smpl`     | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive          | SMPLH motion generation (parallel)    |
-| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive | VTuber danmaku livestream             |
+| Config                | Pipeline                                                                               | Description                                        |
+| --------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
+| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
+| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC frame-level streaming                       |
+| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | SMPLH motion generation (parallel)                 |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber danmaku livestream                          |
 
 ## Node Types
 
-| Module                   | Function Name                       | Description                                                          |
-| ------------------------ | ----------------------------------- | -------------------------------------------------------------------- |
-| `webrtc_frame_collector` | `frame_collector`                   | Per-group transform of WebRTC lanes: audio frames→WAV chunk, video/data demux |
+| Module                   | Function Name                       | Description                                                                                                              |
+| ------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `webrtc_frame_collector` | `frame_collector`                   | Per-group transform of WebRTC lanes: audio frames→WAV chunk, video/data demux                                            |
 | `vad_base`               | `vad`                               | Ring-buffered voice segmentation driven by recording_start/end signals (pre/post-roll, stream or whole-utterance output) |
-| `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                             |
-| `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction |
-| `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                        |
-| `danmaku_buffer`         | `call_danmaku_buffer`               | Buffers and selects danmaku (live comments) for VTuber responses     |
-| `motion_generation`      | `call_motion_generation`            | Text-to-motion via HY-Motion API; returns Unity humanoid motion by default (or raw SMPL-H) |
-| `tts_openai`             | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                             |
-| `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups |
-| `parallel`               | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                 |
+| `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                                                                                 |
+| `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction                                                     |
+| `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                                                                            |
+| `danmaku_buffer`         | `call_danmaku_buffer`               | Buffers and selects danmaku (live comments) for VTuber responses                                                         |
+| `motion_generation`      | `call_motion_generation`            | Text-to-motion via HY-Motion API; returns Unity humanoid motion by default (or raw SMPL-H)                               |
+| `tts_openai`             | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                                                                                 |
+| `video_base`             | `call_video`                        | Placeholder video generator: solid-color frames (config `color`), clip length driven by a reference duration             |
+| `pad`                    | `pad`                               | Length-aligns the products in one message (audio WAV + frame lists) to the longest/shortest/anchor duration, per-lane cut/extend opt-outs |
+| `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups                                                     |
+| `parallel`               | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                                                                     |
 
 ## API
 

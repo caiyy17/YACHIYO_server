@@ -5,19 +5,20 @@ from PIL import Image
 
 from ..base.BaseProcessingStep import BaseProcessingStep
 
-GREEN = (0, 255, 0)
+DEFAULT_COLOR = (144, 238, 144)  # light green
 
 
-def _green_frame_b64(width, height):
-    """A single solid-green JPEG frame, base64-encoded."""
-    img = Image.new("RGB", (width, height), GREEN)
+def _solid_frame_b64(width, height, color):
+    """A single solid-color JPEG frame, base64-encoded."""
+    img = Image.new("RGB", (width, height), tuple(color))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 class BaseVideoCaller:
-    """Placeholder video generator — emits a fixed green frame. Mirrors the
+    """Placeholder video generator — emits a fixed solid-color frame
+    (config "color": RGB triple, default green). Mirrors the
     TTS caller: call() returns the whole clip, call_stream() yields chunks.
     A video product is a per-frame list (like motion); each frame is a dict
     {"image": <b64 jpeg>}, and the FIRST frame of a clip/stream additionally
@@ -36,7 +37,8 @@ class BaseVideoCaller:
         self.height = int(config.get("video_height", 240))
         self.fps = int(config.get("video_fps", 30))
         self.default_duration = float(config.get("duration", 2.0))
-        self._green = _green_frame_b64(self.width, self.height)
+        self.color = tuple(config.get("color", DEFAULT_COLOR))
+        self._frame = _solid_frame_b64(self.width, self.height, self.color)
 
     def _total_frames(self, duration):
         d = self.default_duration if duration is None else float(duration)
@@ -46,7 +48,7 @@ class BaseVideoCaller:
         """Non-stream: the whole clip as one per-frame list of green frames;
         the first frame additionally carries a "header" with framerate and
         duration (the streaming path omits duration — unknown upfront)."""
-        frames = [{"image": self._green}
+        frames = [{"image": self._frame}
                   for _ in range(self._total_frames(duration))]
         if frames:
             frames[0] = {"header": {"framerate": self.fps,
@@ -63,7 +65,7 @@ class BaseVideoCaller:
         first = True
         for i in range(0, total, chunk):
             n = min(chunk, total - i)
-            frames = [{"image": self._green} for _ in range(n)]
+            frames = [{"image": self._frame} for _ in range(n)]
             if first and frames:
                 frames[0] = {"header": {"framerate": self.fps}, **frames[0]}
                 first = False
@@ -71,8 +73,11 @@ class BaseVideoCaller:
 
 
 class VideoStep(BaseProcessingStep):
+    # duration input = reference length (null: module default); duration
+    # OUTPUT = actual clip length from the first-frame header (non-stream
+    # only, like TTS/motion)
     REQUIRED_INPUTS = ["prompt", "duration"]
-    OUTPUTS = ["video"]
+    OUTPUTS = ["video", "duration"]
     # Sentence-level stream envelope, emitted only in stream mode (same as
     # TTS/Motion; wire names renamed in config when a turn-level SoS/EoS also
     # passes through this node).
@@ -81,6 +86,18 @@ class VideoStep(BaseProcessingStep):
     @classmethod
     def emitted_signals(cls, config):
         return ["SoS", "EoS"] if config.get("stream") else []
+
+    @classmethod
+    def validate_config(cls, config):
+        errors = super().validate_config(config)
+        color = config.get("color", DEFAULT_COLOR)
+        if (not isinstance(color, (list, tuple)) or len(color) != 3
+                or any(isinstance(v, bool) or not isinstance(v, int)
+                       or not 0 <= v <= 255 for v in color)):
+            errors.append(
+                f"color must be an RGB triple of 0..255 integers, "
+                f"got {color!r}")
+        return errors
 
     def custom_init(self):
         self.video_caller = BaseVideoCaller(self.config, self.logger)
@@ -99,8 +116,17 @@ class VideoStep(BaseProcessingStep):
         result = self.video_caller.call(prompt, duration)
         output_data = {}
         self.add_output(output_data, "video", result)
+        self.add_output(output_data, "duration", self._clip_duration(result))
         self.output_to_queue(output_data, pass_data)
         return
+
+    @staticmethod
+    def _clip_duration(frames):
+        """Actual clip length from the first frame's header (0.0 when the
+        clip is empty or has no header)."""
+        if isinstance(frames, list) and frames and isinstance(frames[0], dict):
+            return float(frames[0].get("header", {}).get("duration", 0.0))
+        return 0.0
 
     def _process_stream(self, prompt, duration, pass_data):
         """Single-in-multi-out, same envelope as TTS/Motion: sentence-level

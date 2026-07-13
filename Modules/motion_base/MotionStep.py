@@ -59,9 +59,11 @@ class MotionStep(BaseProcessingStep):
         return ["SoS"] if config.get("continuous") else []
 
     # duration input is a REFERENCE length forwarded to the service (the
-    # returned motion may differ); wired to null it is simply not sent
+    # returned motion may differ); wired to null it is simply not sent.
+    # The duration OUTPUT is the actual clip length (from the first-frame
+    # header; non-stream only, like TTS).
     REQUIRED_INPUTS = ["prompt", "duration"]
-    OUTPUTS = ["motion"]
+    OUTPUTS = ["motion", "duration"]
     # Sentence-level stream envelope, emitted only in stream mode (see
     # emitted_signals); wire names must be renamed in config when the
     # turn-level SoS/EoS also passes through (clash check enforces it).
@@ -107,8 +109,17 @@ class MotionStep(BaseProcessingStep):
             if prompt != "" else ""
         output_data = {}
         self.add_output(output_data, "motion", result)
+        self.add_output(output_data, "duration", self._clip_duration(result))
         self.output_to_queue(output_data, pass_data)
         return
+
+    @staticmethod
+    def _clip_duration(frames):
+        """Actual clip length from the first frame's header (0.0 when the
+        clip is empty or has no header)."""
+        if isinstance(frames, list) and frames and isinstance(frames[0], dict):
+            return float(frames[0].get("header", {}).get("duration", 0.0))
+        return 0.0
 
     def _process_stream(self, prompt, ref_duration, pass_data):
         """Single-in-multi-out protocol, same shape as the LLM turn: a
