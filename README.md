@@ -10,7 +10,7 @@ A real-time streaming pipeline server for embodied conversational agents. Orches
 - **WebSocket & WebRTC** — sentence-level streaming via WebSocket; frame-level (20ms) synchronized streaming via WebRTC with configurable fps/resolution
 - **Service-oriented** — lightweight per-user pipeline instances; compute-heavy models run as shared standalone services with OpenAI-compatible APIs
 - **Config-driven** — pipelines, models, and characters defined entirely in JSON; swap local/cloud backends by changing one config file
-- **Declared signal routing** — every signal a node catches, passes, or emits is declared in the pipeline config as explicit one-to-one `{source, target}` entries (both fields always written; renames included), like the var declarations; undeclared signals never drift through a node, and relayed copies travel edge by edge like data. Per-node contracts are validated statically at init, exactly: catch targets == the module's required catches, emit declarations == its EMIT_SIGNALS, both ways
+- **Declared interface contracts** — every signal (catch/pass/emit) and every input/output var is declared in the pipeline config as explicit one-to-one `{source, target}` entries (both fields always written; renames included); undeclared signals never drift through a node, and relayed copies travel edge by edge like data. Per-node contracts are validated statically at init, exactly both ways: catch targets == the module's required catches, emit declarations == its EMIT_SIGNALS, input targets == its declared inputs, output sources == its products. An explicit `null` on the wire side is a declared opt-out: default input / unsent output / unwired catch / suppressed emission
 
 ## Quick Start
 
@@ -57,7 +57,7 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC frame-level streaming                       |
-| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | SMPLH motion generation (parallel)                 |
+| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid motion generation (parallel)                 |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber danmaku livestream                          |
 
 ## Node Types
@@ -89,7 +89,7 @@ POST /unregister/                   Cleanup
 
 WebRTC: `POST /offer/{client_id}` on port 15168 for SDP exchange, then communicate via audio/video tracks and DataChannel. Browser test client available at `http://<server>:15168/`.
 
-WebRTC session timing (audio/video/data fps) lives in a top-level `webrtc` block in the pipeline config, parallel to `pipeline` — the gateway fetches it via `GET /clients/{client_id}` at offer time (single source, kept in sync with the FrameSplitter's group packing). Video resolution is the client's own choice, sent in the offer body; the gateway rescales outgoing video to it. On the DataChannel, media rides the group's audio/video lanes while per-turn/per-sentence metadata (prompt, subtitle text, action/expression) rides signals under a `pass_data` field; the group's data lane is reserved for frame-aligned payloads. Stream TTS over WebRTC (config-only, see `dev_webrtc_stream`) streams audio chunk-by-chunk with a per-sentence `tts_SoS`/`tts_EoS` envelope.
+WebRTC session timing (audio/video/data fps) lives in a top-level `webrtc` block in the pipeline config, parallel to `pipeline` — the gateway fetches it via `GET /clients/{client_id}` at offer time (single source, kept in sync with the FrameSplitter's group packing), and the block is mandatory for webrtc-facing configs. The offer is validated against the pipeline before answering: a missing `webrtc` block, missing tracks or DataChannel, `audio_fps` ≠ 50 (the wire is fixed at 20 ms Opus frames), or a video/data fps outside the supported divisor list is rejected with 400 and the concrete mismatches. Video resolution is the client's own choice, sent in the offer body; the gateway rescales outgoing video to it. On the DataChannel, media rides the group's audio/video lanes while per-turn/per-sentence metadata (prompt, subtitle text, action/expression) rides signals under a `pass_data` field; the group's data lane is reserved for frame-aligned payloads. Stream TTS over WebRTC (config-only, see `dev_webrtc_stream`) streams audio chunk-by-chunk with a per-sentence `tts_SoS`/`tts_EoS` envelope.
 
 ## Web UI
 

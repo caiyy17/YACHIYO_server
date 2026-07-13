@@ -1131,7 +1131,30 @@ async def run_compat_test():
         check("matching offer accepted", st == 200 and "sdp" in resp,
               f"{st}")
 
-        # 5./6. bad lane rates -> rejected at offer time. The bad rate goes
+        # 5. a webrtc pipeline without a "webrtc" section -> rejected
+        with open(os.path.join(SCRIPT_DIR, "..", "configs",
+                               "unity_chan_webrtc.json")) as f:
+            cfg = json.load(f)
+        del cfg["webrtc"]
+        tmp_path = os.path.join(SCRIPT_DIR, "..", "configs",
+                                "test_webrtc_nosec.json")
+        with open(tmp_path, "w") as f:
+            json.dump(cfg, f)
+        try:
+            await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+                       {"config": "test_webrtc_nosec", "force": True})
+            st, resp = await offer_status(
+                http, [AudioStreamTrack(), VideoStreamTrack()], True)
+            gaps = resp.get("mismatches", [])
+            check("missing webrtc section rejected",
+                  st == 400 and gaps and "webrtc" in gaps[0], f"{st} {gaps}")
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+        # 6./7. bad lane rates -> rejected at offer time. The bad rate goes
         # ONLY into the webrtc section (the gateway's source): the splitter
         # node keeps valid values so init_pipeline still passes and the
         # gateway check is what fires.

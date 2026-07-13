@@ -18,7 +18,7 @@ def _solid_frame_b64(width, height, color):
 
 class BaseVideoCaller:
     """Placeholder video generator — emits a fixed solid-color frame
-    (config "color": RGB triple, default green). Mirrors the
+    (config "color": RGB triple, default light green). Mirrors the
     TTS caller: call() returns the whole clip, call_stream() yields chunks.
     A video product is a per-frame list (like motion); each frame is a dict
     {"image": <b64 jpeg>}, and the FIRST frame of a clip/stream additionally
@@ -45,9 +45,10 @@ class BaseVideoCaller:
         return max(0, int(self.fps * d))
 
     def call(self, prompt, duration=None):
-        """Non-stream: the whole clip as one per-frame list of green frames;
-        the first frame additionally carries a "header" with framerate and
-        duration (the streaming path omits duration — unknown upfront)."""
+        """Non-stream: the whole clip as one per-frame list of solid-color
+        frames; the first frame additionally carries a "header" with
+        framerate and duration (the streaming path omits duration —
+        unknown upfront)."""
         frames = [{"image": self._frame}
                   for _ in range(self._total_frames(duration))]
         if frames:
@@ -58,8 +59,9 @@ class BaseVideoCaller:
 
     def call_stream(self, prompt, duration=None):
         """Yield chunks as {"video": [frame, ...]} — each chunk is
-        `stream_frames` green frames (the last may be shorter); the stream's
-        very first frame additionally carries a "header" with framerate."""
+        `stream_frames` solid-color frames (the last may be shorter); the
+        stream's very first frame additionally carries a "header" with
+        framerate."""
         total = self._total_frames(duration)
         chunk = max(1, int(self.config.get("stream_frames", self.fps)))
         first = True

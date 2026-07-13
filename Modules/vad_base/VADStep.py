@@ -228,7 +228,8 @@ class VADStep(SpanProcessingStep):
                 f"vad segment: {(end - lo) / self.sample_rate:.2f}s "
                 f"(samples {lo}..{end})"
             )
-            # signal first, then the audio — same order the old collector kept
+            # signal first, then the audio — downstream learns the segment
+            # ended before its payload arrives
             self.emit_signal("vad_end", {"timestamp": self._mark_ts})
             output_data = {}
             self.add_output(output_data, "audio_file", self._pcm_to_wav(pcm))

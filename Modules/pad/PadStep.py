@@ -27,9 +27,9 @@ class PadStep(BaseProcessingStep):
     default true). Lanes with unreadable duration are left untouched and
     excluded from the target computation.
 
-    The legacy audio_pad behavior is: mode "anchor", anchor "motion",
-    behavior {"audio": {"cut": false}} (audio stretches to the motion
-    but is never truncated).
+    A typical "audio follows the motion" setup: mode "anchor", anchor
+    "motion", behavior {"audio": {"cut": false}} — the audio stretches to
+    the motion's length but is never truncated.
     """
 
     REQUIRED_INPUTS = []

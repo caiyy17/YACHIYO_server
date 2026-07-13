@@ -73,7 +73,8 @@ class MotionStep(BaseProcessingStep):
     def emitted_signals(cls, config):
         return ["SoS", "EoS"] if config.get("stream") else []
 
-    """Pipeline step: text prompt -> motion. Emits a single ``motion`` output.
+    """Pipeline step: text prompt -> motion frames plus the clip's actual
+    duration.
 
     In continuous mode the caller keeps the last N frames as continuation context;
     this step intercepts SoS to reset that history at the start of a stream. All other

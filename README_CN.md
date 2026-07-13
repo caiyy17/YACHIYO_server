@@ -10,7 +10,7 @@
 - **WebSocket & WebRTC** — WebSocket 提供句子级流式；WebRTC 提供帧级（20ms）同步流式，帧率/分辨率可配
 - **服务化架构** — 轻量的每用户 pipeline 实例；计算密集型模型作为共享独立服务运行，提供 OpenAI 兼容 API
 - **配置驱动** — pipeline、模型和角色完全由 JSON 定义；切换本地/云端只需改配置文件
-- **声明式信号路由** — 节点 catch / pass / emit 的每个信号都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名），与 vars 声明同构；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且为恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS，双向核对
+- **声明式接口契约** — 节点的每个信号（catch / pass / emit）和每个输入/输出变量都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名）；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且双向恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS、输入 targets == 模块声明的输入集、输出 sources == 其产物集。线上侧显式 `null` 为声明式退出：输入用默认值 / 输出不上线 / catch 不接线 / emit 不发射
 
 ## 快速开始
 
@@ -57,7 +57,7 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC 帧级流式传输      |
-| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | SMPLH 动作生成（并行）   |
+| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid 动作生成（并行）   |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber 弹幕直播          |
 
 ## 节点类型
@@ -89,7 +89,7 @@ POST /unregister/                   清理
 
 WebRTC：在端口 15168 上 `POST /offer/{client_id}` 进行 SDP 交换，之后通过 audio/video track 和 DataChannel 通信。浏览器测试客户端：`http://<服务器>:15168/`。
 
-WebRTC 会话的帧率参数（audio/video/data fps）写在 pipeline 配置里与 `pipeline` 平行的顶层 `webrtc` 段——网关在 offer 时经 `GET /clients/{client_id}` 读取（单一来源，与 FrameSplitter 的分组打包保持一致）。视频分辨率由客户端自定（offer body 携带），网关将输出视频缩放到该尺寸。DataChannel 上，媒体走分组的 audio/video 车道，而每轮/每句的元数据（prompt、字幕文本、动作/表情）搭在信号的 `pass_data` 字段上；分组的 data 车道保留给帧对齐载荷。stream TTS 接 WebRTC（纯配置，见 `dev_webrtc_stream`）按块流式发音频，每句带 `tts_SoS`/`tts_EoS` 包络。
+WebRTC 会话的帧率参数（audio/video/data fps）写在 pipeline 配置里与 `pipeline` 平行的顶层 `webrtc` 段——网关在 offer 时经 `GET /clients/{client_id}` 读取（单一来源，与 FrameSplitter 的分组打包保持一致），且该段对 webrtc 类配置**必需**。offer 在应答前会对照管线校验：缺 `webrtc` 段、缺轨道或 DataChannel、`audio_fps` ≠ 50（线上固定 20ms Opus 帧）、video/data fps 不在支持列表内，均返回 400 并附具体缺口。视频分辨率由客户端自定（offer body 携带），网关将输出视频缩放到该尺寸。DataChannel 上，媒体走分组的 audio/video 车道，而每轮/每句的元数据（prompt、字幕文本、动作/表情）搭在信号的 `pass_data` 字段上；分组的 data 车道保留给帧对齐载荷。stream TTS 接 WebRTC（纯配置，见 `dev_webrtc_stream`）按块流式发音频，每句带 `tts_SoS`/`tts_EoS` 包络。
 
 ## Web UI
 

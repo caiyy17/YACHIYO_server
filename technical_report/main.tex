@@ -256,13 +256,13 @@ Signals travel in the \emph{same} queue as data, hop by hop, exactly like ordina
     \item \texttt{pass\_signals}: relay the signal (renamed) to the next queue.
 \end{itemize}
 
-The four resulting states: \emph{catch only} = consume and terminate; \emph{catch + pass} = consume, then relay \emph{after} \texttt{process()} returns, so any output the node emitted for the signal stays ahead of it (consume-then-relay); \emph{pass only} = forward without processing, at queue-forwarding speed ($\sim$$\mu$s per hop) rather than data-processing speed ($\sim$ms--s per stage), without overtaking any queued message; \emph{undeclared} = a wiring error---the signal is dropped with a loud log. Every signal arriving at a node must therefore be declared, and the complete signal flow of a pipeline is readable from its config alone.
+The four resulting states: \emph{catch only} = consume and terminate; \emph{catch + pass} = consume, then relay \emph{after} \texttt{process()} returns, so any output the node emitted for the signal stays ahead of it (consume-then-relay); \emph{pass only} = forward without processing, at queue-forwarding speed ($\sim$$\mu$s per hop) rather than data-processing speed ($\sim$ms--s per stage), without overtaking any queued message; \emph{undeclared} = the signal dies at that node, dropped with a warning log. Every signal arriving at a node must therefore be declared, and the complete signal flow of a pipeline is readable from its config alone.
 
 Signals use the same destination routing as data. A relayed (passed) copy is re-addressed to the node's \emph{first edge} (\texttt{next\_nodes[0]})---the same default destination a data output gets---so an ordinary signal such as \texttt{SoS}/\texttt{EoS} advances edge by edge, one declared \texttt{pass} hop at a time, checked at every node until the pipeline exit. A \emph{directed} signal takes a non-default edge (e.g.\ the dispatcher's \texttt{dispatch\_start/end} to its receiver) and transits intermediate nodes via ordinary destination routing; at its target the same four states apply.
 
 The emitting side is declared symmetrically: each module lists the signals it emits (by internal name) in its class contract \texttt{EMIT\_SIGNALS}, and sends through \texttt{emit\_signal()}; the wire name of every emission comes from the config's \texttt{emit\_signals} declaration --- entirely config-defined with no contract default, the same rule as \texttt{catch\_signals}/\texttt{pass\_signals}, so a pipeline's complete signal surface (emit, catch, pass) is readable from its config alone. Renaming emitted envelopes is what makes \emph{nested} dispatcher/receiver brackets wireable: the inner pair emits, say, \texttt{inner\_dispatch\_start/end}, which the inner receiver catches, without colliding with the outer envelope. The dispatcher's own signal semantics follow its logical mainline: its \texttt{pass\_signals} relay \emph{directed to the receiver} (transiting branch nodes, which neither see nor declare them), while \texttt{dispatch\_signals}---the signal-side parallel of \texttt{dispatch\_vars}---list which \emph{caught} signals each branch receives as directed copies, by catch-target name (a signal must be caught to be dispatched; the same name may go to several branches). The validator enforces the exact match both ways: every catch target referenced by some branch list, every reference a real catch target.
 
-Pipelines are validated statically at initialization time, and the validation is deliberately \emph{per-node}: each module declares its own contract as class attributes (\texttt{REQUIRED\_CATCH\_SIGNALS} / \texttt{REQUIRED\_INPUTS}, config-dependent variants via classmethods, plus \texttt{EMIT\_SIGNALS} for what it sends), and the checking logic itself lives in the step classes (a pure classmethod \texttt{validate\_config(config)} on the base class, extended via inheritance by structured modules such as the dispatcher), and the validator is pure dispatch over the nodes --- declaration lists well-formed (explicit entries, one-to-one), catch targets equal to \texttt{required\_catch\_signals(config)} \emph{exactly} (renamed wiring still satisfies the contract, since handlers match target names; an extra target would be silently swallowed by \texttt{process()}), required inputs covered by \texttt{input\_vars}, \texttt{emit\_signals} covering the module's \texttt{EMIT\_SIGNALS} exactly (both directions: every emission declared, every declaration a real emission), and node-internal reference consistency (dispatcher's \texttt{dispatch\_vars}/\texttt{dispatch\_signals} must reference its own output/catch targets, the latter exactly both ways). Cross-node flow is intentionally \emph{not} modeled: doing so would replicate each module's routing semantics inside the validator and drift as modules evolve. Broken links between nodes instead surface at runtime through the four-state rules --- an undeclared signal is dropped with a loud per-client log entry at the first node it reaches. Any static finding rejects the pipeline (HTTP 400 with details).
+Pipelines are validated statically at initialization time, and the validation is deliberately \emph{per-node}: each module declares its own contract as class attributes (\texttt{REQUIRED\_CATCH\_SIGNALS} / \texttt{REQUIRED\_INPUTS}, config-dependent variants via classmethods, plus \texttt{EMIT\_SIGNALS} for what it sends), and the checking logic itself lives in the step classes (a pure classmethod \texttt{validate\_config(config)} on the base class, extended via inheritance by structured modules such as the dispatcher), and the validator is pure dispatch over the nodes --- declaration lists well-formed (explicit entries, one-to-one), catch targets equal to \texttt{required\_catch\_signals(config)} \emph{exactly} (renamed wiring still satisfies the contract, since handlers match target names; an extra target would be silently swallowed by \texttt{process()}), \texttt{input\_vars} targets equal to the module's declared input set and \texttt{output\_vars} sources equal to its product set --- exactly, both directions (modules with config-defined lanes, such as the frame splitter's data inputs or the frame collector's demux outputs, mark that side free-form and only the fixed part is matched), \texttt{emit\_signals} covering the module's \texttt{EMIT\_SIGNALS} exactly (both directions: every emission declared, every declaration a real emission), and node-internal reference consistency (dispatcher's \texttt{dispatch\_vars}/\texttt{dispatch\_signals} must reference its own output/catch targets, the latter exactly both ways). On the wire side of any entry an explicit \texttt{null} is a declared opt-out rather than an omission: a null input source falls back to the module default, a null output target drops that product from the outgoing message, a null catch source leaves the slot unwired, and a null emit target suppresses the emission --- the full contract stays visible in the config either way. Cross-node flow is intentionally \emph{not} modeled: doing so would replicate each module's routing semantics inside the validator and drift as modules evolve. Broken links between nodes instead surface at runtime through the four-state rules --- an undeclared signal is dropped with a loud per-client log entry at the first node it reaches. Any static finding rejects the pipeline (HTTP 400 with details).
 
 Environment failures are separated from configuration failures. Node initialization is sequential; each node's \texttt{custom\_init} runs under a 60\,s timeout and records its outcome. A failed init (dependent model service down, bad settings entry) \emph{fails fast}: nodes built so far are killed, the client state is reset to re-initializable, and the endpoint returns HTTP 503 with the failing node and cause --- distinct from the validator's 400 (fix the config) in that a 503 is retryable once the service is back.
 
@@ -312,7 +312,7 @@ Messages are produced only on events (user speech, LLM output, TTS completion); 
 Audio and video tracks produce frames at fixed rates (50\,fps, 30\,fps) regardless of activity, emitting silence when idle. The timing origin is the server's monotonic frame clock.
 
 \paragraph{Paradigm adapters.}
-Two adapter nodes bridge the paradigms: \textbf{AudioCollector} assembles continuous microphone frames into a single WAV buffer on \texttt{recording\_end} (frame $\rightarrow$ event); \textbf{FrameSplitter} is a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data (event $\rightarrow$ frame). FrameSplitter overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
+Adapter nodes bridge the paradigms. The frame $\rightarrow$ event side is a pair: \textbf{FrameCollector} transforms each arriving frame group into per-lane pipeline messages (the group's audio frames joined into one WAV chunk, video frames and data slots passed as lists), and \textbf{VAD} keeps a persistent ring of those audio chunks, cutting an utterance from it between \texttt{recording\_start} and \texttt{recording\_end} (with configurable pre/post-roll). The event $\rightarrow$ frame side is \textbf{FrameSplitter}, a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data. It overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
 
 \subsection{Motivation: From Sentence-Level to Frame-Level}
 
@@ -348,9 +348,9 @@ R_g = \gcd(R_a, R_v, R_d) = \gcd(50, 30, 20) = 10 \;\text{Hz}, \quad T_g = \frac
 \end{equation}
 This is the \emph{finest} common synchronization granularity---any shorter period would require fractional frames in at least one modality. Each group contains $n_a = R_a/R_g = 5$ audio frames, $n_v = R_v/R_g = 3$ video frames, and $n_d = R_d/R_g = 2$ data slots.
 
-The group is the atomic synchronization unit: the client consumes one group per $T_g$, dispatching exactly $n_a$ audio frames, $n_v$ video frames, and $n_d$ data slots to their respective output channels. This guarantees that no modality drifts ahead of or behind others within a group. Per-sentence metadata (text, action, emotion) rides in the first group's data slot.
+The group is the atomic synchronization unit: the client consumes one group per $T_g$, dispatching exactly $n_a$ audio frames, $n_v$ video frames, and $n_d$ data slots to their respective output channels. This guarantees that no modality drifts ahead of or behind others within a group. Per-sentence metadata (text, action, expression) rides a \texttt{meta} signal carrying the node's pass-through fields; the group's data slots are reserved for frame-aligned payloads (e.g.\ per-frame motion).
 
-All frame rates and video resolution are configurable per session; the GCD calculation adapts automatically (e.g., 24\,fps video with 12\,fps data yields $R_g = 2$, $T_g = 500$\,ms).
+Video/data rates and video resolution are configurable per session and the GCD calculation adapts automatically (e.g., 24\,fps video with 12\,fps data yields $R_g = 2$, $T_g = 500$\,ms). The audio rate is pinned at 50\,fps --- WebRTC audio is 20\,ms Opus frames on the wire and the SDP negotiates no framing --- and video/data rates must divide the 90\,kHz RTP clock within 10--60\,fps; both constraints, along with the offered tracks matching the lanes the pipeline consumes and produces, are enforced when the connection is offered (HTTP 400 with the concrete mismatches).
 
 \subsection{Comparison: WebSocket vs.\ WebRTC Mode}
 
@@ -628,25 +628,29 @@ For independent nodes that both process the same message, reordering does not re
 Each inter-node message is a flat key-value object. Variable names are prefixed with the producing node's ID to avoid collisions (e.g., \texttt{3\_text}). Three routing mechanisms handle data flow without requiring nodes to know the full pipeline topology:
 
 \begin{itemize}[nosep]
-    \item \textbf{input\_vars}: selects which upstream fields a node consumes, with ordered fallback sources.
-    \item \textbf{output\_vars}: maps processing results to prefixed target names.
+    \item \textbf{input\_vars}: maps incoming fields to the internal names the module reads (explicit \texttt{\{source, target\}} entries, one-to-one).
+    \item \textbf{output\_vars}: maps the module's products to outgoing field names.
     \item \textbf{pass\_vars}: carries metadata unchanged across nodes that do not consume it (e.g., the LLM's action tag passes through TTS to reach the client).
     \item \textbf{catch\_signals / pass\_signals / emit\_signals}: the signal counterparts (Section~\ref{sec:signals}); every signal arriving at a node must be declared as caught and/or passed, so the listing's downstream nodes declare \texttt{pass\_signals} for the LLM's \texttt{SoS}/\texttt{EoS}.
 \end{itemize}
 
+Var declarations follow the same exact per-node contract as signals: \texttt{input\_vars} targets must equal the module's declared input set and \texttt{output\_vars} sources its product set, both directions, and an explicit \texttt{null} on the wire side is a declared opt-out --- a null input source uses the module default, a null output target keeps that product off the wire (visible in the listing's \texttt{language}, \texttt{raw\_text}, \texttt{speaker} and \texttt{duration} entries).
+
 Pass-through is only applied when a node actually processes a message; forwarded messages (destination mismatch) are passed unchanged. A \texttt{destination} field enables skip-connections to non-adjacent nodes; the special id \texttt{-1} denotes the pipeline exit, so terminal nodes declare \texttt{next\_nodes: [-1]}. Node IDs need not be contiguous but must be monotonically increasing.
 
-\begin{lstlisting}[caption={Pipeline configuration (simplified).}]
+\begin{lstlisting}[caption={Pipeline configuration (valid as written).}]
 {
   "pipeline": [
     {
       "node_id": 1,
       "function": "call_openai_asr",
       "config": {
-        "input_vars": [{"input_name": "audio_file",
-                        "source": "audio_file"}],
-        "output_vars": [{"output_name": "result",
-                         "target": "1_text"}],
+        "input_vars": [{"source": "audio_file",
+                        "target": "audio_file"}],
+        "output_vars": [{"source": "result",
+                         "target": "1_text"},
+                        {"source": "language",
+                         "target": null}],
         "next_nodes": [3],
         "model": "qwen_asr"
       }
@@ -655,43 +659,36 @@ Pass-through is only applied when a node actually processes a message; forwarded
       "node_id": 3,
       "function": "call_openai_llm",
       "config": {
-        "input_vars": [{"input_name": "prompt",
-                        "source": "1_text"}],
-        "output_vars": [{"output_name": "text",
+        "input_vars": [{"source": "1_text",
+                        "target": "prompt"}],
+        "output_vars": [{"source": "text",
                          "target": "3_text"},
-                        {"output_name": "action",
-                         "target": "3_action"}],
-        "next_nodes": [5],
-        "model": "qwen"
-      }
-    },
-    {
-      "node_id": 5,
-      "function": "call_data_query_link",
-      "config": {
-        "input_vars": [{"input_name": "prompt",
-                        "source": "3_action"}],
-        "pass_vars": [{"source": "3_text",
-                       "target": "5_text"}],
-        "output_vars": [{"output_name": "result",
-                         "target": "5_action"}],
-        "pass_signals": [{"source": "SoS",
+                        {"source": "raw_text",
+                         "target": null}],
+        "emit_signals": [{"source": "SoS",
                           "target": "SoS"},
                          {"source": "EoS",
                           "target": "EoS"}],
-        "next_nodes": [6]
+        "next_nodes": [6],
+        "model": "qwen"
       }
     },
     {
       "node_id": 6,
       "function": "call_openai_tts",
       "config": {
-        "input_vars": [{"input_name": "text",
-                        "source": "5_text"}],
-        "pass_vars": [{"source": "5_action",
-                       "target": "action"}],
-        "output_vars": [{"output_name": "audio_file",
-                         "target": "audio_data"}],
+        "input_vars": [{"source": "3_text",
+                        "target": "text"},
+                       {"source": null,
+                        "target": "language"},
+                       {"source": null,
+                        "target": "speaker"},
+                       {"source": null,
+                        "target": "duration"}],
+        "output_vars": [{"source": "audio_file",
+                         "target": "audio_data"},
+                        {"source": "duration",
+                         "target": null}],
         "pass_signals": [{"source": "SoS",
                           "target": "SoS"},
                          {"source": "EoS",
@@ -704,7 +701,7 @@ Pass-through is only applied when a node actually processes a message; forwarded
 }
 \end{lstlisting}
 
-Note: \texttt{node\_id} values (1, 3, 5, 6) are non-contiguous but monotonically increasing, allowing future insertion of new nodes (e.g., node 2 or 4) without renumbering existing nodes.
+Note: \texttt{node\_id} values (1, 3, 6) are non-contiguous but monotonically increasing, allowing future insertion of new nodes (e.g., node 2 or 4) without renumbering existing nodes.
 
 % ============================================================
 \section{Implementation Details}
@@ -774,8 +771,8 @@ Every pipeline node extends \texttt{BaseProcessingStep}, which implements the co
 \begin{enumerate}[nosep]
     \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
     \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
-    \item \textbf{Signal handling}: each node declares \texttt{catch\_signals} / \texttt{pass\_signals} in its pipeline config (renaming supported, like the var declarations); caught signals go to \texttt{process()}, passed signals are relayed at forwarding speed, undeclared signals are dropped as wiring errors (Section~\ref{sec:signals}).
-    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $\leq$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
+    \item \textbf{Signal handling}: each node declares \texttt{catch\_signals} / \texttt{pass\_signals} in its pipeline config (renaming supported, like the var declarations); caught signals go to \texttt{process()}, passed signals are relayed at forwarding speed, undeclared signals are dropped with a warning (Section~\ref{sec:signals}).
+    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $<$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
     \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
 \end{enumerate}
 
@@ -783,7 +780,7 @@ Subclasses override a single \texttt{process()} method containing the node-speci
 
 \subsection{SpanProcessingStep}
 
-Some modules process data spanning multiple messages (e.g., AudioCollector accumulates frames between \texttt{recording\_start} and \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+Some modules process data spanning multiple messages (e.g., the VAD accumulates audio in its ring and cuts a segment between \texttt{recording\_start} and \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
 
 \subsection{Connection Lifecycle}
 

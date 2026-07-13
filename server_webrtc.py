@@ -744,10 +744,10 @@ class WebRTCSession:
         if not self.connected:
             return
 
-        # Align at the moment both lanes hold a full group: each origin is
-        # placed so group 0 is exactly the group already buffered — the
-        # first tick then waits only assembler_offset instead of offset +
-        # one group period. Boundaries are pulled back a further half frame
+        # Align at the moment every lane reaches its startup depth: each
+        # origin is placed so group 0 is exactly the (trim-shifted) group
+        # already buffered — the first tick then waits only
+        # assembler_offset. Boundaries are pulled back a further half frame
         # so nominal frame instants sit at window centers: sender-side ms
         # quantization of pts (e.g. video 2970/3060 around the 3000 grid)
         # then never flips a frame across a window boundary. Per-lane
@@ -1148,6 +1148,10 @@ def check_offer_compatibility(sdp, pipeline_conf):
     if collector is None and splitter is None:
         return ["pipeline has no frame_collector or frame_splitter — "
                 "not a webrtc pipeline (init a webrtc config first)"]
+    if not pipeline_conf.get("webrtc"):
+        return ['pipeline config has no top-level "webrtc" section — '
+                "every webrtc-facing config must declare its lane rates "
+                "explicitly"]
 
     media = _parse_sdp_media(sdp)
     errors = []
@@ -1215,8 +1219,8 @@ class WebRTCServer:
 
         conf = await self._fetch_pipeline_config(client_id)
         if conf is None:
-            # main server unreachable: keep the old permissive behavior
-            # (the session is doomed anyway if it stays down)
+            # main server unreachable: proceed without the compatibility
+            # check (the session cannot work anyway if it stays down)
             logger.warning(f"[{client_id}] pipeline config unavailable; "
                            f"skipping offer compatibility check")
             sec = {}
