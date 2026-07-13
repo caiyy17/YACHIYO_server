@@ -1021,6 +1021,140 @@ def run_cancel(args):
 
 
 # ============================================================
+# Mode: compat  (offer <-> config compatibility, gateway-side)
+# ============================================================
+COMPAT_CLIENT_ID = "test_webrtc_compat"
+
+
+async def run_compat_test():
+    """Gateway-side connection/config validation:
+      1-3. mismatched offers are rejected with 400 + concrete gaps
+           (audio-only, no DataChannel, non-webrtc pipeline)
+      4.   a matching offer is accepted (200)
+      5.   a config with audio_fps != 50 is rejected at offer time: the
+           wire is always 20ms/50fps (aiortc hardcodes it, browsers
+           default to it, and the SDP cannot negotiate framing)
+      6.   a config with video_fps or data_fps outside the supported
+           constant list (divisors of 90000 in 10..60) is rejected at
+           offer time."""
+    import aiohttp
+    from aiortc.mediastreams import AudioStreamTrack, VideoStreamTrack
+
+    async def post(http, url, js):
+        async with http.post(url, json=js) as r:
+            try:
+                return r.status, await r.json()
+            except Exception:
+                return r.status, {}
+
+    async def make_offer(tracks, with_dc):
+        pc = RTCPeerConnection()
+        for t in tracks:
+            pc.addTrack(t)
+        if with_dc:
+            pc.createDataChannel("client-signals")
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        return pc
+
+    async def offer_status(http, tracks, with_dc):
+        pc = await make_offer(tracks, with_dc)
+        status, resp = await post(
+            http, f"{WEBRTC_SERVER}/offer/{COMPAT_CLIENT_ID}",
+            {"sdp": pc.localDescription.sdp,
+             "type": pc.localDescription.type})
+        await pc.close()
+        return status, resp
+
+    ok = True
+
+    def check(name, good, detail=""):
+        nonlocal ok
+        print(f"  {'PASS' if good else 'FAIL'}: {name}"
+              + (f"  {detail}" if detail and not good else ""))
+        ok = ok and good
+
+    async with aiohttp.ClientSession() as http:
+        await post(http, f"{MAIN_SERVER}/register/",
+                   {"client_id": COMPAT_CLIENT_ID})
+        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+                   {"config": "unity_chan_webrtc", "force": True})
+
+        st, resp = await offer_status(http, [AudioStreamTrack()], True)
+        gaps = resp.get("mismatches", [])
+        check("audio-only offer rejected",
+              st == 400 and len(gaps) == 2
+              and all("video" in g for g in gaps), f"{st} {gaps}")
+
+        st, resp = await offer_status(
+            http, [AudioStreamTrack(), VideoStreamTrack()], False)
+        gaps = resp.get("mismatches", [])
+        check("no-DataChannel offer rejected",
+              st == 400 and len(gaps) == 1 and "DataChannel" in gaps[0],
+              f"{st} {gaps}")
+
+        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+                   {"config": "unity_chan_text", "force": True})
+        st, resp = await offer_status(
+            http, [AudioStreamTrack(), VideoStreamTrack()], True)
+        gaps = resp.get("mismatches", [])
+        check("non-webrtc pipeline offer rejected",
+              st == 400 and gaps and "not a webrtc pipeline" in gaps[0],
+              f"{st} {gaps}")
+
+        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+                   {"config": "unity_chan_webrtc", "force": True})
+        st, resp = await offer_status(
+            http, [AudioStreamTrack(), VideoStreamTrack()], True)
+        check("matching offer accepted", st == 200 and "sdp" in resp,
+              f"{st}")
+
+        # 5./6. bad lane rates -> rejected at offer time. The bad rate goes
+        # ONLY into the webrtc section (the gateway's source): the splitter
+        # node keeps valid values so init_pipeline still passes and the
+        # gateway check is what fires.
+        base_path = os.path.join(SCRIPT_DIR, "..", "configs",
+                                 "unity_chan_webrtc.json")
+        for name, key, bad in (("audio_fps 25", "audio_fps", 25),
+                               ("video_fps 33", "video_fps", 33),
+                               ("data_fps 33", "data_fps", 33)):
+            with open(base_path) as f:
+                cfg = json.load(f)
+            cfg["webrtc"][key] = bad
+            tmp_path = os.path.join(SCRIPT_DIR, "..", "configs",
+                                    "test_webrtc_badrate.json")
+            with open(tmp_path, "w") as f:
+                json.dump(cfg, f)
+            try:
+                await post(http,
+                           f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+                           {"config": "test_webrtc_badrate", "force": True})
+                st, resp = await offer_status(
+                    http, [AudioStreamTrack(), VideoStreamTrack()], True)
+                check(f"{name} config rejected at offer time",
+                      st == 400 and key in resp.get("error", ""),
+                      f"{st} {resp}")
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+        await post(http, f"{MAIN_SERVER}/unregister/",
+                   {"client_id": COMPAT_CLIENT_ID})
+
+    print(f"\n  {'Compat test passed!' if ok else 'Compat test FAILED.'}")
+    return ok
+
+
+def run_compat(args):
+    """Entry for --mode compat."""
+    global WEBRTC_SERVER
+    WEBRTC_SERVER = args.server
+    return asyncio.run(run_compat_test())
+
+
+# ============================================================
 # Mode: lifecycle  (from test_webrtc_lifecycle.py test_lifecycle)
 # ============================================================
 async def test_lifecycle():
@@ -2000,10 +2134,10 @@ def run_framesplitter(args):
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Consolidated WebRTC test (modes: single | cancel | lifecycle | multi | framesplitter)"
+        description="Consolidated WebRTC test (modes: single | cancel | compat | lifecycle | multi | framesplitter)"
     )
     parser.add_argument(
-        "--mode", choices=["single", "cancel", "lifecycle", "multi", "framesplitter"], default="single",
+        "--mode", choices=["single", "cancel", "compat", "lifecycle", "multi", "framesplitter"], default="single",
         help="Which test to run (default: single)",
     )
 
@@ -2035,6 +2169,8 @@ def main():
         result = run_single(args)
     elif args.mode == "cancel":
         result = run_cancel(args)
+    elif args.mode == "compat":
+        result = run_compat(args)
     elif args.mode == "lifecycle":
         result = run_lifecycle(args)
     elif args.mode == "multi":

@@ -16,6 +16,12 @@ AUDIO_SAMPLE_RATE = 48000  # fixed by WebRTC: Opus runs at a 48kHz clock, not co
 AUDIO_FPS = 50  # 20ms audio frames
 VIDEO_FPS = 30
 DATA_FPS = 20
+# Supported video/data lane rates: the divisors of the 90kHz RTP clock in
+# 10..60 (exact integer video PTS steps at the gateway, which enforces the
+# same constant; the data lane shares the list to keep the group GCD in
+# the same family)
+SUPPORTED_LANE_FPS = (10, 12, 15, 16, 18, 20, 24, 25, 30, 36, 40, 45, 48,
+                      50, 60)
 
 # Frame background colors (RGB)
 IDLE_COLOR = (173, 216, 230)   # light blue
@@ -68,6 +74,13 @@ class FrameSplitterStep(BaseProcessingStep):
                 f"{AUDIO_SAMPLE_RATE}Hz WebRTC sample rate — the audio "
                 f"frame must be a whole number of samples"
             )
+        for lane in ("video_fps", "data_fps"):
+            if rates[lane] not in SUPPORTED_LANE_FPS:
+                errors.append(
+                    f"{lane} must be one of {list(SUPPORTED_LANE_FPS)} "
+                    f"(divisors of the 90kHz RTP clock in 10..60), got "
+                    f"{rates[lane]}"
+                )
         return errors
 
     """

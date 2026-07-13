@@ -31,14 +31,15 @@ def _b64_decode_f32(b64_str, shape):
 
 def _frames_with_info(frames, framerate, fmt, duration=None):
     """Attach clip-level info (framerate/format) to the FIRST frame of a
-    per-frame list — the same contract the streaming path uses, so stream
-    and non-stream consumers read one format. duration is only known for a
-    whole clip (non-stream); streaming leaves it out."""
+    per-frame list, wrapped under a single "header" key — frame payload
+    keys stay uniform across all frames. Same contract as the streaming
+    path. duration is only known for a whole clip (non-stream); streaming
+    leaves it out."""
     if frames:
-        info = {"framerate": framerate, "format": fmt}
+        header = {"framerate": framerate, "format": fmt}
         if duration is not None:
-            info["duration"] = duration
-        frames[0] = {**info, **frames[0]}
+            header["duration"] = duration
+        frames[0] = {"header": header, **frames[0]}
     return frames
 
 
@@ -241,10 +242,10 @@ class MotionGenerationCaller:
             betas = None
             buf_poses = buf_trans = None    # exact re-chunk buffer
 
-            # stream-level info (constant across the whole stream) — attached
-            # to the VERY FIRST frame only, so a consumer can read it once
-            # without a separate envelope. Subsequent frames carry only their
-            # per-frame data.
+            # stream-level info (constant across the whole stream) — wrapped
+            # under "header" on the VERY FIRST frame only, so a consumer can
+            # read it once without a separate envelope. Subsequent frames
+            # carry only their per-frame data.
             first_frame = [True]
             stream_info = {"framerate": framerate,
                            "format": "humanoid" if self.humanoid_output else "smplh"}
@@ -272,7 +273,7 @@ class MotionGenerationCaller:
                     frames = [{"poses": poses[f].tolist(), "trans": trans[f].tolist()}
                               for f in range(n)]
                 if first_frame[0] and frames:
-                    frames[0] = {**stream_info, **frames[0]}
+                    frames[0] = {"header": dict(stream_info), **frames[0]}
                     first_frame[0] = False
                 return frames
 

@@ -26,14 +26,16 @@ class BaseMotionCaller:
 
     def call(self, prompt, duration=None):
         """Non-stream: the whole clip as one per-frame list; the first frame
-        carries framerate/format/duration (same contract as the streaming
-        path, which omits duration — unknown upfront). A duration input
-        makes the clip end exactly there."""
+        carries a "header" with framerate/format/duration (same contract as
+        the streaming path, which omits duration — unknown upfront). A
+        duration input makes the clip end exactly there."""
         frames = [self._stub_frame()
                   for _ in range(self._total_frames(duration))]
         if frames:
-            frames[0] = {"framerate": self.fps, "format": "humanoid",
-                         "duration": len(frames) / self.fps, **frames[0]}
+            frames[0] = {"header": {"framerate": self.fps,
+                                    "format": "humanoid",
+                                    "duration": len(frames) / self.fps},
+                         **frames[0]}
         return frames
 
     def call_stream(self, prompt, duration=None):

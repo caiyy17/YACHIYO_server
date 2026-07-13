@@ -95,6 +95,12 @@ from PIL import Image
 # ============================================================
 SAMPLE_RATE = 48000       # fixed by WebRTC: Opus always runs at a 48kHz clock
 VIDEO_CLOCK_RATE = 90000  # RTP clock rate for video (fixed by RTP spec)
+# Supported video/data lane rates: the divisors of the 90kHz RTP clock in
+# 10..60 (exact integer video PTS steps; below 10 needs a larger assembler
+# offset than the default, above 60 exceeds real webrtc streams; the data
+# lane shares the list to keep the group GCD in the same family)
+SUPPORTED_LANE_FPS = (10, 12, 15, 16, 18, 20, 24, 25, 30, 36, 40, 45, 48,
+                      50, 60)
 DEFAULT_AUDIO_FPS = 50    # 20ms audio frames
 DEFAULT_VIDEO_FPS = 30
 DEFAULT_VIDEO_WIDTH = 320
@@ -1204,12 +1210,23 @@ class WebRTCServer:
                 return web.json_response(
                     {"error": f"webrtc.{name} must be a positive integer, "
                               f"got {v!r}"}, status=400)
-        if SAMPLE_RATE % audio_fps:
+        # WebRTC audio is 20ms/50fps on the wire: aiortc's Opus encoder
+        # hardcodes 960-sample frames and browsers default to 20ms, while
+        # the SDP carries no frame-duration field to negotiate — any other
+        # audio_fps can never be satisfied by a real connection.
+        if audio_fps != 50:
             return web.json_response(
-                {"error": f"webrtc.audio_fps {audio_fps} does not divide the "
-                          f"fixed {SAMPLE_RATE}Hz WebRTC sample rate — the "
-                          f"audio frame must be a whole number of samples"},
+                {"error": f"webrtc.audio_fps must be 50 (WebRTC audio is "
+                          f"20ms/50fps on the wire; the SDP cannot "
+                          f"negotiate any other framing), got {audio_fps}"},
                 status=400)
+        for lane in ("video_fps", "data_fps"):
+            if rates[lane] not in SUPPORTED_LANE_FPS:
+                return web.json_response(
+                    {"error": f"webrtc.{lane} must be one of "
+                              f"{list(SUPPORTED_LANE_FPS)} (divisors of "
+                              f"the 90kHz RTP clock in 10..60), got "
+                              f"{rates[lane]}"}, status=400)
 
         session_kwargs = {
             "audio_ptime": 1 / audio_fps,
