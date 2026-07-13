@@ -21,7 +21,9 @@
                         "target": null
                     }
                 ],
-                "next_nodes": [2],
+                "next_nodes": [
+                    2
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -69,7 +71,9 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -93,7 +97,10 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": ["get_weather", "web_search"]
+                "tool_names": [
+                    "get_weather",
+                    "web_search"
+                ]
             }
         },
         {
@@ -136,7 +143,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -205,8 +214,19 @@
                         "target": "dispatch_end"
                     }
                 ],
-                "dispatch_vars": [["4_action"], ["4_audio_text"]],
-                "next_nodes": [5, 6, 7]
+                "dispatch_vars": [
+                    [
+                        "4_action"
+                    ],
+                    [
+                        "4_audio_text"
+                    ]
+                ],
+                "next_nodes": [
+                    5,
+                    6,
+                    7
+                ]
             }
         },
         {
@@ -217,6 +237,10 @@
                     {
                         "source": "4_action",
                         "target": "prompt"
+                    },
+                    {
+                        "source": null,
+                        "target": "duration"
                     }
                 ],
                 "pass_vars": [],
@@ -226,7 +250,9 @@
                         "target": "5_action"
                     }
                 ],
-                "next_nodes": [7],
+                "next_nodes": [
+                    7
+                ],
                 "duration": 5.0,
                 "model": "hy_motion"
             }
@@ -247,6 +273,10 @@
                     {
                         "source": null,
                         "target": "speaker"
+                    },
+                    {
+                        "source": null,
+                        "target": "duration"
                     }
                 ],
                 "pass_vars": [],
@@ -260,7 +290,9 @@
                         "target": null
                     }
                 ],
-                "next_nodes": [7],
+                "next_nodes": [
+                    7
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
@@ -327,7 +359,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [-1]
+                "next_nodes": [
+                    -1
+                ]
             }
         }
     ]

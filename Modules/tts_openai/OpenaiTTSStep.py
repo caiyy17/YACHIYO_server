@@ -60,20 +60,28 @@ class OpenaiTTSCaller:
             self.logger.error(f"TTS init call failed: {e}")
             raise  # init failure must surface (fail-fast at pipeline init)
 
-    def call(self, prompt, language="auto", speaker=""):
+    def call(self, prompt, language="auto", speaker="", duration=None):
         try:
             if prompt == "":
                 audio_data = self.empty_audio
             else:
                 model_name = self.model_config.get("model_name", "tts-1")
-                extra = self.model_config.get("extra", {})
+                # a settings-side extra_body (static custom fields, like the
+                # LLM entries use) merges with the dynamic fields below
+                extra = dict(self.model_config.get("extra", {}))
+                extra_body = dict(extra.pop("extra_body", None) or {})
                 voice = speaker if speaker else self.default_voice
+                # reference length for the backend (advisory; the returned
+                # audio may differ). None = not sent at all.
+                if duration is not None:
+                    extra_body["duration"] = float(duration)
 
                 response = self.client.audio.speech.create(
                     model=model_name,
                     voice=voice,
                     input=prompt,
                     response_format="wav",
+                    extra_body=extra_body,
                     **extra,
                 )
 
@@ -89,7 +97,7 @@ class OpenaiTTSCaller:
             self.logger.error(f"failed to call tts: {e}")
             return ""
 
-    def call_stream(self, prompt, language="auto", speaker=""):
+    def call_stream(self, prompt, language="auto", speaker="", duration=None):
         """Real streaming via the backend's SSE endpoint (stream_format="sse"):
         each `speech.audio.delta` event carries base64 raw PCM16 (sample rate
         in the X-Sample-Rate header); deltas are re-buffered into WAV chunks
@@ -106,17 +114,23 @@ class OpenaiTTSCaller:
             return
         try:
             model_name = self.model_config.get("model_name", "tts-1")
-            extra = self.model_config.get("extra", {})
+            # a settings-side extra_body merges with the dynamic fields below
+            extra = dict(self.model_config.get("extra", {}))
+            extra_body = dict(extra.pop("extra_body", None) or {})
             voice = speaker if speaker else self.default_voice
             chunk_ms = int(self.config.get("stream_chunk_ms", 300))
             chunk_ms = max(100, (chunk_ms // 100) * 100)  # multiples of 100ms
+            extra_body["stream_format"] = "sse"
+            # reference length for the backend (advisory); None = not sent
+            if duration is not None:
+                extra_body["duration"] = float(duration)
 
             with self.client.audio.speech.with_streaming_response.create(
                 model=model_name,
                 voice=voice,
                 input=prompt,
                 response_format="pcm",
-                extra_body={"stream_format": "sse"},
+                extra_body=extra_body,
                 **extra,
             ) as response:
                 sr = int(response.headers.get("x-sample-rate") or 24000)

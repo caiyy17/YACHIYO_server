@@ -100,18 +100,29 @@ class MotionGenerationCaller:
     def _has_history(self):
         return self.history_poses is not None
 
-    def call(self, prompt):
+    def _request_duration(self, duration):
+        """Effective reference duration for the backend: the per-message
+        input wins, then the config value; falsy/None -> not sent at all
+        (the backend picks its own length)."""
+        d = self.duration if duration is None else duration
+        return float(d) if d else None
+
+    def call(self, prompt, duration=None):
         try:
             body = {
                 "model": self.model_name,
                 "text": prompt,
                 "character": self.character,
-                "duration": self.duration,
                 "is_continuation": False,
             }
             # extra (seed / use_prompt_engineering / post_process / cfg_scale /
-            # constraint_cfg) is forwarded verbatim from the motion model config.
+            # constraint_cfg) is forwarded verbatim from the motion model
+            # config. Applied BEFORE the reference duration so the dynamic
+            # value (input / node config) overrides a settings-side one.
             body.update(self.extra)
+            ref = self._request_duration(duration)
+            if ref is not None:
+                body["duration"] = ref
 
             if self.continuous and self._has_history():
                 body["is_continuation"] = True
@@ -166,7 +177,7 @@ class MotionGenerationCaller:
                                      m.get("duration", len(frames) / fr))
         return result
 
-    def call_stream(self, prompt):
+    def call_stream(self, prompt, duration=None):
         """Stream motion chunks from the backend's SSE endpoint
         (/api/generate_json_stream).
 
@@ -192,10 +203,13 @@ class MotionGenerationCaller:
                 "model": self.model_name,
                 "text": prompt,
                 "character": self.character,
-                "duration": self.duration,
                 "is_continuation": False,
             }
+            # settings extra first: the dynamic reference duration wins
             body.update(self.extra)
+            ref = self._request_duration(duration)
+            if ref is not None:
+                body["duration"] = ref
             if self.continuous and self._has_history():
                 body["is_continuation"] = True
                 body["history"] = {

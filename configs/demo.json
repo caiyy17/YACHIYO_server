@@ -21,7 +21,9 @@
                         "target": null
                     }
                 ],
-                "next_nodes": [2],
+                "next_nodes": [
+                    2
+                ],
                 "model": "openai"
             }
         },
@@ -61,7 +63,9 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "system_prompt": "This is a system prompt.",
                 "reset_history": true,
                 "history_length": 30,
@@ -86,6 +90,10 @@
                     {
                         "source": null,
                         "target": "speaker"
+                    },
+                    {
+                        "source": null,
+                        "target": "duration"
                     }
                 ],
                 "pass_vars": [
@@ -114,7 +122,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [-1],
+                "next_nodes": [
+                    -1
+                ],
                 "model": "openai"
             }
         }

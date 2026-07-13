@@ -21,7 +21,9 @@
                         "target": null
                     }
                 ],
-                "next_nodes": [2],
+                "next_nodes": [
+                    2
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -69,7 +71,9 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -93,7 +97,10 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": ["get_weather", "web_search"]
+                "tool_names": [
+                    "get_weather",
+                    "web_search"
+                ]
             }
         },
         {
@@ -136,7 +143,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -187,7 +196,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [5],
+                "next_nodes": [
+                    5
+                ],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
@@ -210,6 +221,10 @@
                     {
                         "source": null,
                         "target": "speaker"
+                    },
+                    {
+                        "source": null,
+                        "target": "duration"
                     }
                 ],
                 "pass_vars": [
@@ -254,7 +269,9 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [-1],
+                "next_nodes": [
+                    -1
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }

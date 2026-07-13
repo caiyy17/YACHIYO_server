@@ -1053,6 +1053,92 @@ class WebRTCSession:
 
 
 # ============================================================
+# Offer <-> pipeline-config compatibility
+# ============================================================
+def _parse_sdp_media(sdp):
+    """m-line kind -> the client's capabilities for that kind, unioned
+    across m-lines: "send"/"recv" from the direction attribute (sendrecv
+    is the RFC default when none is present)."""
+    caps = {}
+    kind = None
+    direction = None
+
+    def commit():
+        if kind is None:
+            return
+        d = direction or "sendrecv"
+        s = caps.setdefault(kind, set())
+        if d in ("sendrecv", "sendonly"):
+            s.add("send")
+        if d in ("sendrecv", "recvonly"):
+            s.add("recv")
+
+    for line in sdp.splitlines():
+        line = line.strip()
+        if line.startswith("m="):
+            commit()
+            kind = line[2:].split(" ", 1)[0]
+            direction = None
+        elif line in ("a=sendrecv", "a=sendonly", "a=recvonly",
+                      "a=inactive"):
+            direction = line[2:]
+    commit()
+    return caps
+
+
+def check_offer_compatibility(sdp, pipeline_conf):
+    """Compare a client's SDP offer against what its pipeline config needs.
+    Returns a list of human-readable mismatch strings (empty = compatible).
+
+    Input side: the group assembler aligns on BOTH media lanes, so a
+    pipeline that consumes webrtc input (has a frame_collector) requires
+    the client to SEND audio and video. The DataChannel carries all
+    signals (recording_start/end, cancel) and the data lane, so an
+    application m-line is always required.
+    Output side: each splitter media output that is wired (non-null
+    target) needs a client m-line willing to RECEIVE that kind.
+    Extra client tracks the pipeline does not consume are harmless and
+    not reported."""
+    nodes = pipeline_conf.get("pipeline") or []
+
+    def find(fn):
+        for n in nodes:
+            if n.get("function") == fn:
+                return n.get("config", {})
+        return None
+
+    collector = find("frame_collector")
+    splitter = find("frame_splitter")
+    if collector is None and splitter is None:
+        return ["pipeline has no frame_collector or frame_splitter — "
+                "not a webrtc pipeline (init a webrtc config first)"]
+
+    media = _parse_sdp_media(sdp)
+    errors = []
+    if "application" not in media:
+        errors.append(
+            "offer has no application m-line (DataChannel) — signals "
+            "(recording_start/end, cancel) and the data lane require it")
+    if collector is not None:
+        for kind in ("audio", "video"):
+            if "send" not in media.get(kind, set()):
+                errors.append(
+                    f"pipeline consumes webrtc input but the offer has no "
+                    f"sendable {kind} m-line (the group assembler aligns "
+                    f"on both media lanes)")
+    if splitter is not None:
+        wired_out = {v.get("source")
+                     for v in splitter.get("output_vars", [])
+                     if v.get("target") is not None}
+        for kind in ("audio", "video"):
+            if kind in wired_out and "recv" not in media.get(kind, set()):
+                errors.append(
+                    f"pipeline sends {kind} output but the offer has no "
+                    f"{kind} m-line willing to receive")
+    return errors
+
+
+# ============================================================
 # WebRTC Server
 # ============================================================
 class WebRTCServer:
@@ -1060,10 +1146,10 @@ class WebRTCServer:
         self.main_server_url = main_server_url
         self.sessions = {}
 
-    async def _fetch_webrtc_section(self, client_id):
-        """Read the top-level "webrtc" section of the client's pipeline
-        config from the main server. Empty dict (→ defaults) if the client,
-        its pipeline, or the section doesn't exist."""
+    async def _fetch_pipeline_config(self, client_id):
+        """The client's full pipeline config from the main server. Empty
+        dict if the client or its pipeline doesn't exist; None when the
+        fetch itself failed (main server unreachable)."""
         url = f"{self.main_server_url}/clients/{client_id}"
         try:
             async with aiohttp.ClientSession() as http:
@@ -1071,12 +1157,12 @@ class WebRTCServer:
                     url, timeout=aiohttp.ClientTimeout(total=5)
                 ) as r:
                     info = await r.json()
-            return (info.get("pipeline_config") or {}).get("webrtc") or {}
+            return info.get("pipeline_config") or {}
         except Exception as e:
             logger.warning(
                 f"[{client_id}] failed to fetch pipeline config: {e}"
             )
-            return {}
+            return None
 
     async def handle_offer(self, request):
         """POST /offer/{client_id} - WebRTC signaling endpoint.
@@ -1091,7 +1177,24 @@ class WebRTCServer:
         if client_id in self.sessions:
             await self.sessions[client_id].cleanup()
 
-        sec = await self._fetch_webrtc_section(client_id)
+        conf = await self._fetch_pipeline_config(client_id)
+        if conf is None:
+            # main server unreachable: keep the old permissive behavior
+            # (the session is doomed anyway if it stays down)
+            logger.warning(f"[{client_id}] pipeline config unavailable; "
+                           f"skipping offer compatibility check")
+            sec = {}
+        else:
+            sec = conf.get("webrtc") or {}
+            # the offered connection must satisfy what the pipeline needs —
+            # reject with the concrete gaps instead of hanging silently
+            mismatches = check_offer_compatibility(body.get("sdp", ""), conf)
+            if mismatches:
+                logger.warning(
+                    f"[{client_id}] offer rejected: {mismatches}")
+                return web.json_response(
+                    {"error": "offer does not match the pipeline config",
+                     "mismatches": mismatches}, status=400)
         audio_fps = sec.get("audio_fps", DEFAULT_AUDIO_FPS)
         rates = {"audio_fps": audio_fps,
                  "video_fps": sec.get("video_fps", DEFAULT_VIDEO_FPS),

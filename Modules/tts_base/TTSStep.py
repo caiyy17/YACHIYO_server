@@ -15,13 +15,21 @@ class BaseTTSCaller:
         self.repeat = 2
         self.empty_audio = AudioSegment.silent(duration=10)
 
-    def _build_segment(self, prompt):
-        """The test clip as an AudioSegment (empty for an empty prompt)."""
+    def _build_segment(self, prompt, duration=None):
+        """The test clip as an AudioSegment (empty for an empty prompt).
+        A duration (seconds) makes the clip end exactly there: longer
+        audio is cut, shorter audio is padded with silence."""
         audio = self.empty_audio
         if prompt != "":
             for _ in range(self.repeat):
                 audio = audio + AudioSegment.from_file("test/test_voice.wav",
                                                        format="wav")
+        if duration is not None:
+            ms = int(float(duration) * 1000)
+            if len(audio) > ms:
+                audio = audio[:ms]
+            elif len(audio) < ms:
+                audio = audio + AudioSegment.silent(duration=ms - len(audio))
         return audio
 
     @staticmethod
@@ -30,20 +38,20 @@ class BaseTTSCaller:
         seg.export(bio, format="wav")
         return bio.getvalue()
 
-    def call(self, prompt, language="auto", speaker=""):
+    def call(self, prompt, language="auto", speaker="", duration=None):
         try:
-            return self._seg_to_wav(self._build_segment(prompt))
+            return self._seg_to_wav(self._build_segment(prompt, duration))
         except Exception as e:
             self.logger.error(f"failed to call tts: {e}")
             return ""
 
-    def call_stream(self, prompt, language="auto", speaker=""):
+    def call_stream(self, prompt, language="auto", speaker="", duration=None):
         """Chunk the test clip into `stream_chunk_ms` WAV pieces (last may be
         shorter), one per {"audio": <WAV bytes>} — the same per-chunk shape
         the real OpenaiTTSCaller streams (which overrides this). chunk_ms is
         rounded to a 100ms multiple so the webrtc splitter packs whole groups."""
         try:
-            seg = self._build_segment(prompt)
+            seg = self._build_segment(prompt, duration)
         except Exception as e:
             self.logger.error(f"failed to call tts: {e}")
             return
@@ -55,7 +63,9 @@ class BaseTTSCaller:
 
 
 class TTSStep(BaseProcessingStep):
-    REQUIRED_INPUTS = ["text", "language", "speaker"]
+    # duration input is a REFERENCE length forwarded to the service (the
+    # returned audio may differ); wired to null it is simply not sent
+    REQUIRED_INPUTS = ["text", "language", "speaker", "duration"]
     OUTPUTS = ["audio_file", "duration"]
     # Sentence-level stream envelope, emitted only in stream mode (see
     # emitted_signals). Internal names deliberately reuse SoS/EoS ("this
@@ -76,16 +86,19 @@ class TTSStep(BaseProcessingStep):
         text = data.get("text", "")
         language = data.get("language", "auto")
         speaker = data.get("speaker", "")
+        ref_duration = data.get("duration")  # reference length, optional
         text = text.strip("\n")
 
         # stream: true -> one message per audio chunk as the caller produces
         # them (config option; default off keeps the original single-message
         # behavior untouched).
         if self.get_config("stream", False):
-            self._process_stream(text, language, speaker, pass_data)
+            self._process_stream(text, language, speaker, ref_duration,
+                                 pass_data)
             return
 
-        tts_result = self.tts_caller.call(text, language, speaker)
+        tts_result = self.tts_caller.call(text, language, speaker,
+                                          ref_duration)
         # clip length in seconds, read from the WAV header (same info a
         # consumer could derive itself; exposed as an optional output so a
         # config can wire it without decoding the audio)
@@ -111,7 +124,8 @@ class TTSStep(BaseProcessingStep):
         except Exception:
             return 0.0
 
-    def _process_stream(self, text, language, speaker, pass_data):
+    def _process_stream(self, text, language, speaker, ref_duration,
+                        pass_data):
         """Single-in-multi-out protocol, same shape as the LLM turn: a
         sentence-level SoS opens the chunk stream and carries the per-
         sentence pass_vars data (wrapped under "pass_data"); every chunk
@@ -124,7 +138,8 @@ class TTSStep(BaseProcessingStep):
         if wrapped:
             start["pass_data"] = wrapped
         self.emit_signal("SoS", start)
-        for chunk in self.tts_caller.call_stream(text, language, speaker):
+        for chunk in self.tts_caller.call_stream(text, language, speaker,
+                                                 ref_duration):
             if self.check_cancel():
                 self.logger.info("cancelled during tts stream")
                 return

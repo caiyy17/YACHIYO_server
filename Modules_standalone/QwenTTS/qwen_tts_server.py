@@ -65,6 +65,7 @@ class SpeechRequest(BaseModel):
     speed: Optional[float] = 1.0
     response_format: Optional[str] = "wav"
     stream_format: Optional[str] = "audio"  # "audio" (binary body) | "sse" (event stream)
+    duration: Optional[float] = None  # reference length (advisory, unused for now)
 
 
 def get_available_voices():
