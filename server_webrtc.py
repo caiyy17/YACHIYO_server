@@ -113,6 +113,7 @@ DEFAULT_AUDIO_OFFSET = 0.0        # per-lane window trim beyond the tick grid
 DEFAULT_VIDEO_OFFSET = 0.0
 DEFAULT_DC_OFFSET = 0.0           # data window lag; signal hold adds assembler_offset
 DEFAULT_CANCEL_OFFSET = 0         # added to cancel's stamp; 0: FIFO flush order protects the paired start
+MAX_LANE_BUFFER = 1000            # frames; a lane past this means the assembler stalled (e.g. another lane never opened) -> abort
 
 logger = logging.getLogger("server_webrtc")
 stats_logger = logging.getLogger("webrtc_stats")
@@ -654,6 +655,26 @@ class WebRTCSession:
                  raw_msg))
         else:
             self._input_data_buffer.append((time.time(), msg))
+        await self._abort_if_lane_overflow()
+
+    async def _abort_if_lane_overflow(self):
+        """A lane buffer this deep means the group assembler is not draining
+        it — typically one lane never opened, stalling startup while the
+        others pile up. Abort the session instead of growing unbounded."""
+        counts = {"audio": len(self._input_audio_buffer),
+                  "video": len(self._input_video_buffer),
+                  "data": len(self._input_data_buffer),
+                  "signal": len(self._input_signal_buffer)}
+        over = [k for k, v in counts.items() if v > MAX_LANE_BUFFER]
+        if not over:
+            return False
+        logger.error(
+            f"[{self.client_id}] lane buffer overflow ({','.join(over)} > "
+            f"{MAX_LANE_BUFFER}); counts={counts}; assembler stalled "
+            f"(a lane likely never opened) - aborting session")
+        self._notify_client("error", f"lane overflow ({','.join(over)})")
+        await self.cleanup()
+        return True
 
     async def _relay_audio_input(self, track):
         """Receive audio frames and buffer with PTS for group assembler."""
@@ -667,6 +688,8 @@ class WebRTCSession:
                     pcm = pcm[::2]
                 b64 = base64.b64encode(pcm.tobytes()).decode("ascii")
                 self._input_audio_buffer.append((av_frame.pts, b64))
+                if await self._abort_if_lane_overflow():
+                    return
         except Exception as e:
             logger.info(f"[{self.client_id}] Audio input ended: {e}")
 
@@ -682,6 +705,8 @@ class WebRTCSession:
                 b64_frame = base64.b64encode(buf.getvalue()).decode("ascii")
                 self._input_video_buffer.append((frame.pts, b64_frame))
                 self._last_video_frame = b64_frame
+                if await self._abort_if_lane_overflow():
+                    return
         except Exception as e:
             logger.info(f"[{self.client_id}] Video input ended: {e}")
 
