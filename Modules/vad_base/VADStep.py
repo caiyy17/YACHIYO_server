@@ -21,8 +21,9 @@ class VADStep(SpanProcessingStep):
 
     Segmentation is driven by caught signals (a real-VAD subclass swaps the
     signal source for model decisions; nothing else changes):
-      - recording_start: mark = now - start_offset_ms (clamped to the ring
-        start), emit vad_start, and SNAPSHOT [mark, now) out of the ring into
+      - recording_start: mark = now + start_offset_ms (a signed lead <= 0,
+        negative reaches back for pre-roll; clamped to the ring start), emit
+        vad_start, and SNAPSHOT [mark, now) out of the ring into
         the segment's own buffer. From then on the segment owns its audio:
         every later chunk is appended to that buffer, decoupled from the ring.
         A second start while active restarts the mark.
@@ -64,7 +65,6 @@ class VADStep(SpanProcessingStep):
         for key, default, minimum in (
                 ("sample_rate", SAMPLE_RATE, 1),
                 ("ring_seconds", RING_SECONDS, 1),
-                ("start_offset_ms", 0, 0),
                 ("end_offset_ms", 0, 0),
                 ("stream_chunk_ms", STREAM_CHUNK_MS, 100)):
             v = config.get(key, default)
@@ -72,17 +72,21 @@ class VADStep(SpanProcessingStep):
                     or v < minimum:
                 errors.append(f"{key} must be a number >= {minimum}, "
                               f"got {v!r}")
-        # the lookback cannot exceed the ring, or a segment starts already at
-        # the force-end cap and dies on its first chunk
+        # start_offset_ms is a signed lead <= 0 (aligned with cancel_offset_ms):
+        # negative reaches back for pre-roll, 0 = none; positive would put the
+        # mark in the future. Its reach also cannot exceed the ring, or a
+        # segment starts at the force-end cap and dies on its first chunk.
         ring_s = config.get("ring_seconds", RING_SECONDS)
         start_ms = config.get("start_offset_ms", 0)
-        if not isinstance(ring_s, bool) and isinstance(ring_s, (int, float)) \
-                and not isinstance(start_ms, bool) \
-                and isinstance(start_ms, (int, float)) \
-                and start_ms >= ring_s * 1000:
+        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) \
+                or start_ms > 0:
+            errors.append(f"start_offset_ms must be a number <= 0 (negative "
+                          f"reaches back for pre-roll), got {start_ms!r}")
+        elif not isinstance(ring_s, bool) and isinstance(ring_s, (int, float)) \
+                and start_ms <= -ring_s * 1000:
             errors.append(
-                f"start_offset_ms ({start_ms}) must be < ring_seconds*1000 "
-                f"({ring_s * 1000}): the lookback cannot exceed the ring")
+                f"start_offset_ms ({start_ms}) must be > -ring_seconds*1000 "
+                f"({-ring_s * 1000}): the look-back cannot exceed the ring")
         return errors
 
     def span_init(self):
@@ -180,7 +184,7 @@ class VADStep(SpanProcessingStep):
                 "and rebuilding from the new mark")
         self._reset_turn()
         avail_start = self._total - self._held
-        self._mark = max(self._total - self.start_offset, avail_start)
+        self._mark = max(self._total + self.start_offset, avail_start)
         self._mark_ts = ts
         self._start_pass = dict(data.get("pass_data") or {})
         self.start_span(ts)
