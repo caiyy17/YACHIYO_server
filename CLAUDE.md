@@ -29,7 +29,7 @@
 ## 测试
 
 - 正式 e2e:`python test/test_all_configs.py [config名...]`(不带参数跑全部在册 config)
-- WebRTC 专用:`python test/test_webrtc.py --mode single|lifecycle|multi|framesplitter`
+- WebRTC 专用:`python test/test_webrtc.py --mode single|cancel|compat|lifecycle|multi|framesplitter`
 - 客户端日志在 `logs/client_<id>.log`;信号接线错误 grep `undeclared signal`
 
 ## 文档

@@ -35,6 +35,37 @@ FONT_CANDIDATES = [
 
 
 class FrameSplitterStep(BaseProcessingStep):
+    """
+    Clock-driven group output for WebRTC streaming.
+
+    Overrides BaseProcessingStep.run() with an absolute-time clock loop.
+    Paused until connection_start signal; runs until the kill verb.
+
+    Each tick outputs exactly one group:
+      - Content groups from input messages when available
+      - Default group (silence + idle-blue video) when idle
+
+    Lanes of a content message: audio_data (one WAV, split into PCM frames),
+    video_data (a frame list; slots past it repeat the message's last frame;
+    a message with no video gets green placeholders), every other input is
+    a data-lane per-frame list. A content group's missing audio is silence.
+
+    Signals (SoS, EoS, etc.) are buffered in order with the groups
+    and flushed at tick boundaries to preserve ordering.
+
+    Pass_vars data on an incoming message ships to the client as a "meta"
+    signal (wire name from emit_signals config), interleaved in group order
+    right before that message's audio groups. The group data lane is
+    reserved for frame-aligned payloads.
+
+    add_frame_index (config, default off) overlays the running frame number
+    on every outgoing video frame — placeholders and real frames alike.
+
+    Group size is calculated from GCD of audio/video/data frame rates
+    (all configurable via config). Standard output format:
+      {"audio": [<pcm>...], "video": [<jpeg>...], "data": [{...}, null, ...]}
+    """
+
     REQUIRED_CATCH_SIGNALS = ["connection_start"]
     # media lanes are fixed contract inputs (null source = lane off); the
     # data lane is free-form (any extra input target becomes a data key).
@@ -82,37 +113,6 @@ class FrameSplitterStep(BaseProcessingStep):
                     f"{rates[lane]}"
                 )
         return errors
-
-    """
-    Clock-driven group output for WebRTC streaming.
-
-    Overrides BaseProcessingStep.run() with an absolute-time clock loop.
-    Paused until connection_start signal; pauses on connection_stop.
-
-    Each tick outputs exactly one group:
-      - Content groups from input messages when available
-      - Default group (silence + idle-blue video) when idle
-
-    Lanes of a content message: audio_data (one WAV, split into PCM frames),
-    video_data (a frame list; slots past it repeat the message's last frame;
-    a message with no video gets green placeholders), every other input is
-    a data-lane per-frame list. A content group's missing audio is silence.
-
-    Signals (SoS, EoS, etc.) are buffered in order with the groups
-    and flushed at tick boundaries to preserve ordering.
-
-    Pass_vars data on an incoming message ships to the client as a "meta"
-    signal (wire name from emit_signals config), interleaved in group order
-    right before that message's audio groups. The group data lane is
-    reserved for frame-aligned payloads.
-
-    add_frame_index (config, default off) overlays the running frame number
-    on every outgoing video frame — placeholders and real frames alike.
-
-    Group size is calculated from GCD of audio/video/data frame rates
-    (all configurable via config). Standard output format:
-      {"audio": [<pcm>...], "video": [<jpeg>...], "data": [{...}, null, ...]}
-    """
 
     def custom_init(self):
         # Per-lane config: <lane>_fps plus the video size; frame sizes and
@@ -271,7 +271,10 @@ class FrameSplitterStep(BaseProcessingStep):
 
     def run(self):
         while True:
-            if self.kill_event.is_set():
+            # _killed is set by check_cancel (called here, in the paused
+            # wait, and every clock tick) when a kill verb arrives
+            self.check_cancel()
+            if self._killed:
                 self.dispose()
                 break
 
@@ -295,15 +298,16 @@ class FrameSplitterStep(BaseProcessingStep):
         data = json.loads(raw)
         self.check_cancel()
 
-        # Discard cancelled messages
-        ts = data.get("timestamp")
-        if ts is not None and ts < self.cancel_timestamp:
-            return
-
-        # Forward messages not destined for this node
+        # Forward messages not destined for this node — unconditionally:
+        # the cancel gate belongs to the consuming node only
         dest = data.get("destination", self.index)
         if dest != self.index:
             self.output_queue.put(json.dumps(data))
+            return
+
+        # Discard cancelled messages (consumed here)
+        ts = data.get("timestamp")
+        if ts is not None and ts < self.cancel_timestamp:
             return
 
         signal = data.get("signal", "")
@@ -328,7 +332,7 @@ class FrameSplitterStep(BaseProcessingStep):
         self._group_buffer.clear()
 
     def _run_clock(self):
-        """Run the 100ms clock loop until connection_stop or kill."""
+        """Run the fixed-period clock loop until the kill verb."""
         clock_start = time.time()
         group_index = 0
         # Reset frame counter per connection so numbering starts from 0
@@ -341,13 +345,14 @@ class FrameSplitterStep(BaseProcessingStep):
         self._stats_content = 0
 
         while self._clock_running:
-            if self.kill_event.is_set():
-                return
-
-            # Step 1: Cancel check (same as base)
-            # current_timestamp is None → no-op
-            # current_timestamp set and < cancel_timestamp → custom_cancel clears buffer
+            # Step 1: Control check (same as base)
+            # cancel: current_timestamp set and < cancel_timestamp →
+            #         custom_cancel clears buffer
+            # kill:   sets _killed → stop the clock; the outer run loop
+            #         disposes and exits
             self.check_cancel()
+            if self._killed:
+                return
 
             # Step 2+3: Fill buffer and extract one media group to send.
             # Signals are forwarded inline; if buffer empties after a signal, refill.
@@ -427,10 +432,11 @@ class FrameSplitterStep(BaseProcessingStep):
             if signal == "connection_start":
                 continue  # already running; duplicate start is a no-op
 
-            # Four-state signal rules (see BaseProcessingStep). The splitter
-            # has no generic handler beyond connection_start, so a caught
-            # signal here is a wiring mistake — interleave it instead of
-            # silently dropping it into the content path.
+            # Four-state signal rules (catch = consume / catch+pass =
+            # consume then relay / pass = relay / undeclared = warn+drop).
+            # The splitter has no generic handler beyond connection_start,
+            # so a caught signal here is a wiring mistake — interleave it
+            # instead of silently dropping it into the content path.
             if signal:
                 if signal in self.pass_signal_set:
                     relay = {k: v for k, v in data.items()
@@ -493,9 +499,7 @@ class FrameSplitterStep(BaseProcessingStep):
                 "dropping — declare it in the node config"
             )
             return
-        msg = {"signal": wire,
-               "timestamp": pass_data.get("timestamp"),
-               "pass_data": wrapped}
+        msg = self.envelope(self.stamp({"signal": wire}, pass_data), wrapped)
         self.add_destination(msg)
         self._group_buffer.append(("signal", json.dumps(msg)))
 
@@ -581,7 +585,7 @@ class FrameSplitterStep(BaseProcessingStep):
             f"data frames), queue={len(self._group_buffer)}"
         )
 
-    # ── Audio decoding (unchanged) ──
+    # ── Audio decoding ──
 
     def _decode_and_split(self, audio_b64):
         """Decode base64 WAV, resample to target rate, split into frames."""

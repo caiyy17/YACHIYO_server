@@ -134,10 +134,7 @@ class VideoStep(BaseProcessingStep):
         """Single-in-multi-out, same envelope as TTS/Motion: sentence-level
         SoS (carrying pass_vars under "pass_data") -> uniform chunk messages
         -> sentence-level EoS. Cancel does not close the envelope."""
-        start = {"timestamp": pass_data.get("timestamp")}
-        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
-        if wrapped:
-            start["pass_data"] = wrapped
+        start = self.envelope(self.stamp({}, pass_data), pass_data, wrap=True)
         self.emit_signal("SoS", start)
         for chunk in self.video_caller.call_stream(prompt, duration):
             if self.check_cancel():
@@ -151,5 +148,5 @@ class VideoStep(BaseProcessingStep):
             # stream chunks carry b64 frames — never log the payload
             self.output_to_queue(output_data, pass_data,
                                  is_add_pass_data=False, log_level=0)
-        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
+        self.emit_signal("EoS", self.stamp({}, pass_data))
         return

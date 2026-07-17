@@ -55,6 +55,7 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | Config                | Pipeline                                                                               | Description                                        |
 | --------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
+| `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | Text-only conversation (no audio)                  |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC frame-level streaming                       |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid motion generation (parallel)                 |
@@ -76,6 +77,8 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | `pad`                    | `pad`                               | Length-aligns the products in one message (audio WAV + frame lists) to the longest/shortest/anchor duration, per-lane cut/extend opt-outs |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups                                                     |
 | `parallel`               | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                                                                     |
+| `parallel`               | `call_joint_stream`                 | Merges N caller streams chunk-by-chunk inside one node (e.g. TTS ∥ motion chunks packed per message)                     |
+| `memory_manager`         | `call_memory_manager`               | Observer: tracks LLM responses via SoS/EoS and stores substantive conversations to memory                                |
 
 ## API
 

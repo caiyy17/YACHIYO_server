@@ -226,7 +226,7 @@ Let $\{u_1, u_2, \ldots\}$ be a sequence of user utterances with timestamps $T(u
 \begin{enumerate}[nosep]
     \item \textbf{Causal order.} If $T(u_i) < T(u_j)$, then all outputs of $u_i$ are delivered to the client before any output of $u_j$---unless $u_i$ has been cancelled.
     \item \textbf{Internal order.} Within a single utterance $u_i$, outputs are delivered in production order: $o_{i,1}$ arrives before $o_{i,2}$ before $\cdots$ before $o_{i,K_i}$.
-    \item \textbf{Cancellation consistency.} After a cancellation event $\text{cancel}(T)$ is issued, no message with timestamp $< T$ is subsequently delivered to the client.
+    \item \textbf{Cancellation consistency.} After a cancellation event $\text{cancel}(T)$ is issued, no message with timestamp $< T$ is subsequently delivered to the client. The pipeline enforces this at every consuming node up to its exit; the delivery edge (the WebRTC gateway's stale filter, or the client's own flush on interrupt) completes it end to end (Section~\ref{sec:cancel}).
 \end{enumerate}
 
 \subsection{Why Linearization Guarantees Temporal Consistency}
@@ -272,29 +272,29 @@ The one exception requiring out-of-band delivery is cancellation, discussed in S
 \label{sec:cancel}
 
 \paragraph{First-principles motivation.}
-The causal origin of a conversational event is the client: the user spoke. Therefore, the timestamp that identifies the event should be assigned by the client at the moment of input. If the server assigned timestamps instead, variable network latency would corrupt the ordering: two utterances sent in quick succession might receive server-side timestamps in the wrong order, or the same order but with distorted intervals. By using the client's wall clock, the timestamp reflects the true causal ordering of user actions.
+The causal origin of a conversational event is the client: the user spoke. The timestamp that identifies the event must therefore be assigned at a single point that observes client actions \emph{in order} --- before any stage that could reorder them. What corrupts ordering is not server-side assignment per se but assigning stamps at different points for related events; a single entry authority (the client itself over WebSocket, or the WebRTC gateway --- whose DataChannel and media paths preserve arrival order --- for a WebRTC session) keeps the stamps faithful to the causal order of user actions, and all comparisons stay within that one clock domain.
 
 \paragraph{Design.}
-Every message carries a \texttt{timestamp} field, preferring the client-provided value (wall clock at input time); if absent, the server falls back to its own clock. The timestamp is set once at utterance start and propagated unchanged through all pipeline stages as a reserved field. The client uses it to associate responses with utterances, discard stale output, and maintain ordering under concurrency.
+Every message carries a \texttt{timestamp} field, minted outside the pipeline: the WebRTC gateway stamps everything it forwards with its own clock, and a direct WebSocket client supplies its own stamps. The entry validates identity on arrival --- a numeric timestamp must be present (cancel included), and non-cancel timestamps must be monotonic (equal allowed, smaller rejected) --- so every node downstream can trust the stamp without re-checking. Inside the pipeline, timestamps are only propagated and compared, never minted: a module stamps its outputs by copying identity from an upstream context (the \texttt{stamp} primitive), never from a clock. The timestamp is set once at utterance start and propagated unchanged through all pipeline stages as a reserved field. The client uses it to associate responses with utterances, discard stale output, and maintain ordering under concurrency.
 
 \paragraph{Why cancellation needs out-of-band delivery.}
 When the user interrupts (barge-in), every pipeline node must \emph{immediately} stop processing stale messages. If the cancel signal traveled through the data queue, it would wait behind the very messages it intends to invalidate---defeating its purpose. This is analogous to a CPU pipeline \emph{flush}: upon a branch misprediction, all in-flight instructions must be discarded simultaneously, not sequentially.
 
 \paragraph{Cancellation design.}
-Each node has a dedicated \texttt{cancel\_queue} (parallel to its data queue), checked before each dequeue operation. When the client sends $\texttt{cancel}(T)$, the server broadcasts $T$ to every node's cancel queue. Each node updates its local \texttt{cancel\_timestamp}; any subsequently dequeued message with timestamp $<$ \texttt{cancel\_timestamp} is silently dropped.
+Each node has a dedicated \texttt{cancel\_queue} (parallel to its data queue), checked before each dequeue operation. When the client sends $\texttt{cancel}(T)$, the server broadcasts $T$ to every node's cancel queue. Each node updates its local \texttt{cancel\_timestamp}; a dequeued message \emph{addressed to the node} with timestamp $<$ \texttt{cancel\_timestamp} is silently dropped --- the gate runs where a message is consumed, while forwarding hops relay unexamined.
 
-The inequality is deliberately \emph{strict}, uniformly across server and client; whether the boundary is included is expressed by the issuer's choice of $T$ (nudged by an epsilon where needed---e.g.\ a barge-in cancel spares the concurrent same-instant utterance, while disconnect cleanup includes the final turn).
+The inequality is deliberately \emph{strict}, uniformly across server and client; whether the boundary is included is expressed by the issuer's choice of $T$ (nudged by an epsilon where needed---e.g.\ a barge-in cancel spares the concurrent same-instant utterance, while pipeline teardown uses an infinite stamp to void everything).
 
-The send queue performs a final filter: before transmitting any message to the client, it verifies that the message's timestamp is not older than the current cancel timestamp. This provides a safety net for messages that were already past intermediate nodes when the cancel arrived.
+The same queue carries a second control verb, \texttt{kill}: on pipeline teardown the server broadcasts $\texttt{cancel}(\infty)$ followed by \texttt{kill} to every node. The infinite stamp voids all content; \texttt{kill} makes the node exit its loop and run its cleanup hook. Long-running operations (streaming LLM and TTS calls) poll the control queue between chunks, so both verbs also abort work in flight, and a thread returning late from a blocking call still finds the verbs waiting in its own queue. The endpoint relays perform no CONTENT gating of their own: the inbound relay validates message identity only (timestamp presence and monotonicity, as above) and routes cancels to the control plane; the outbound relay is a pure pass-through. Dropping decisions are entirely the nodes' responsibility, so per-module drop policies remain possible.
 
-\paragraph{Proof of no leakage.}
+\paragraph{Proof of no stale processing.}
 After $\text{cancel}(T)$ is issued, consider any message $m$ with $\text{timestamp}(m) < T$. At the moment the cancel is broadcast, $m$ is in one of three states:
 \begin{itemize}[nosep]
     \item \textbf{Waiting in a queue, not yet dequeued}: when the node dequeues $m$, it checks the cancel timestamp (updated via the cancel queue) and drops $m$ without processing.
-    \item \textbf{Currently being processed by node $N_i$}: the node cannot abort mid-computation, so it completes and enqueues its output $f_i(m)$ into $Q_{i+1}$. However, $f_i(m)$ inherits the same timestamp as $m$. When the next node $N_{i+1}$ dequeues $f_i(m)$, it checks the cancel timestamp and drops it. If $f_i(m)$ propagates through multiple forwarding nodes before being caught, the send queue's final filter guarantees it is not delivered.
-    \item \textbf{Already in the send queue}: the send queue checks the cancel timestamp before each transmission and drops $m$.
+    \item \textbf{Currently being processed by node $N_i$}: the node completes (or aborts at a polling point) and any output $f_i(m)$ inherits $m$'s timestamp; it is dropped when its \emph{destination} node dequeues it. Intermediate forwarding hops relay it unexamined --- the check runs where a message is consumed, so a stale message is dropped at its next consumer. If its destination is the pipeline exit, it leaves the pipeline and falls under the next case.
+    \item \textbf{Already emitted by the final node}: the message has left the pipeline; delivery-side handling belongs to the consuming edge---the WebRTC gateway drops stale-stamped messages when unpacking groups, and an interrupting client flushes its own playout.
 \end{itemize}
-In all three cases, $m$ (or any output derived from $m$) is never delivered to the client after $\text{cancel}(T)$, satisfying cancellation consistency. \qed
+In the first two cases $m$ (or any output derived from $m$) is never processed past the next node boundary after $\text{cancel}(T)$; the third case is outside the pipeline's jurisdiction by construction, and its window is bounded by the exit-queue depth at the moment of cancellation. \qed
 
 % ============================================================
 \section{WebRTC: Frame-Level Streaming}
@@ -312,7 +312,7 @@ Messages are produced only on events (user speech, LLM output, TTS completion); 
 Audio and video tracks produce frames at fixed rates (50\,fps, 30\,fps) regardless of activity, emitting silence when idle. The timing origin is the server's monotonic frame clock.
 
 \paragraph{Paradigm adapters.}
-Adapter nodes bridge the paradigms. The frame $\rightarrow$ event side is a pair: \textbf{FrameCollector} transforms each arriving frame group into per-lane pipeline messages (the group's audio frames joined into one WAV chunk, video frames and data slots passed as lists), and \textbf{VAD} keeps a persistent ring of those audio chunks, cutting an utterance from it between \texttt{recording\_start} and \texttt{recording\_end} (with configurable pre/post-roll). The event $\rightarrow$ frame side is \textbf{FrameSplitter}, a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data. It overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
+Adapter nodes bridge the paradigms. The frame $\rightarrow$ event side is a pair: \textbf{FrameCollector} transforms each arriving frame group into per-lane pipeline messages (the group's audio frames joined into one WAV chunk, video frames and data slots passed as lists), and \textbf{VAD} keeps a persistent ring of those audio chunks as rolling history; at \texttt{recording\_start} it snapshots the pre-roll out of the ring into a per-segment buffer that the segment owns from then on, and finalizes the utterance at \texttt{recording\_end} (with configurable post-roll) --- a cancel then either voids the whole segment or leaves it untouched, never truncates it. The event $\rightarrow$ frame side is \textbf{FrameSplitter}, a clock-driven output module that splits TTS audio into 20\,ms PCM frames paired with video and data. It overrides the standard message-driven processing loop with an absolute-time tick loop, pausing until a \texttt{connection\_start} signal arrives and then outputting one synchronized group per tick regardless of whether speech data is available (filling with silence and idle frames when idle). The core pipeline remains purely event-driven.
 
 \subsection{Motivation: From Sentence-Level to Frame-Level}
 
@@ -772,7 +772,7 @@ Every pipeline node extends \texttt{BaseProcessingStep}, which implements the co
     \item \textbf{Queue-driven run loop}: blocks on the input queue, processes one message at a time, and enqueues results to the output queue.
     \item \textbf{Destination routing}: checks each message's \texttt{destination} field; forwards non-matching messages to the output queue without processing (Section~\ref{sec:linearization}).
     \item \textbf{Signal handling}: each node declares \texttt{catch\_signals} / \texttt{pass\_signals} in its pipeline config (renaming supported, like the var declarations); caught signals go to \texttt{process()}, passed signals are relayed at forwarding speed, undeclared signals are dropped with a warning (Section~\ref{sec:signals}).
-    \item \textbf{Cancellation}: checks a thread-safe \texttt{cancel\_timestamp} before processing each message; messages with timestamp $<$ \texttt{cancel\_timestamp} are silently dropped (Section~\ref{sec:cancel}).
+    \item \textbf{Control plane}: drains the control queue before each dequeue; messages addressed to the node with timestamp $<$ \texttt{cancel\_timestamp} are silently dropped, and the \texttt{kill} verb exits the loop through the node's cleanup hook (Section~\ref{sec:cancel}).
     \item \textbf{Variable routing}: extracts input fields via \texttt{input\_vars}, attaches output fields via \texttt{output\_vars}, and carries metadata via \texttt{pass\_vars} (Appendix~\ref{app:routing}).
 \end{enumerate}
 
@@ -780,10 +780,10 @@ Subclasses override a single \texttt{process()} method containing the node-speci
 
 \subsection{SpanProcessingStep}
 
-Some modules process data spanning multiple messages (e.g., the VAD accumulates audio in its ring and cuts a segment between \texttt{recording\_start} and \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
+Some modules process data spanning multiple messages (e.g., the VAD's segment accumulates audio from \texttt{recording\_start} until \texttt{recording\_end}). \texttt{SpanProcessingStep} extends \texttt{BaseProcessingStep} with: \texttt{start\_span(timestamp)} to begin accumulation, \texttt{end\_span()} to complete it, and \texttt{on\_span\_cancel()} to discard accumulated state on cancellation.
 
 \subsection{Connection Lifecycle}
 
-When a WebSocket or WebRTC connection closes, the server automatically disposes the client's pipeline, killing all node threads and clearing queues. For WebRTC, a \texttt{connection\_start} signal is sent upon WebSocket establishment, allowing clock-driven modules to begin output only after the transport is ready.
+When a WebSocket or WebRTC connection closes, the server automatically disposes the client's pipeline: it broadcasts $\texttt{cancel}(\infty)$ followed by \texttt{kill} into every node's control queue, so in-flight work aborts at its polling points and each thread exits through its cleanup hook. For WebRTC, a \texttt{connection\_start} signal is sent upon WebSocket establishment, allowing clock-driven modules to begin output only after the transport is ready.
 
 \end{document}

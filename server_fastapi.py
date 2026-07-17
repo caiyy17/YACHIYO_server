@@ -4,9 +4,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, stat
 from typing import Dict
 from pydantic import BaseModel
 
-# Tolerance for float timestamp comparison (covers JSON serialization precision loss)
-TIMESTAMP_EPSILON = 1e-3
-
 from starlette.responses import PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 
@@ -71,16 +68,14 @@ class ClientConnection:
         self.connected = False
 
         self.send_queue = Queue()
-        self.send_cancel_queue = Queue()
         self.send_task = None
         self.receive_task = None
-        self.kill_event = threading.Event()
 
         self.queues = [self.send_queue]
-        self.cancel_queues = [self.send_cancel_queue]
+        self.cancel_queues = []
         self.threads = []
         self.websocket = None
-        self.last_timestamp = 0
+        self.last_timestamp = 0  # entry monotonicity floor (non-cancel)
         # Per-pipeline log threshold (config top-level __debug_level, set at
         # init): messages print when their level >= this; 0 = everything,
         # 1 (default) = hide per-message content traffic
@@ -117,15 +112,16 @@ class ClientConnection:
         self.threads = []
         try:
             self.setup_processing_pipeline()
-        except PipelineInitError:
+        except Exception:
             # Kill nodes that already started, wait them out, and restore a
             # clean re-initializable state (dispose() can't be used here: it
-            # guards on self.initialized which is still False).
-            self.kill_event.set()
+            # guards on self.initialized which is still False). Catching
+            # broadly: ANY failure mid-build would otherwise orphan the
+            # already-started node threads.
+            self.broadcast_teardown()
             await self.wait_for_threads()
-            self.kill_event.clear()
             self.queues = [self.send_queue]
-            self.cancel_queues = [self.send_cancel_queue]
+            self.cancel_queues = []
             self.threads = []
             self.initialized = False
             raise
@@ -146,7 +142,6 @@ class ClientConnection:
         send_max = self.pipeline_config.get("send_queue_max_size", 0)
         self.send_queue = Queue(maxsize=send_max)
         self.queues.append(self.send_queue)
-        self.cancel_queues.append(self.send_cancel_queue)
 
         # Create a thread for each function. Node initialization is
         # sequential; a failed init (dependent service down) FAILS FAST:
@@ -170,7 +165,6 @@ class ClientConnection:
                 self.queues[i],
                 self.queues[i + 1],
                 self.cancel_queues[i],
-                self.kill_event,
                 config,
             )
             if getattr(func_instance, "init_error", None):
@@ -184,6 +178,17 @@ class ClientConnection:
             t.start()
             self.threads.append(t)
 
+    def broadcast_teardown(self):
+        """Two control verbs into every node's cancel queue, in order:
+        cancel with an infinite stamp voids ALL content (in-flight
+        generation aborts at its polling points, spans clean up via
+        custom_cancel), then kill exits the thread (custom_dispose hook).
+        Queue delivery makes this race-free: a thread returning from a
+        long call finds both verbs still waiting, however late it is."""
+        for q in self.cancel_queues:
+            q.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
+            q.put(json.dumps({"signal": "kill"}))
+
     async def start_pipeline(self, websocket: WebSocket):
         if not self.initialized:
             self.log_info(f"Start: No start: Client {self.client_id} not initialized")
@@ -193,8 +198,6 @@ class ClientConnection:
         self.connected = True
         while not self.send_queue.empty():
             self.send_queue.get()
-        while not self.send_cancel_queue.empty():
-            self.send_cancel_queue.get()
         # Start task to listen on send_queue and send data to client
         self.send_task = asyncio.create_task(self.send_data(), name="send_data")
         # Start task to receive data from client
@@ -204,30 +207,16 @@ class ClientConnection:
         self.log_info(f"Start: Client {self.client_id} pipeline started")
 
     async def send_data(self):
-        cancel_timestamp = 0
+        """Pure relay: send_queue -> client. No gating here — dropping is
+        each module's own responsibility (module-specific policies)."""
         while self.connected:
             try:
-                if self.kill_event.is_set():
-                    break
-
-                # Check for cancel messages
-                if not self.send_cancel_queue.empty():
-                    while not self.send_cancel_queue.empty():
-                        cancel = self.send_cancel_queue.get()
-                    cancel = json.loads(cancel)
-                    self.log_info(f"Sent: received cancel signal: {cancel}")
-                    cancel_timestamp = cancel["timestamp"]
-
-                # Get data from send_queue
                 try:
                     data = self.send_queue.get(timeout=0)
                 except queue.Empty:
                     await asyncio.sleep(TIME_INTERVAL)
                     continue
                 data_dict = json.loads(data)
-                if data_dict.get("timestamp", float("inf")) < cancel_timestamp:
-                    self.log_info(f"Sent: Skipping data: {data}", level=0)
-                    continue
 
                 # Strip internal pipeline fields before sending to client
                 data_dict.pop("destination", None)
@@ -246,21 +235,21 @@ class ClientConnection:
             except Exception as e:
                 self.logger.error(f"Sent: {e}")
 
-        while not self.send_cancel_queue.empty():
-            cancel = self.send_cancel_queue.get()
-            cancel = json.loads(cancel)
-            self.log_info(f"Sent: received cancel signal: {cancel}")
-            cancel_timestamp = cancel["timestamp"]
         while not self.send_queue.empty():
             data = self.send_queue.get()
             self.log_info(f"Sent: Skipping data: {data}", level=0)
         self.log_info(f"Sent: Client {self.client_id} disconnected")
 
     async def receive_data(self):
+        """Client -> pipeline relay. The entry validates message IDENTITY —
+        a numeric timestamp must be present (cancel included), and non-cancel
+        timestamps must be monotonic (equal allowed, smaller rejected) — so
+        modules downstream can trust the stamp without re-checking. Content
+        is never gated here: dropping is each module's own responsibility
+        (module-specific policies). The only routing decision is the control
+        plane (cancel -> every node's cancel queue). Teardown on disconnect
+        is the endpoint's job (dispose broadcasts cancel(inf) + kill)."""
         while self.connected:
-            if self.kill_event.is_set():
-                break
-
             # Socket-level receive: any failure here means the connection is
             # gone (abrupt close raises a RuntimeError, not WebSocketDisconnect)
             # — stop the loop instead of spinning on the same error forever,
@@ -270,42 +259,39 @@ class ClientConnection:
             except WebSocketDisconnect:
                 self.log_info(f"Received: Client {self.client_id} disconnected")
                 self.connected = False
-                for q in self.cancel_queues:
-                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
                 break
             except Exception as e:
                 self.logger.error(f"Received: socket receive failed, stopping: {e}")
                 self.connected = False
-                for q in self.cancel_queues:
-                    q.put(json.dumps({"signal": "cancel", "timestamp": self.last_timestamp + TIMESTAMP_EPSILON}))
                 break
 
             # Message-level parsing/handling: a bad message is skipped, not fatal
             try:
                 data = json.loads(raw)
-                if "timestamp" not in data:
-                    self.logger.error(f"Received: missing timestamp in message: {data}")
+                ts = data.get("timestamp")
+                if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                    self.logger.error(
+                        f"Received: missing/invalid timestamp, dropped: {data}")
                     continue
 
-                # Cancel bypasses monotonic check (its timestamp refers to what to cancel)
+                # Cancel is exempt from monotonicity (its timestamp refers
+                # to what to cancel) and routes to the control plane
                 if data.get("signal", "") == "cancel":
                     self.log_info(f"Received: cancel signal: {data}")
                     for q in self.cancel_queues:
                         q.put(json.dumps(data))
                     continue
 
-                if data["timestamp"] < self.last_timestamp:
+                if ts < self.last_timestamp:
                     self.logger.error(
                         f"Received: timestamp not monotonic: "
-                        f"{data['timestamp']} < {self.last_timestamp}"
-                    )
+                        f"{ts} < {self.last_timestamp}, dropped: {data}")
                     continue
-                self.last_timestamp = data["timestamp"]
+                self.last_timestamp = ts
+
                 self.log_info(
                     f"Received: message from {self.client_id}, {data}",
                     level=0)
-
-                # Put data into the first input queue
                 self.queues[0].put(json.dumps(data))
             except Exception as e:
                 self.logger.error(f"Received (message): {e}")
@@ -319,7 +305,7 @@ class ClientConnection:
             return
         if self.connected:
             await self.close()
-        self.kill_event.set()
+        self.broadcast_teardown()
         await self.wait_for_threads()
         if self.send_task:
             self.send_task.cancel()
@@ -327,9 +313,8 @@ class ClientConnection:
         if self.receive_task:
             self.receive_task.cancel()
             self.receive_task = None
-        self.kill_event.clear()
         self.queues = [self.send_queue]
-        self.cancel_queues = [self.send_cancel_queue]
+        self.cancel_queues = []
         self.threads = []
         self.initialized = False
         self.log_info(f"Dispose: Client {self.client_id} disposed")

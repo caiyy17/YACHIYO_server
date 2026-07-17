@@ -148,7 +148,7 @@ class DispatcherStep(BaseProcessingStep):
                 if i < len(self.dispatch_signals) and signal in self.dispatch_signals[i]:
                     self.output_to_queue(
                         {"signal": signal},
-                        {"timestamp": pass_data.get("timestamp")},
+                        self.stamp({}, pass_data),
                         destination_index=i,
                     )
             return
@@ -160,10 +160,7 @@ class DispatcherStep(BaseProcessingStep):
         # 1. Start signal -> receiver, carrying the group's pass_vars data
         # wrapped under the fixed "pass_data" key (shape built here by the
         # caller; the receiver reads its base layer from that key)
-        start = {"timestamp": pass_data.get("timestamp")}
-        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
-        if wrapped:
-            start["pass_data"] = wrapped
+        start = self.envelope(self.stamp({}, pass_data), pass_data, wrap=True)
         self.emit_signal(
             "dispatch_start", start,
             destination_index=self.receiver_idx,
@@ -182,6 +179,6 @@ class DispatcherStep(BaseProcessingStep):
 
         # 3. End signal -> receiver
         self.emit_signal(
-            "dispatch_end", {"timestamp": pass_data.get("timestamp")},
+            "dispatch_end", self.stamp({}, pass_data),
             destination_index=self.receiver_idx,
         )

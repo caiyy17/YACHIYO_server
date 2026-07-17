@@ -1,5 +1,6 @@
 import time
 import json
+from collections import deque
 
 from ..base.SpanProcessingStep import SpanProcessingStep
 
@@ -8,11 +9,6 @@ TIMESTAMP_EPSILON = 1e-3
 
 
 class DanmakuBufferStep(SpanProcessingStep):
-    REQUIRED_CATCH_SIGNALS = ["playback_complete"]
-    REQUIRED_INPUTS = ["text", "user", "msg_type", "price",
-                       "guard_level", "num"]
-    OUTPUTS = ["prompt"]
-
     """
     Buffers incoming danmaku messages and releases batches to the LLM at intervals.
     Paced by client playback_complete signal.
@@ -23,13 +19,34 @@ class DanmakuBufferStep(SpanProcessingStep):
       idle → first danmaku (start_span) → collecting → release (end_span)
         → waiting_for_playback → playback_complete → collecting or idle
 
-    Three independent timers in custom_update:
-      1. Playback timeout: from last release wall time. Force-unlock if too long.
-      2. Idle talk: from max(last_playback_time, last_cancel_time). Talk when idle.
-      3. Max wait: from span_timestamp (first danmaku). Force-release stale buffer.
+    Three independent wall-clock timers in custom_update:
+      1. Playback timeout: from the last release. Force-unlock if too long.
+      2. Idle talk: from the last activity of any kind (every handled
+         message — including dropped low-priority ones — and span cancel
+         reset it). Talk when idle long enough.
+      3. Max wait: from the first danmaku of the current span.
+         Force-release a stale buffer.
+
+    Release identity: every handled message's context enters a bounded ring
+    (ctx_ring_size); a released batch is stamped from the newest surviving
+    entry (max, immune to out-of-order stamps), cancel evicts invalidated
+    entries, and an empty ring falls back to the cancel boundary.
     """
 
+    REQUIRED_CATCH_SIGNALS = ["playback_complete"]
+    REQUIRED_INPUTS = ["text", "user", "msg_type", "price",
+                       "guard_level", "num"]
+    OUTPUTS = ["prompt"]
+
     GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
+
+    @classmethod
+    def validate_config(cls, config):
+        errors = super().validate_config(config)
+        n = config.get("ctx_ring_size", 1000)
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            errors.append(f"ctx_ring_size must be an int >= 1, got {n!r}")
+        return errors
 
     def span_init(self):
         # Requires config: catch_signals: ["playback_complete"]
@@ -48,7 +65,14 @@ class DanmakuBufferStep(SpanProcessingStep):
 
         # Pipeline timestamps (for cancel system)
         self.last_release_pts = 0     # last released batch
-        self.last_message_pts = 0     # last received message of any kind
+        # Identity history: the ctx (pass_data shape) of the last N handled
+        # messages. Releases stamp from the newest SURVIVING entry (max, not
+        # last-write — immune to out-of-order stamps), and cancel evicts the
+        # invalidated ones so a batch can never be stamped into a cancelled
+        # turn. Mirrors the vad's ring: content there, identity here.
+        self._ctx_ring = deque(
+            maxlen=int(self.get_config("ctx_ring_size", 1000)))
+        self._ring_clean_ts = 0       # cancel stamp the ring was last swept to
         # Wall clocks for timer logic (all 0 = never triggered)
         self.last_release_time = 0   # for playback timeout + release interval
         self.idle_start_time = 0     # for idle talk
@@ -59,9 +83,14 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.total_dropped = 0
 
     def span_process(self, data, pass_data={}):
-        # Any message resets idle timer and records pipeline timestamp
+        # Any message resets idle timer and records its identity. Internal
+        # retention reads the message's own stamp (the data view); the pass
+        # context is for stamping immediate outputs.
         self.idle_start_time = time.time()
-        self.last_message_pts = data.get("timestamp", self.last_message_pts)
+        self._evict_cancelled_ctx()
+        ctx = self.stamp({}, data)
+        if "timestamp" in ctx:
+            self._ctx_ring.append(ctx)
 
         signal = data.get("signal", "")
 
@@ -128,12 +157,35 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.custom_update()
 
     def on_span_cancel(self, cancel_message):
-        """Cancel during collection: clear buffer."""
+        """Cancel during collection: clear buffer and the invalidated
+        identity history."""
         self.buffer = []
         self.idle_start_time = time.time()
-        self.last_message_pts = cancel_message["timestamp"]
+        self._evict_cancelled_ctx()
         self.span_start_time = 0
         self.logger.info("span cancelled, buffer cleared")
+
+    def _evict_cancelled_ctx(self):
+        """Drop identity entries older than the newest cancel stamp (order
+        in the ring is arrival order, not stamp order, so filter — no
+        prefix assumption). Swept lazily, only when the cancel stamp moved."""
+        if self.cancel_timestamp <= self._ring_clean_ts:
+            return
+        self._ring_clean_ts = self.cancel_timestamp
+        kept = [c for c in self._ctx_ring
+                if c["timestamp"] >= self.cancel_timestamp]
+        if len(kept) != len(self._ctx_ring):
+            self._ctx_ring.clear()
+            self._ctx_ring.extend(kept)
+
+    def _latest_ctx(self):
+        """Newest surviving identity — the stamp source for releases. An
+        empty ring (everything cancelled) falls back to the cancel boundary:
+        the release belongs to the post-cancel present."""
+        self._evict_cancelled_ctx()
+        if self._ctx_ring:
+            return max(self._ctx_ring, key=lambda c: c["timestamp"])
+        return {"timestamp": self.cancel_timestamp}
 
     def custom_update(self):
         """Release decision logic. Called after each message AND on timeout."""
@@ -214,14 +266,14 @@ class DanmakuBufferStep(SpanProcessingStep):
 
         prompt = self._format_batch(batch)
 
-        # Use the last received message timestamp (unified with idle release)
-        ts = self.last_message_pts
+        # Stamp from the newest surviving identity (unified with idle release)
+        ctx = self._latest_ctx()
 
         output_data = {}
         self.add_output(output_data, "prompt", prompt)
-        self.output_to_queue(output_data, {"timestamp": ts})
+        self.output_to_queue(output_data, ctx, is_add_pass_data=False)
 
-        self.last_release_pts = ts
+        self.last_release_pts = ctx["timestamp"]
         self.last_release_time = time.time()
         self.waiting_for_playback = True
         self.total_released += len(batch)
@@ -230,7 +282,7 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.end_span()
 
         self.logger.info(
-            f"released batch: {len(batch)} msgs, ts={ts}, "
+            f"released batch: {len(batch)} msgs, ts={self.last_release_pts}, "
             f"remaining={len(self.buffer)}, "
             f"total_recv={self.total_received}, "
             f"total_released={self.total_released}"
@@ -239,11 +291,12 @@ class DanmakuBufferStep(SpanProcessingStep):
     def _release_idle(self):
         """Send an empty prompt so LLM can decide to talk on its own."""
         prompt = "（当前没有新弹幕）"
+        ctx = self._latest_ctx()
         output_data = {}
         self.add_output(output_data, "prompt", prompt)
-        self.output_to_queue(output_data, {"timestamp": self.last_message_pts})
+        self.output_to_queue(output_data, ctx, is_add_pass_data=False)
 
-        self.last_release_pts = self.last_message_pts
+        self.last_release_pts = ctx["timestamp"]
         self.last_release_time = time.time()
         self.waiting_for_playback = True
         self.logger.info(f"released idle prompt, pts={self.last_release_pts}")

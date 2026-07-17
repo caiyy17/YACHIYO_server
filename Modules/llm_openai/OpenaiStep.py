@@ -130,10 +130,7 @@ class OpenaiStep(LLMStep):
         # Stream envelope: pass_vars data travels once on the SoS, wrapped
         # under the fixed "pass_data" key (shape built here; emit_signal
         # ships flat); stream messages and EoS carry only the timestamp.
-        sos = {"timestamp": pass_data.get("timestamp")}
-        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
-        if wrapped:
-            sos["pass_data"] = wrapped
+        sos = self.envelope(self.stamp({}, pass_data), pass_data, wrap=True)
         self.emit_signal("SoS", sos)
         current_loop = 0
         already_end = False
@@ -159,5 +156,5 @@ class OpenaiStep(LLMStep):
                     self.add_output(current_data, key, value)
                 self.output_to_queue(current_data, pass_data,
                                      is_add_pass_data=False)
-        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
+        self.emit_signal("EoS", self.stamp({}, pass_data))
         return

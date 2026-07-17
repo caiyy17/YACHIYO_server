@@ -157,9 +157,8 @@ def manual_create_pipeline():
     logger = manual_setup_logger()
 
     queues = [Queue() for _ in range(num_nodes + 1)]
-    cancel_queues = [Queue() for _ in range(num_nodes + 1)]
+    cancel_queues = [Queue() for _ in range(num_nodes)]
     send_queue = queues[-1]
-    kill_event = threading.Event()
 
     threads = []
     for i, node in enumerate(pipeline):
@@ -170,13 +169,13 @@ def manual_create_pipeline():
         instance = func_class(
             node["node_id"], MANUAL_CLIENT_ID, logger, send_queue,
             queues[i], queues[i + 1], cancel_queues[i],
-            kill_event, node_config,
+            node_config,
         )
         t = threading.Thread(target=instance.run, name=f"{i}_{func_name}", daemon=True)
         t.start()
         threads.append(t)
 
-    return queues[0], send_queue, kill_event
+    return queues[0], send_queue, cancel_queues
 
 
 def manual_send_msg(input_queue, text, user, msg_type="danmaku", **kwargs):
@@ -258,7 +257,7 @@ def manual_run_scenario(name, input_queue, send_queue, messages, wait_before=0):
 def run_manual():
     print("Manual VTuber Pipeline Test")
     print("Creating pipeline...")
-    input_queue, send_queue, kill_event = manual_create_pipeline()
+    input_queue, send_queue, cancel_queues = manual_create_pipeline()
     print("Pipeline ready. Waiting 3s for init...\n")
     time.sleep(3)
 
@@ -320,7 +319,9 @@ def run_manual():
     ], wait_before=0)
 
     print("\n\nAll scenarios complete!")
-    kill_event.set()
+    for cq in cancel_queues:
+        cq.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
+        cq.put(json.dumps({"signal": "kill"}))
 
 
 # =============================================================================
@@ -409,9 +410,8 @@ def live_create_pipeline():
 
     # Create queues (num_nodes + 1: input for each node + final output)
     queues = [Queue() for _ in range(num_nodes + 1)]
-    cancel_queues = [Queue() for _ in range(num_nodes + 1)]
+    cancel_queues = [Queue() for _ in range(num_nodes)]
     send_queue = queues[-1]  # Last queue is the output
-    kill_event = threading.Event()
 
     # Module class lookup
     from Modules import FUNCTION_MAP
@@ -431,14 +431,13 @@ def live_create_pipeline():
             queues[i],
             queues[i + 1],
             cancel_queues[i],
-            kill_event,
             node_config,
         )
         t = threading.Thread(target=instance.run, name=f"{i}_{func_name}", daemon=True)
         t.start()
         threads.append(t)
 
-    return queues[0], send_queue, kill_event, threads
+    return queues[0], send_queue, cancel_queues, threads
 
 
 # ===== blivedm Handler (live mode) =====
@@ -515,13 +514,13 @@ def live_get_wav_duration(base64_audio):
         return 0.0
 
 
-def live_output_consumer(send_queue, kill_event, stats):
+def live_output_consumer(send_queue, stop_event, stats):
     """Background thread that reads pipeline output."""
     current_response = ""
     current_audio_duration = 0.0
     response_start = None
 
-    while not kill_event.is_set():
+    while not stop_event.is_set():
         try:
             data = send_queue.get(timeout=1)
             data = json.loads(data)
@@ -607,13 +606,14 @@ async def run_live():
     # Create pipeline
     print("\n[PIPELINE] Creating pipeline...")
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    input_queue, send_queue, kill_event, threads = live_create_pipeline()
+    input_queue, send_queue, cancel_queues, threads = live_create_pipeline()
+    stop_event = threading.Event()
     print(f"[PIPELINE] Ready! {len(threads)} nodes running.\n")
 
     # Start output consumer
     stats = {"responses": []}
     consumer_thread = threading.Thread(
-        target=live_output_consumer, args=(send_queue, kill_event, stats), daemon=True
+        target=live_output_consumer, args=(send_queue, stop_event, stats), daemon=True
     )
     consumer_thread.start()
 
@@ -676,7 +676,10 @@ async def run_live():
     finally:
         report = live_evaluate(stats)
         print(f"\n[FINAL EVAL] {json.dumps(report, indent=2, ensure_ascii=False)}")
-        kill_event.set()
+        for cq in cancel_queues:
+            cq.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
+            cq.put(json.dumps({"signal": "kill"}))
+        stop_event.set()
         await bili_session.close()
         print("[INFO] Done.")
 

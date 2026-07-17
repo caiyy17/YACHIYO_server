@@ -63,10 +63,12 @@ class SpanProcessingStep(BaseProcessingStep):
 
     def run(self):
         while True:
-            if self.kill_event.is_set():
+            # Drain control verbs before every dequeue; a kill (set by
+            # check_cancel, possibly mid-process at a polling point) exits.
+            self.check_cancel()
+            if self._killed:
                 self.dispose()
                 break
-            self.check_cancel()
             try:
                 data = self.input_queue.get(timeout=TIMEOUT)
                 data = json.loads(data)
@@ -78,18 +80,18 @@ class SpanProcessingStep(BaseProcessingStep):
                     self.output_queue.put(json.dumps(data))
                     continue
 
-                # Cancel check: only for messages destined for this node
-                if "timestamp" not in data:
-                    self.logger.error(f"missing timestamp in data: {data}")
-                    continue
+                # Cancel check: only for messages destined for this node.
+                # A timestamp is guaranteed: the entry validates client
+                # messages, and internal outputs are stamped via stamp().
                 msg_timestamp = data["timestamp"]
                 if msg_timestamp < self.cancel_timestamp:
                     self.logger.info(f"discarding old data: {data}")
                     continue
 
-                # Signal handling: same four-state rules as
-                # BaseProcessingStep (catch / catch+pass / pass / undeclared;
-                # relayed copies re-addressed to the first edge — see base)
+                # Signal handling, four states: catch = consume,
+                # catch+pass = consume then relay, pass = relay only,
+                # undeclared = warn + drop; relayed copies are re-addressed
+                # to this node's first edge, like data output
                 signal = data.get("signal", "")
                 if signal != "":
                     caught = signal in self.catch_signal_set
@@ -102,7 +104,8 @@ class SpanProcessingStep(BaseProcessingStep):
                         self.logger.info(f"processing data: {filtered_data}")
                         self.span_process(filtered_data,
                                           {"timestamp": data.get("timestamp")})
-                    # Consume-then-relay (see base)
+                    # Consume-then-relay: relay AFTER span_process so
+                    # anything the node emitted stays ahead of the copy
                     if signal in self.pass_signal_set:
                         self._relay_caught(data, signal)
                     elif not caught:

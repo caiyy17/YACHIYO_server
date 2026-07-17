@@ -55,6 +55,7 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | 配置                  | Pipeline                                                                               | 说明                     |
 | --------------------- | -------------------------------------------------------------------------------------- | ------------------------ |
 | `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
+| `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | 纯文本对话（无音频）     |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC 帧级流式传输      |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid 动作生成（并行）   |
@@ -76,6 +77,8 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `pad`                    | `pad`                               | 同消息内各产物(音频 WAV + 帧列表)时长对齐:最长/最短/锚定三模式,每车道可关 cut/extend |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组                                        |
 | `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                                          |
+| `parallel`               | `call_joint_stream`                 | 单节点内逐块合并 N 路 caller 流(如 TTS ∥ motion 块按消息配对打包)              |
+| `memory_manager`         | `call_memory_manager`               | 观察者:经 SoS/EoS 跟踪 LLM 回复,把有实质内容的对话存入记忆                    |
 
 ## API
 

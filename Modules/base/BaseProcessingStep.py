@@ -313,7 +313,6 @@ class BaseProcessingStep:
         input_queue,
         output_queue,
         cancel_queue,
-        kill_event,
         config=None,
     ):
         self.name = self.__class__.__name__
@@ -326,7 +325,10 @@ class BaseProcessingStep:
         self.cancel_queue = cancel_queue
         self.cancel_timestamp = 0
         self.current_timestamp = None
-        self.kill_event = kill_event
+        # Set when a {"signal": "kill"} verb arrives on the cancel queue —
+        # sticky (a queue message is consumed once, unlike an event flag);
+        # the run loop exits on it and calls dispose()/custom_dispose().
+        self._killed = False
         self.config = config or {}  # Mutable settings, defaults to empty dict
         # Pipeline-wide log threshold (config top-level __debug_level,
         # injected per node at init): messages print when their level >=
@@ -416,10 +418,12 @@ class BaseProcessingStep:
 
     def run(self):
         while True:
-            if self.kill_event.is_set():
+            # Drain control verbs before every dequeue; a kill (set by
+            # check_cancel, possibly mid-process at a polling point) exits.
+            self.check_cancel()
+            if self._killed:
                 self.dispose()
                 break
-            self.check_cancel()
             try:
                 data = self.input_queue.get(timeout=TIMEOUT)
                 data = json.loads(data)
@@ -431,10 +435,9 @@ class BaseProcessingStep:
                     self.output_queue.put(json.dumps(data))
                     continue
 
-                # Cancel check: only for messages destined for this node
-                if "timestamp" not in data:
-                    self.logger.error(f"missing timestamp in data: {data}")
-                    continue
+                # Cancel check: only for messages destined for this node.
+                # A timestamp is guaranteed: the entry validates client
+                # messages, and internal outputs are stamped via stamp().
                 self.current_timestamp = data["timestamp"]
                 if self.current_timestamp < self.cancel_timestamp:
                     self.logger.info(f"discarding old data: {data}")
@@ -506,11 +509,26 @@ class BaseProcessingStep:
         self.output_queue.put(json.dumps(relay))
 
     def check_cancel(self):
+        """Drain the control queue. Two verbs share it:
+          cancel — void content older than its stamp (custom_cancel hook)
+          kill   — the node must exit: sets the sticky _killed flag; the run
+                   loop breaks on it and calls dispose()/custom_dispose().
+        Returns True when in-flight work must be abandoned — kill always,
+        cancel only when it actually voids the current turn (its stamp is
+        newer than current_timestamp) — so in-processing polling points
+        (e.g. streaming loops) abort exactly when needed."""
         hasCancel = False
         if not self.cancel_queue.empty():
             while not self.cancel_queue.empty():
                 cancel_message = self.cancel_queue.get()
                 cancel_message = json.loads(cancel_message)
+                if cancel_message.get("signal") == "kill":
+                    self.logger.info("received kill signal")
+                    self._killed = True
+                    hasCancel = True
+                    continue
+                # cancel always carries a numeric stamp: the entry validates
+                # client cancels, and internal ones (teardown) are trusted
                 self.logger.info(f"received cancel signal: {cancel_message}")
                 self.cancel_timestamp = max(
                     self.cancel_timestamp, cancel_message["timestamp"]
@@ -519,7 +537,10 @@ class BaseProcessingStep:
                     self.logger.info("cancel signal newer than current data, triggered")
                     hasCancel = True
                     self.custom_cancel(cancel_message)
-        return hasCancel
+        # _killed keeps polling points aborting even after the kill verb
+        # itself was consumed (a queue message is read once; the flag is
+        # the sticky truth)
+        return hasCancel or self._killed
 
     def custom_cancel(self, cancel_message):
         """Subclasses can override this method for custom cancel handling."""
@@ -587,6 +608,38 @@ class BaseProcessingStep:
                 data[key] = value
         return data
 
+    def stamp(self, msg, ctx):
+        """Copy the turn IDENTITY (the reserved timestamp) from an
+        upstream context (pass_data-shaped dict) onto msg.
+        Modules never handle raw clock values: identity always originates
+        upstream (the WS entry stamps are the client's, the WebRTC gateway
+        mints its own), and this is the single place it is written. A
+        context without a timestamp simply leaves msg unstamped."""
+        ts = (ctx or {}).get("timestamp")
+        if ts is not None:
+            msg["timestamp"] = ts
+        return msg
+
+    def envelope(self, msg, pass_data, wrap=None):
+        """Attach the CONTENT side of a pass-through context onto msg
+        (identity is stamp()'s job — timestamp is excluded here). Two wire
+        shapes exist: data messages carry pass fields FLAT (what the next
+        node's extract reads), signal messages wrap them under "pass_data"
+        (keeps the signal schema fixed). wrap defaults by message kind."""
+        content = {k: v for k, v in (pass_data or {}).items()
+                   if k != "timestamp"}
+        if not content:
+            return msg
+        if wrap is None:
+            wrap = bool(msg.get("signal"))
+        if wrap:
+            msg["pass_data"] = content
+        else:
+            for key, value in content.items():
+                if key not in msg:
+                    msg[key] = value
+        return msg
+
     def add_destination(self, data, index=0):
         """Resolve destination by looking up next_nodes[index].
 
@@ -647,8 +700,8 @@ class BaseProcessingStep:
         if is_add_pass_data:
             self.add_pass_data(data, pass_data)
         elif is_add_timestamp:
-            if "timestamp" in pass_data:
-                data["timestamp"] = pass_data["timestamp"]
+            # identity-only attach: the context stamps, content stays behind
+            self.stamp(data, pass_data)
 
         if direct_send:
             self.logger.info(f"directly send data: {data}",

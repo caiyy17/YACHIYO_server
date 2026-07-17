@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
 """
-Consolidated WebRTC test script — four modes via --mode:
+Consolidated WebRTC test script — six modes via --mode:
 
-  single        Full single-client WebRTC test (from test_webrtc.py):
+  single        Full single-client WebRTC test:
                 Sends test_voice.wav + video, records a 30s side-by-side MP4
                 of sent vs received audio/video/DataChannel subtitles.
                 Requires the full pipeline (ASR, LLM, TTS, VectorDB).
 
-  lifecycle     Connection start/stop lifecycle test (from test_webrtc_lifecycle.py):
+  cancel        DC-path cancel semantics over one real session: idle cancel,
+                baseline turn, interrupt mid-reply + immediate new turn,
+                cancel while recording (vad segment voided, end ignored).
+
+  compat        Offer <-> pipeline-config compatibility at the gateway:
+                mismatched offers (missing tracks/DataChannel, wrong fps,
+                missing webrtc section, non-webrtc pipeline) must get 400.
+
+  lifecycle     Connection start/stop lifecycle test:
                 Verifies FrameSplitter pause/clock-start, data flow, pipeline
                 dispose on disconnect, and re-init without force.
                 Uses a FrameSplitter-only pipeline (no external model services).
 
-  multi         Multi-user N concurrent clients test (from test_webrtc_multi.py):
+  multi         Multi-user N concurrent clients test:
                 Runs N clients in separate processes against the full pipeline,
                 each recording its own MP4 and verifying text/audio/EoS results.
 
-  framesplitter Standalone clock-driven FrameSplitterStep test
-                (from test_frame_splitter_clock.py):
+  framesplitter Standalone clock-driven FrameSplitterStep test:
                 Drives a FrameSplitterStep in-process via queues — no server.
                 Verifies steady 100ms output rate, audio grouping, signal
                 ordering, cancel buffer clearing, no drift, startup buffering.
 
 Usage:
   conda activate yachiyo
-  python test/test_webrtc_consolidated.py --mode single [--server http://localhost:15168] ...
-  python test/test_webrtc_consolidated.py --mode lifecycle
-  python test/test_webrtc_consolidated.py --mode multi [--num-clients 3]
-  python test/test_webrtc_consolidated.py --mode framesplitter
+  python test/test_webrtc.py --mode single [--server http://localhost:15168] ...
+  python test/test_webrtc.py --mode lifecycle
+  python test/test_webrtc.py --mode multi [--num-clients 3]
+  python test/test_webrtc.py --mode framesplitter
 """
 
 import argparse
@@ -1027,11 +1034,18 @@ def run_cancel(args):
     except OSError as e:
         print(f"[FAIL] cannot read client log: {e}")
         return False
+    # The expected lookback follows the config's signed start_offset_ms
+    # (a lead <= 0; e.g. -200 -> "(lookback 0.20s)", 0 -> "(lookback 0.00s)")
+    with open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "configs", f"{PIPELINE_CONFIG}.json")) as f:
+        _pipeline = json.load(f)["pipeline"]
+    _vad_cfg = next(n["config"] for n in _pipeline if n["function"] == "vad")
+    _lookback = f"(lookback {abs(_vad_cfg.get('start_offset_ms', 0)) / 1000:.2f}s)"
     checks = [
         ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
         ("recording_end after cancel ignored",
          "recording_end without active mark - ignored" in log),
-        ("vad start lookback 200ms live", "(lookback 0.20s)" in log),
+        (f"vad start lookback live {_lookback}", _lookback in log),
         ("no ERROR in client log", "ERROR" not in log),
     ]
     print()
@@ -1672,7 +1686,6 @@ def fs_build_frame_splitter(logger, config_overrides=None):
     input_queue = Queue()
     output_queue = Queue()  # FrameSplitter is last node, this acts as send_queue
     cancel_queue = Queue()
-    kill_event = threading.Event()
 
     config = {
         "input_vars": [{"source": "audio_data", "target": "audio_data"}],
@@ -1707,7 +1720,7 @@ def fs_build_frame_splitter(logger, config_overrides=None):
         index=7, client_id="test", logger=logger,
         send_queue=send_queue, input_queue=input_queue,
         output_queue=output_queue, cancel_queue=cancel_queue,
-        kill_event=kill_event, config=config,
+        config=config,
     )
 
     return {
@@ -1716,7 +1729,6 @@ def fs_build_frame_splitter(logger, config_overrides=None):
         "output_queue": output_queue,
         "cancel_queue": cancel_queue,
         "send_queue": send_queue,
-        "kill_event": kill_event,
     }
 
 
@@ -1727,7 +1739,8 @@ def fs_start_splitter(ctx):
 
 
 def fs_stop_splitter(ctx, thread, timeout=3):
-    ctx["kill_event"].set()
+    ctx["cancel_queue"].put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
+    ctx["cancel_queue"].put(json.dumps({"signal": "kill"}))
     thread.join(timeout=timeout)
     return thread.is_alive()
 

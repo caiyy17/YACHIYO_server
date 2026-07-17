@@ -206,10 +206,7 @@ class JointStreamStep(BaseProcessingStep):
 
         # sentence-level SoS carries the per-sentence pass_vars data wrapped
         # under "pass_data" (shape built here; emit_signal ships it flat)
-        start = {"timestamp": pass_data.get("timestamp")}
-        wrapped = {k: v for k, v in pass_data.items() if k != "timestamp"}
-        if wrapped:
-            start["pass_data"] = wrapped
+        start = self.envelope(self.stamp({}, pass_data), pass_data, wrap=True)
         self.emit_signal("SoS", start)
 
         # one pump thread + local queue per stream. Inputs are renamed to
@@ -246,5 +243,5 @@ class JointStreamStep(BaseProcessingStep):
                 self.output_to_queue(pack, pass_data,
                                      is_add_pass_data=False, log_level=0)
 
-        self.emit_signal("EoS", {"timestamp": pass_data.get("timestamp")})
+        self.emit_signal("EoS", self.stamp({}, pass_data))
         return

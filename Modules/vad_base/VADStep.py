@@ -45,10 +45,11 @@ class VADStep(SpanProcessingStep):
     Output (single caught turn in, one or many audio_file outputs out):
       - stream=false: on finalize emit vad_end, then ONE audio_file WAV of
         [mark, end] carrying the start signal's pass_data flat.
-      - stream=true: from the mark onward, every full stream_chunk_ms of the
-        buffer is emitted as an audio_file WAV chunk (timestamp only); the
-        final short chunk is zero-padded; then vad_end. On cancel the
-        envelope is NOT closed (the turn is stale).
+      - stream=true: vad_start carries the start signal's pass_data
+        (wrapped, like an SoS); from the mark onward, every full
+        stream_chunk_ms of the buffer is emitted as an audio_file WAV chunk
+        (timestamp only); the final short chunk is zero-padded; then
+        vad_end. On cancel the envelope is NOT closed (the turn is stale).
 
     All outputs are stamped with the start signal's timestamp so cancel
     treats the whole segment as one turn.
@@ -118,7 +119,7 @@ class VADStep(SpanProcessingStep):
 
     def _reset_turn(self):
         self._mark = None        # segment start (absolute sample position)
-        self._mark_ts = None
+        self._turn_ctx = None    # the start signal's identity (stamp source)
         self._start_pass = {}
         self._end_target = None  # finalize once _total reaches this
         self._seg = bytearray()  # segment audio from the mark (owned copy)
@@ -185,7 +186,7 @@ class VADStep(SpanProcessingStep):
         self._reset_turn()
         avail_start = self._total - self._held
         self._mark = max(self._total + self.start_offset, avail_start)
-        self._mark_ts = ts
+        self._turn_ctx = self.stamp({}, data)  # internal retention: data view
         self._start_pass = dict(data.get("pass_data") or {})
         self.start_span(ts)
         # snapshot the lookback out of the ring; the segment owns it from now
@@ -194,9 +195,9 @@ class VADStep(SpanProcessingStep):
             f"vad mark at sample {self._mark} "
             f"(lookback {(self._total - self._mark) / self.sample_rate:.2f}s)"
         )
-        start_msg = {"timestamp": ts}
-        if self.stream and self._start_pass:
-            start_msg["pass_data"] = self._start_pass
+        start_msg = self.stamp({}, self._turn_ctx)
+        if self.stream:
+            self.envelope(start_msg, self._start_pass, wrap=True)
         self.emit_signal("vad_start", start_msg)
         if self.stream:
             self._drain_chunks()
@@ -271,19 +272,18 @@ class VADStep(SpanProcessingStep):
                 if short > 0:
                     pcm += b"\x00\x00" * short
                 self._emit_chunk(pcm)
-            self.emit_signal("vad_end", {"timestamp": self._mark_ts})
+            self.emit_signal("vad_end", self.stamp({}, self._turn_ctx))
         else:
             pcm = bytes(self._seg[:seg_len * 2])
             self.logger.info(
                 f"vad segment: {seg_len / self.sample_rate:.2f}s")
             # signal first, then the audio — downstream learns the segment
             # ended before its payload arrives
-            self.emit_signal("vad_end", {"timestamp": self._mark_ts})
+            self.emit_signal("vad_end", self.stamp({}, self._turn_ctx))
             output_data = {}
             self.add_output(output_data, "audio_file", self._pcm_to_wav(pcm))
-            segment_pass = dict(self._start_pass)
-            segment_pass["timestamp"] = self._mark_ts
-            self.output_to_queue(output_data, segment_pass, log_level=0)
+            segment_ctx = self.stamp(dict(self._start_pass), self._turn_ctx)
+            self.output_to_queue(output_data, segment_ctx, log_level=0)
         self._reset_turn()
         self.end_span()
 
@@ -291,7 +291,7 @@ class VADStep(SpanProcessingStep):
         output_data = {}
         self.add_output(output_data, "audio_file",
                         self._pcm_to_wav(bytes(pcm)))
-        self.output_to_queue(output_data, {"timestamp": self._mark_ts},
+        self.output_to_queue(output_data, self._turn_ctx,
                              is_add_pass_data=False, log_level=0)
 
     def _pcm_to_wav(self, pcm):

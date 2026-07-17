@@ -2,6 +2,8 @@
 Consolidated connection/stress test harness.
 
 Select a mode with --mode:
+  services      Connectivity check for all dependent services (main server,
+                gateway, model backends) before running heavier modes.
   concurrent    Server connection / API lifecycle test (register/unregister/
                 get_clients/get_client/init_pipeline/get_client_log/websocket
                 + concurrency). Requires a running server.
@@ -11,9 +13,7 @@ Select a mode with --mode:
   backpressure  Standalone max_queue_size backpressure test; builds pipelines
                 directly (imports from Modules). Does NOT need a running server.
 
-This file merges test/test_concurrent.py, test/test_latency.py, and
-test/test_backpressure.py. Mode-specific helpers/constants are namespaced to
-avoid collisions; runtime logic is copied verbatim from the originals.
+Mode-specific helpers/constants are namespaced to avoid collisions.
 """
 
 import argparse
@@ -720,10 +720,9 @@ def build_pipeline(node_specs, logger):
     """
     Build a pipeline like setup_processing_pipeline does.
     node_specs: [(class, node_id, config_dict), ...]
-    Returns dict with queues, threads, kill_event, etc.
+    Returns dict with queues, threads, etc.
     """
     send_queue = Queue()
-    kill_event = threading.Event()
 
     n = len(node_specs)
     queues = []
@@ -734,14 +733,13 @@ def build_pipeline(node_specs, logger):
         queues.append(Queue(maxsize=mqs))
         cancel_queues.append(Queue())
     queues.append(send_queue)
-    cancel_queues.append(Queue())
 
     threads = []
     for i, (cls, node_id, config) in enumerate(node_specs):
         inst = cls(
             node_id, "test", logger,
             send_queue, queues[i], queues[i + 1],
-            cancel_queues[i], kill_event, config,
+            cancel_queues[i], config,
         )
         t = threading.Thread(target=inst.run, daemon=True, name=f"node_{node_id}")
         threads.append(t)
@@ -750,7 +748,6 @@ def build_pipeline(node_specs, logger):
         "queues": queues,
         "cancel_queues": cancel_queues,
         "send_queue": send_queue,
-        "kill_event": kill_event,
         "threads": threads,
     }
 
@@ -761,7 +758,9 @@ def start_pipeline(p):
 
 
 def stop_pipeline(p, timeout=5):
-    p["kill_event"].set()
+    for cq in p["cancel_queues"]:
+        cq.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
+        cq.put(json.dumps({"signal": "kill"}))
     deadline = time.time() + timeout
     for t in p["threads"]:
         remaining = max(0.1, deadline - time.time())
@@ -825,6 +824,8 @@ def test_basic_backpressure():
             "process_time": 0.15,
             "input_vars": [{"source": "1_text", "target": "text"}],
             "output_vars": [{"source": "result", "target": "result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -890,6 +891,8 @@ def test_no_backpressure_baseline():
             "process_time": 0.15,
             "input_vars": [{"source": "1_text", "target": "text"}],
             "output_vars": [{"source": "result", "target": "result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -943,6 +946,8 @@ def test_cancel_during_backpressure():
             "process_time": 0.5,
             "input_vars": [{"source": "1_text", "target": "text"}],
             "output_vars": [{"source": "result", "target": "result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -996,6 +1001,8 @@ def test_multiple_inputs():
             "process_time": 0.08,
             "input_vars": [{"source": "1_text", "target": "text"}],
             "output_vars": [{"source": "result", "target": "result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [-1],
         }),
     ], logger)
@@ -1060,6 +1067,8 @@ def test_three_stage_pipeline():
             "process_time": 0.02,
             "input_vars": [{"source": "1_text", "target": "text"}],
             "output_vars": [{"source": "result", "target": "3_result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [5],
         }),
         (SlowConsumer, 5, {
@@ -1067,6 +1076,8 @@ def test_three_stage_pipeline():
             "process_time": 0.2,
             "input_vars": [{"source": "3_result", "target": "text"}],
             "output_vars": [{"source": "result", "target": "result"}],
+            "pass_signals": [{"source": "SoS", "target": "SoS"},
+                             {"source": "EoS", "target": "EoS"}],
             "next_nodes": [-1],
         }),
     ], logger)
