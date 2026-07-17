@@ -410,20 +410,25 @@ const FUNCTIONS = [
   'default',
   'frame_collector',
   'frame_splitter',
-  'vad',
+  'call_vad',
+  'call_server_vad',
+  'call_video',
+  'call_joint_stream',
+  'pad',
   'call_memory_manager',
 ];
 
 // Module emit contracts — mirrors the *Step class EMIT_SIGNALS on the server
 // (Modules/*/…Step.py). These modules always emit these signals; the wire name
 // is renamable per node (emit_signals). Editor shows them as editable rows with
-// a fixed internal name; a same-name mapping is the default and is omitted on
-// export. directed = carries an explicit destination (dispatcher envelope):
+// a fixed internal name; every row is exported in full (explicit source and
+// target). directed = carries an explicit destination (dispatcher envelope):
 // drawn straight to its catcher instead of walking the pass chain.
 const MODULE_EMITS = {
   call_llm:        [{ name: 'SoS' }, { name: 'EoS' }],
   call_openai_llm: [{ name: 'SoS' }, { name: 'EoS' }],
-  vad:             [{ name: 'vad_start' }, { name: 'vad_end' }],
+  call_vad:        [{ name: 'vad_start' }, { name: 'vad_end' }],
+  call_server_vad: [{ name: 'vad_start' }, { name: 'vad_end' }],
   call_dispatcher: [{ name: 'dispatch_start', directed: true },
                     { name: 'dispatch_end',   directed: true }],
 };

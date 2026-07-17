@@ -17,17 +17,19 @@ class VADStep(SpanProcessingStep):
     history, independent of turns; its only job is to supply the pre-roll
     (lookback) when a segment starts. Every incoming WAV chunk (audio_data)
     is appended to the ring — the pipeline MUST keep feeding audio after
-    recording_end so end_offset_ms of tail can accumulate.
+    recording_end so the manual end tail can accumulate.
 
     Segmentation is driven by caught signals (a real-VAD subclass swaps the
     signal source for model decisions; nothing else changes):
-      - recording_start: mark = now + start_offset_ms (a signed lead <= 0,
-        negative reaches back for pre-roll; clamped to the ring start), emit
+      - recording_start: mark = now + manual_start_offset_ms (a signed
+        lead <= 0, negative reaches back for pre-roll; clamped to the ring
+        start; "manual" = the standalone client signals), emit
         vad_start, and SNAPSHOT [mark, now) out of the ring into
         the segment's own buffer. From then on the segment owns its audio:
         every later chunk is appended to that buffer, decoupled from the ring.
         A second start while active restarts the mark.
-      - recording_end: finalize once end_offset_ms of tail has accumulated.
+      - recording_end: finalize once manual_end_offset_ms of tail has
+        accumulated.
       - a segment left open (no recording_end) for ring_seconds is
         force-ended (warned) so the buffer stays bounded.
 
@@ -66,37 +68,40 @@ class VADStep(SpanProcessingStep):
         for key, default, minimum in (
                 ("sample_rate", SAMPLE_RATE, 1),
                 ("ring_seconds", RING_SECONDS, 1),
-                ("end_offset_ms", 0, 0),
+                ("manual_end_offset_ms", 0, 0),
                 ("stream_chunk_ms", STREAM_CHUNK_MS, 100)):
             v = config.get(key, default)
             if isinstance(v, bool) or not isinstance(v, (int, float)) \
                     or v < minimum:
                 errors.append(f"{key} must be a number >= {minimum}, "
                               f"got {v!r}")
-        # start_offset_ms is a signed lead <= 0 (aligned with cancel_offset_ms):
-        # negative reaches back for pre-roll, 0 = none; positive would put the
-        # mark in the future. Its reach also cannot exceed the ring, or a
-        # segment starts at the force-end cap and dies on its first chunk.
+        # manual_start_offset_ms is a signed lead <= 0:
+        # negative reaches back for pre-roll, 0 = none;
+        # positive would put the mark in the future. Its reach also cannot
+        # exceed the ring, or a segment starts at the force-end cap and
+        # dies on its first chunk.
         ring_s = config.get("ring_seconds", RING_SECONDS)
-        start_ms = config.get("start_offset_ms", 0)
+        start_ms = config.get("manual_start_offset_ms", 0)
         if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) \
                 or start_ms > 0:
-            errors.append(f"start_offset_ms must be a number <= 0 (negative "
-                          f"reaches back for pre-roll), got {start_ms!r}")
+            errors.append(f"manual_start_offset_ms must be a number <= 0 "
+                          f"(negative reaches back for pre-roll), "
+                          f"got {start_ms!r}")
         elif not isinstance(ring_s, bool) and isinstance(ring_s, (int, float)) \
                 and start_ms <= -ring_s * 1000:
             errors.append(
-                f"start_offset_ms ({start_ms}) must be > -ring_seconds*1000 "
-                f"({-ring_s * 1000}): the look-back cannot exceed the ring")
+                f"manual_start_offset_ms ({start_ms}) must be > "
+                f"-ring_seconds*1000 ({-ring_s * 1000}): the look-back "
+                f"cannot exceed the ring")
         return errors
 
     def span_init(self):
         self.sample_rate = int(self.get_config("sample_rate", SAMPLE_RATE))
         self.ring_samples = int(
             self.get_config("ring_seconds", RING_SECONDS) * self.sample_rate)
-        self.start_offset = int(self.get_config("start_offset_ms", 0)
+        self.start_offset = int(self.get_config("manual_start_offset_ms", 0)
                                 * self.sample_rate / 1000)
-        self.end_offset = int(self.get_config("end_offset_ms", 0)
+        self.end_offset = int(self.get_config("manual_end_offset_ms", 0)
                               * self.sample_rate / 1000)
         self.stream = self.get_config("stream", False)
         chunk_ms = int(self.get_config("stream_chunk_ms", STREAM_CHUNK_MS))

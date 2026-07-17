@@ -8,7 +8,7 @@ A real-time streaming pipeline server for embodied conversational agents. Orches
 - **Intra-pipeline streaming** — LLM streams sentences incrementally to TTS; first audio output begins before full generation completes
 - **Parallel execution** — dispatcher-receiver bracket enables concurrent processing of independent branches (e.g., TTS ∥ MotionGen)
 - **WebSocket & WebRTC** — sentence-level streaming via WebSocket; frame-level (20ms) synchronized streaming via WebRTC with configurable fps/resolution
-- **Service-oriented** — lightweight per-user pipeline instances; compute-heavy models run as shared standalone services with OpenAI-compatible APIs
+- **Service-oriented** — lightweight per-user pipeline instances; compute-heavy models run as shared standalone services (OpenAI-compatible APIs for ASR/LLM/TTS; custom protocols where none exists, e.g. streaming VAD)
 - **Config-driven** — pipelines, models, and characters defined entirely in JSON; swap local/cloud backends by changing one config file
 - **Declared interface contracts** — every signal (catch/pass/emit) and every input/output var is declared in the pipeline config as explicit one-to-one `{source, target}` entries (both fields always written; renames included); undeclared signals never drift through a node, and relayed copies travel edge by edge like data. Per-node contracts are validated statically at init, exactly both ways: catch targets == the module's required catches, emit declarations == its EMIT_SIGNALS, input targets == its declared inputs, output sources == its products. An explicit `null` on the wire side is a declared opt-out: default input / unsent output / unwired catch / suppressed emission
 
@@ -47,8 +47,9 @@ Each client gets an isolated pipeline instance (threads + queues). Compute-heavy
 | TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | OpenAI TTS-compatible wrapper for Qwen3-TTS     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                                            |
 | MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | REST API wrapper for text-to-motion generation  | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0)                        |
 | Vector Database       | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS similarity search server         | [MIT](https://huggingface.co/BAAI/bge-m3) / [MIT](https://github.com/facebookresearch/faiss) |
+| VAD                   | `Modules_standalone/VADServer/`      | Streaming VAD sessions (custom HTTP protocol; Silero VAD network, plus an energy fallback) | — |
 
-Each service runs in its own conda environment. Replace any service with any OpenAI-compatible implementation by editing `configs/settings/settings.json`.
+Each service runs in its own conda environment. The model services expose OpenAI-compatible APIs and can be swapped for any compatible implementation by editing `configs/settings/settings.json` (the VAD service uses its own session protocol; swap it behind the same endpoints).
 
 ## Pipeline Configurations
 
@@ -57,6 +58,7 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | Text-only conversation (no audio)                  |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
+| `unity_chan_default_vad` | VAD → ASR → LLM → DataQuery → DataQuery → TTS                                       | Server-side VAD over WebSocket (auto barge-in)     |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC frame-level streaming                       |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid motion generation (parallel)                 |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber danmaku livestream                          |
@@ -66,7 +68,8 @@ Each service runs in its own conda environment. Replace any service with any Ope
 | Module                   | Function Name                       | Description                                                                                                              |
 | ------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `webrtc_frame_collector` | `frame_collector`                   | Per-group transform of WebRTC lanes: audio frames→WAV chunk, video/data demux                                            |
-| `vad_base`               | `vad`                               | Ring-buffered voice segmentation driven by recording_start/end signals (pre/post-roll, stream or whole-utterance output) |
+| `vad_base`               | `call_vad`                          | Ring-buffered voice segmentation driven by recording_start/end signals (pre/post-roll, stream or whole-utterance output) |
+| `vad_server`             | `call_server_vad`                   | Model-driven VAD via the VAD service: auto speech detection with barge-in cancel; client signals take manual control; `auto_detect: false` = purely signal-driven |
 | `asr_openai`             | `call_openai_asr`                   | Speech-to-text via OpenAI-compatible API                                                                                 |
 | `llm_openai`             | `call_openai_llm`                   | Streaming LLM with history, lorebooks, tool calls, action extraction                                                     |
 | `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                                                                            |

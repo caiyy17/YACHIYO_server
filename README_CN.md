@@ -8,7 +8,7 @@
 - **pipeline 内流式** — LLM 逐句流式输出到 TTS，首段音频在完整生成前即开始播放
 - **并行执行** — 分发-接收括号实现独立分支并发处理（如 TTS ∥ MotionGen）
 - **WebSocket & WebRTC** — WebSocket 提供句子级流式；WebRTC 提供帧级（20ms）同步流式，帧率/分辨率可配
-- **服务化架构** — 轻量的每用户 pipeline 实例；计算密集型模型作为共享独立服务运行，提供 OpenAI 兼容 API
+- **服务化架构** — 轻量的每用户 pipeline 实例；计算密集型模型作为共享独立服务运行(ASR/LLM/TTS 提供 OpenAI 兼容 API;无官方标准处用自定协议,如流式 VAD)
 - **配置驱动** — pipeline、模型和角色完全由 JSON 定义；切换本地/云端只需改配置文件
 - **声明式接口契约** — 节点的每个信号（catch / pass / emit）和每个输入/输出变量都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名）；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且双向恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS、输入 targets == 模块声明的输入集、输出 sources == 其产物集。线上侧显式 `null` 为声明式退出：输入用默认值 / 输出不上线 / catch 不接线 / emit 不发射
 
@@ -47,8 +47,9 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | TTS (Qwen3-TTS)       | `Modules_standalone/QwenTTS/`        | Qwen3-TTS 的 OpenAI TTS 兼容 wrapper     | [Apache 2.0](https://github.com/QwenLM/Qwen3-TTS)                                            |
 | MotionGen (HY-Motion) | `Modules_standalone/HYMotion/`       | 文本到动作生成的 REST API wrapper        | [Hunyuan Community](https://github.com/Tencent-Hunyuan/HY-Motion-1.0)                        |
 | 向量数据库            | `Modules_standalone/VectorDatabase/` | BGE-M3 + FAISS 相似度搜索服务            | [MIT](https://huggingface.co/BAAI/bge-m3) / [MIT](https://github.com/facebookresearch/faiss) |
+| VAD                   | `Modules_standalone/VADServer/`      | 流式 VAD 会话(自定 HTTP 协议;Silero VAD 网络,另有 energy 轻量兜底) | — |
 
-每个服务有独立的 conda 环境。替换任何服务只需编辑 `configs/settings/settings.json` 中的 HTTP 地址。
+每个服务有独立的 conda 环境。模型服务为 OpenAI 兼容 API,替换实现只需编辑 `configs/settings/settings.json` 中的 HTTP 地址(VAD 服务为自定会话协议,替换需实现同一组端点)。
 
 ## Pipeline 配置
 
@@ -57,6 +58,7 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | 纯文本对话（无音频）     |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
+| `unity_chan_default_vad` | VAD → ASR → LLM → DataQuery → DataQuery → TTS                                       | WebSocket 上的服务端 VAD(自动打断)  |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC 帧级流式传输      |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid 动作生成（并行）   |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber 弹幕直播          |
@@ -66,7 +68,8 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | 模块                     | 函数名                              | 说明                                                                           |
 | ------------------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
 | `webrtc_frame_collector` | `frame_collector`                   | 逐组变换 WebRTC 车道:音频帧拼 WAV 块、视频/数据按 key 拆分                     |
-| `vad_base`               | `vad`                               | 环形缓冲语音切段,由 recording_start/end 信号驱动(支持前后回溯、流式或整段输出) |
+| `vad_base`               | `call_vad`                          | 环形缓冲语音切段,由 recording_start/end 信号驱动(支持前后回溯、流式或整段输出) |
+| `vad_server`             | `call_server_vad`                   | 模型驱动 VAD(经 VAD 服务):自动检测语音并 barge-in cancel;客户端信号可手动接管;`auto_detect: false` 时纯信号驱动 |
 | `asr_openai`             | `call_openai_asr`                   | 通过 OpenAI 兼容 API 进行语音识别                                              |
 | `llm_openai`             | `call_openai_llm`                   | 流式 LLM，支持历史记录、lorebook、工具调用、动作提取                           |
 | `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                                             |

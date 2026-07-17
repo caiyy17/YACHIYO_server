@@ -1,5 +1,5 @@
 from .VADStep import VADStep
 
 function_map = {
-    "vad": VADStep,
+    "call_vad": VADStep,
 }

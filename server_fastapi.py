@@ -13,6 +13,7 @@ import threading
 import queue
 from queue import Queue
 from Modules import get_function_class_by_name
+from utils.event_handler import EventHandler
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -72,7 +73,14 @@ class ClientConnection:
         self.receive_task = None
 
         self.queues = [self.send_queue]
-        self.cancel_queues = []
+        # Control plane: one event handler per pipeline (built in setup,
+        # torn down with it); all control-verb traffic goes through its
+        # inbox via submit().
+        self.events = None
+        # Serializes dispose: the endpoint's finally and /unregister (or a
+        # force re-init) can race; the loser waits, then returns on the
+        # initialized guard instead of tearing down a half-cleared state.
+        self._dispose_lock = asyncio.Lock()
         self.threads = []
         self.websocket = None
         self.last_timestamp = 0  # entry monotonicity floor (non-cancel)
@@ -108,7 +116,7 @@ class ClientConnection:
             cut=False,
         )
         self.queues = []
-        self.cancel_queues = []
+        self.events = None
         self.threads = []
         try:
             self.setup_processing_pipeline()
@@ -118,10 +126,15 @@ class ClientConnection:
             # guards on self.initialized which is still False). Catching
             # broadly: ANY failure mid-build would otherwise orphan the
             # already-started node threads.
-            self.broadcast_teardown()
+            if self.events:
+                self.events.submit({"signal": "cancel", "timestamp": float("inf"),
+                                    "source": 0})
+                self.events.submit({"signal": "kill"})
             await self.wait_for_threads()
+            if self.events:
+                self.events.join()
             self.queues = [self.send_queue]
-            self.cancel_queues = []
+            self.events = None
             self.threads = []
             self.initialized = False
             raise
@@ -134,14 +147,25 @@ class ClientConnection:
         # Create queues between functions
         # Each node can set max_queue_size in its config to limit its input queue capacity.
         # 0 (default) means unbounded. When full, upstream put() blocks until space is freed.
+        cancel_queues = {}
         for i in range(num_functions):
             max_queue_size = pipeline[i].get("config", {}).get("max_queue_size", 0)
             self.queues.append(Queue(maxsize=max_queue_size))
-            self.cancel_queues.append(Queue())
+            cancel_queues[pipeline[i]["node_id"]] = Queue()
         # Recreate send_queue with optional max_queue_size from pipeline config
         send_max = self.pipeline_config.get("send_queue_max_size", 0)
         self.send_queue = Queue(maxsize=send_max)
         self.queues.append(self.send_queue)
+
+        # Control plane: the pipeline owns queue construction (control
+        # queues alongside data queues, keyed by node id for source-aware
+        # dispatch); the event handler receives them plus the send queue
+        # (server-originated cancels go out to the client) and is the only
+        # writer into them. Started before the nodes so a mid-build failure
+        # can already tear down via its inbox.
+        self.events = EventHandler(cancel_queues, self.send_queue,
+                                   log=self.log_info)
+        self.events.start()
 
         # Create a thread for each function. Node initialization is
         # sequential; a failed init (dependent service down) FAILS FAST:
@@ -157,6 +181,10 @@ class ClientConnection:
             self.log_info(
                 f"Init: Creating thread for function {func_name} with config: {config}"
             )
+            # runtime-only handle (injected after the log so configs log
+            # clean): a node with event capability submits control events
+            # (e.g. a model-driven VAD's barge-in cancel) through this
+            config["__events"] = self.events
             func_instance = func_class(
                 node["node_id"],
                 self.client_id,
@@ -164,7 +192,7 @@ class ClientConnection:
                 self.send_queue,
                 self.queues[i],
                 self.queues[i + 1],
-                self.cancel_queues[i],
+                cancel_queues[node["node_id"]],
                 config,
             )
             if getattr(func_instance, "init_error", None):
@@ -177,17 +205,6 @@ class ClientConnection:
             t = threading.Thread(target=func_instance.run, name=f"{i}_{func_name}")
             t.start()
             self.threads.append(t)
-
-    def broadcast_teardown(self):
-        """Two control verbs into every node's cancel queue, in order:
-        cancel with an infinite stamp voids ALL content (in-flight
-        generation aborts at its polling points, spans clean up via
-        custom_cancel), then kill exits the thread (custom_dispose hook).
-        Queue delivery makes this race-free: a thread returning from a
-        long call finds both verbs still waiting, however late it is."""
-        for q in self.cancel_queues:
-            q.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
-            q.put(json.dumps({"signal": "kill"}))
 
     async def start_pipeline(self, websocket: WebSocket):
         if not self.initialized:
@@ -277,9 +294,11 @@ class ClientConnection:
                 # Cancel is exempt from monotonicity (its timestamp refers
                 # to what to cancel) and routes to the control plane
                 if data.get("signal", "") == "cancel":
-                    self.log_info(f"Received: cancel signal: {data}")
-                    for q in self.cancel_queues:
-                        q.put(json.dumps(data))
+                    # boundary events are source 0 — FORCED here, so a
+                    # client cannot impersonate a node (exclusion and
+                    # client-echo routing key off the source)
+                    data["source"] = 0
+                    self.events.submit(data)
                     continue
 
                 if ts < self.last_timestamp:
@@ -297,27 +316,31 @@ class ClientConnection:
                 self.logger.error(f"Received (message): {e}")
 
     async def dispose(self):
-        self.log_info(f"Dispose: Disposing client {self.client_id}")
-        if not self.initialized:
-            self.log_info(
-                f"Dispose: No dispose: Client {self.client_id} not initialized"
-            )
-            return
-        if self.connected:
-            await self.close()
-        self.broadcast_teardown()
-        await self.wait_for_threads()
-        if self.send_task:
-            self.send_task.cancel()
-            self.send_task = None
-        if self.receive_task:
-            self.receive_task.cancel()
-            self.receive_task = None
-        self.queues = [self.send_queue]
-        self.cancel_queues = []
-        self.threads = []
-        self.initialized = False
-        self.log_info(f"Dispose: Client {self.client_id} disposed")
+        async with self._dispose_lock:
+            self.log_info(f"Dispose: Disposing client {self.client_id}")
+            if not self.initialized:
+                self.log_info(
+                    f"Dispose: No dispose: Client {self.client_id} not initialized"
+                )
+                return
+            if self.connected:
+                await self.close()
+            self.events.submit({"signal": "cancel", "timestamp": float("inf"),
+                            "source": 0})
+            self.events.submit({"signal": "kill"})
+            await self.wait_for_threads()
+            self.events.join()
+            if self.send_task:
+                self.send_task.cancel()
+                self.send_task = None
+            if self.receive_task:
+                self.receive_task.cancel()
+                self.receive_task = None
+            self.queues = [self.send_queue]
+            self.events = None
+            self.threads = []
+            self.initialized = False
+            self.log_info(f"Dispose: Client {self.client_id} disposed")
 
     async def wait_for_threads(self, timeout=35):
         """Wait for threads to exit. Timeout should exceed the longest HTTP timeout

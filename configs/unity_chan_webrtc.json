@@ -4,7 +4,7 @@
         "video_fps": 30,
         "data_fps": 20,
         "startup_buffer": 2,
-        "dc_offset_ms": 200
+        "dc_offset_ms": 100
     },
     "pipeline": [
         {
@@ -50,12 +50,14 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [2]
+                "next_nodes": [
+                    2
+                ]
             }
         },
         {
             "node_id": 2,
-            "function": "vad",
+            "function": "call_server_vad",
             "config": {
                 "input_vars": [
                     {
@@ -96,9 +98,15 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [3],
-                "start_offset_ms": 0,
-                "end_offset_ms": 400
+                "next_nodes": [
+                    3
+                ],
+                "start_offset_ms": -200,
+                "end_offset_ms": 0,
+                "manual_start_offset_ms": -200,
+                "manual_end_offset_ms": 200,
+                "auto_detect": false,
+                "model": "silero_vad"
             }
         },
         {
@@ -136,7 +144,9 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -198,7 +208,9 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [5],
+                "next_nodes": [
+                    5
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -222,7 +234,10 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": ["get_weather", "web_search"]
+                "tool_names": [
+                    "get_weather",
+                    "web_search"
+                ]
             }
         },
         {
@@ -277,7 +292,9 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [6],
+                "next_nodes": [
+                    6
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -340,7 +357,9 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [7],
+                "next_nodes": [
+                    7
+                ],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
@@ -423,7 +442,9 @@
                         "target": "recording_start"
                     }
                 ],
-                "next_nodes": [8],
+                "next_nodes": [
+                    8
+                ],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }
@@ -502,11 +523,17 @@
                     }
                 ],
                 "emit_signals": [],
-                "next_nodes": [9],
+                "next_nodes": [
+                    9
+                ],
                 "video_fps": 30,
                 "video_width": 640,
                 "video_height": 320,
-                "color": [128, 0, 128]
+                "color": [
+                    128,
+                    0,
+                    128
+                ]
             }
         },
         {
@@ -589,7 +616,9 @@
                         "target": "meta"
                     }
                 ],
-                "next_nodes": [-1],
+                "next_nodes": [
+                    -1
+                ],
                 "audio_fps": 50,
                 "video_fps": 30,
                 "video_width": 1280,

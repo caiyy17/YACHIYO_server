@@ -1039,12 +1039,16 @@ def run_cancel(args):
     with open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "configs", f"{PIPELINE_CONFIG}.json")) as f:
         _pipeline = json.load(f)["pipeline"]
-    _vad_cfg = next(n["config"] for n in _pipeline if n["function"] == "vad")
-    _lookback = f"(lookback {abs(_vad_cfg.get('start_offset_ms', 0)) / 1000:.2f}s)"
+    _vad_cfg = next(n["config"] for n in _pipeline
+                    if "vad" in n["function"])
+    _lb_ms = _vad_cfg.get("manual_start_offset_ms",
+                          _vad_cfg.get("start_offset_ms", 0))
+    _lookback = f"(lookback {abs(_lb_ms) / 1000:.2f}s)"
     checks = [
         ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
         ("recording_end after cancel ignored",
-         "recording_end without active mark - ignored" in log),
+         "recording_end without active mark - ignored" in log
+         or "recording_end without a manual turn - ignored" in log),
         (f"vad start lookback live {_lookback}", _lookback in log),
         ("no ERROR in client log", "ERROR" not in log),
     ]
@@ -1345,7 +1349,12 @@ def run_lifecycle(args):
 # ============================================================
 # Mode: multi  (from test_webrtc_multi.py)
 # ============================================================
-def run_client_process(client_id, output_mp4, result_dict):
+def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
+    # child processes re-import this module (start-method dependent), so
+    # the pipeline choice must arrive as an argument, not via the global
+    global PIPELINE_CONFIG
+    if pipeline:
+        PIPELINE_CONFIG = pipeline
     """Entry point for each client process."""
     import numpy as np
     import aiohttp
@@ -1354,8 +1363,10 @@ def run_client_process(client_id, output_mp4, result_dict):
     sys.path.insert(0, SCRIPT_DIR)
     # All helpers/constants now live in this consolidated module. The child
     # process imports them from here (the original imported from test_webrtc).
+    # NOTE: PIPELINE_CONFIG deliberately NOT imported — the fresh module's
+    # default would clobber the per-child value set from the argument above
     from test_webrtc import (
-        MAIN_SERVER, WEBRTC_SERVER, PIPELINE_CONFIG, TEST_WAV,
+        MAIN_SERVER, WEBRTC_SERVER, TEST_WAV,
         SAMPLE_RATE, AUDIO_PTIME, AUDIO_SAMPLES, VIDEO_FPS,
         load_test_audio, TestAudioTrack, TestVideoTrack, record_mp4,
     )
@@ -1555,7 +1566,7 @@ def run_client_process(client_id, output_mp4, result_dict):
 def run_multi(args):
     """Entry for --mode multi. Mirrors original test_webrtc_multi.py main()."""
     global WEBRTC_SERVER, PIPELINE_CONFIG
-    WEBRTC_SERVER = args.server        # honored by forked children (inherit globals)
+    WEBRTC_SERVER = args.server
     PIPELINE_CONFIG = args.pipeline
     num_clients = args.num_clients
 
@@ -1578,7 +1589,7 @@ def run_multi(args):
         results.append((cid, result_dict))
         p = multiprocessing.Process(
             target=run_client_process,
-            args=(cid, mp4, result_dict),
+            args=(cid, mp4, result_dict, PIPELINE_CONFIG),
         )
         processes.append(p)
 

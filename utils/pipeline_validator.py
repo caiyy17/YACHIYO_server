@@ -26,6 +26,10 @@ def validate_pipeline(pipeline_config, get_class):
     for i, node in enumerate(pipeline_config.get("pipeline", [])):
         func = node["function"]
         name = f"node[{i}] {func}(id={node.get('node_id')})"
+        nid = node.get("node_id")
+        if not isinstance(nid, int) or isinstance(nid, bool) or nid < 1:
+            errors.append(f"{name}: node_id must be an int >= 1 "
+                          f"(0 is the client's event-source id)")
         try:
             cls = get_class(func)
         except Exception:

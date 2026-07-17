@@ -1,0 +1,14 @@
+{
+    "energy_vad": {
+        "api_base": "vad_api",
+        "model_name": "energy",
+        "threshold": 0.5,
+        "silence_duration_ms": 300
+    },
+    "silero_vad": {
+        "api_base": "vad_api",
+        "model_name": "silero",
+        "threshold": 0.5,
+        "silence_duration_ms": 300
+    }
+}
