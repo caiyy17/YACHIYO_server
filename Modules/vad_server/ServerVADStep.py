@@ -4,10 +4,6 @@ import requests
 
 from ..vad_base.VADStep import VADStep
 
-# Cancel stamp lead below the activation chunk's stamp: the barge-in cancel
-# must be older than the new turn it opens (strict < keeps the turn alive)
-CANCEL_EPSILON = 1e-3
-
 
 class ServerVADCaller:
     """Session client for the streaming-VAD service: create a session,
@@ -68,7 +64,7 @@ class ServerVADStep(VADStep):
 
     Every ingested chunk is also fed to the service; its events drive the
     turn — speech_started opens a barge-in: the node submits a cancel
-    event (stamp = the activation chunk's stamp minus a small epsilon,
+    event (stamp = the activation chunk's stamp, i.e. the new turn's own;
     source = this node's id) through the pipeline's event handler, which
     broadcasts it to every OTHER node and out to the client; the excluded
     emitter handles its own state instead (it aligns its cancel watermark
@@ -208,16 +204,18 @@ class ServerVADStep(VADStep):
         """Barge-in: cancel everything older than this turn everywhere but
         here, then open the segment (order: cancel first, then start)."""
         self.logger.info("detector: speech_started - barge-in")
-        stamp = chunk_ts - CANCEL_EPSILON
+        # the semantic stamp is the turn's own; the event handler applies
+        # the numerical epsilon uniformly on dispatch
         self._events.submit({
             "signal": "cancel",
-            "timestamp": stamp,
+            "timestamp": chunk_ts,
             "source": self.index,
         })
         # the dispatch excludes this node, so align our own watermark to the
         # cancel we just minted — the emitter handles its own state (the
-        # segment is safe: it owns its audio, and mark_ts > stamp)
-        self.cancel_timestamp = max(self.cancel_timestamp, stamp)
+        # segment is safe: it owns its audio, and strict < spares the
+        # turn's own same-stamp messages)
+        self.cancel_timestamp = max(self.cancel_timestamp, chunk_ts)
         self.start_offset = self._auto_start
         self._on_start({"timestamp": chunk_ts})
 

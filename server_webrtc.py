@@ -149,10 +149,12 @@ class GroupDispatcher:
         self._video_per_group = video_per_group
         self._data_per_group = data_per_group
 
-    def fill_next_group(self, cancel_timestamp=0):
+    def fill_next_group(self):
         """Dequeue one media group into buffers when available.
-        Signal-only messages fire callback and are skipped.
-        Groups with timestamp < cancel_timestamp are discarded."""
+        Signal-only messages fire callback and are skipped. No cancel
+        gating here: the pipeline exit is a transport hop, and stale
+        filtering belongs to the consuming edges (pipeline nodes on the
+        way in, the client's own event handling on the way out)."""
         while True:
             try:
                 msg = self._group_queue.get_nowait()
@@ -161,10 +163,6 @@ class GroupDispatcher:
                 # send points fall back on their own (audio: silence,
                 # video: idle frame, data: {})
                 return False
-
-            # Discard cancelled groups
-            if msg.get("timestamp", float("inf")) < cancel_timestamp:
-                continue
 
             # Handle signal (may coexist with media, or be signal-only)
             if msg.get("signal"):
@@ -464,7 +462,6 @@ class WebRTCSession:
         # Client signals waiting for next group boundary: (due_time, raw_msg),
         # due dc_offset after arrival.
         self._input_signal_buffer = deque()
-        self.cancel_timestamp = 0            # Output-side cancel filtering
         self._audio_pts_origin = None        # First audio PTS (for gap detection)
 
     def _on_signal(self, msg):
@@ -532,7 +529,7 @@ class WebRTCSession:
                     group_index += 1
                     continue
 
-            got_media = dispatcher.fill_next_group(self.cancel_timestamp)
+            got_media = dispatcher.fill_next_group()
             if not got_media:
                 _empty += 1
             group_index += 1
@@ -946,7 +943,6 @@ class WebRTCSession:
                 sig["timestamp"] = time.time()
                 if sig.get("signal") == "cancel":
                     sig["timestamp"] += self.cancel_offset
-                    self.cancel_timestamp = sig["timestamp"]
                 if self.ws:
                     await self.ws.send(json.dumps(sig))
 

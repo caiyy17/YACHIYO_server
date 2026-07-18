@@ -2,6 +2,13 @@ import json
 import threading
 from queue import Queue
 
+# Numerical guard applied to every dispatched cancel stamp: producers submit
+# their SEMANTIC stamp (the turn's own timestamp); nudging it down by a hair
+# on dispatch makes the strict < comparison reliably spare same-stamp
+# messages (the very turn a barge-in opens) across float round-trips. This
+# is arithmetic hygiene, not a cancel offset.
+CANCEL_EPSILON = 1e-3
+
 class EventHandler:
     """Per-pipeline event processor: the control plane as a message consumer.
 
@@ -59,6 +66,8 @@ class EventHandler:
             verb = event.get("signal")
             if verb == "cancel":
                 source = event.get("source", 0)   # 0 = pipeline boundary
+                event["timestamp"] -= CANCEL_EPSILON
+                wire = json.dumps(event)
                 self._log(f"event: cancel from {source} dispatched: {event}")
                 for nid, q in self._node_queues.items():
                     if nid != source:
