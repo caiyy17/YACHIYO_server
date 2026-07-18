@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>YACHIYO Pipeline Editor</title>
+<title>YACHIYO Pipeline Viewer</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -29,17 +29,6 @@ body {
   z-index: 100;
 }
 
-#toolbar button {
-  background: #fff;
-  color: #000;
-  border: none;
-  padding: 4px 10px;
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-#toolbar button:hover { background: #ddd; }
-
 #toolbar label {
   background: #fff;
   color: #000;
@@ -49,16 +38,17 @@ body {
 }
 #toolbar label:hover { background: #ddd; }
 
-#config-name {
+#config-select {
   background: #333;
   color: #fff;
   border: 1px solid #555;
   padding: 3px 8px;
   font-family: inherit;
   font-size: 12px;
-  width: 200px;
+  min-width: 220px;
 }
 
+#config-name { font-size: 12px; color: #aaa; }
 #toolbar .sep { color: #555; margin: 0 4px; }
 
 /* ── Canvas wrapper ── */
@@ -86,9 +76,8 @@ body {
      instead of running over card contents; above the column stripes (z=0). */
   z-index: 1;
 }
-#svg-overlay path { pointer-events: stroke; cursor: pointer; }
 
-/* ── Node cards ── */
+/* ── Node cards (read-only) ── */
 .node-card {
   position: absolute;
   width: 240px;
@@ -97,7 +86,6 @@ body {
   border-radius: 4px;
   display: flex;
   flex-direction: column;
-  user-select: none;
   z-index: 2;
 }
 
@@ -109,29 +97,16 @@ body {
   align-items: center;
   gap: 6px;
   cursor: ns-resize;
+  user-select: none;
 }
 .node-header .node-id-label { font-size: 11px; white-space: nowrap; }
-.node-func-select {
+.node-func-name {
   flex: 1;
-  background: #222;
-  color: #fff;
-  border: none;
-  font-family: inherit;
   font-size: 11px;
-  cursor: pointer;
-  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.node-func-select option { background: #222; }
-.node-delete {
-  background: none;
-  border: none;
-  color: #fff;
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0 2px;
-  line-height: 1;
-}
-.node-delete:hover { color: #f66; }
 
 .node-body {
   padding: 6px 0;
@@ -152,14 +127,13 @@ body {
 .port-row {
   display: flex;
   align-items: center;
-  min-height: 22px;
+  min-height: 20px;
   position: relative;
 }
-.port-row.input-row { flex-direction: row; padding-right: 8px; }
-.port-row.output-row { flex-direction: row; padding-left: 8px; }
-.port-row.pass-row { padding-left: 0; padding-right: 0; }
+.port-row.input-row { padding-right: 8px; }
+.port-row.output-row { padding-left: 8px; justify-content: flex-end; }
 
-/* Port circles */
+/* Port circles: pure positional anchors for the connection lines */
 .port-dot {
   width: 10px;
   height: 10px;
@@ -167,99 +141,38 @@ body {
   background: #fff;
   border: 1.5px solid #000;
   flex-shrink: 0;
-  cursor: crosshair;
   position: relative;
   z-index: 10;
 }
-.port-dot:hover { background: #ddd; }
-.port-dot.active { background: #000; }
+.port-row.input-row .port-dot { margin-left: -6px; }
+.port-row.output-row .port-dot { margin-right: -6px; }
+.port-row.pass-row .port-dot.pass-in { margin-left: -6px; }
+.port-row.pass-row .port-dot.pass-out { margin-right: -6px; }
 
-/* Input port dot sits on the left edge */
-.port-row.input-row .port-dot {
-  margin-left: -6px;
-}
-/* Output port dot sits on the right edge */
-.port-row.output-row .port-dot {
-  margin-right: -6px;
-}
-/* Pass left dot */
-.port-row.pass-row .port-dot.pass-in {
-  margin-left: -6px;
-}
-/* Pass right dot */
-.port-row.pass-row .port-dot.pass-out {
-  margin-right: -6px;
-}
-
-.port-label {
-  font-size: 11px;
-  padding: 0 4px;
+.port-name { font-size: 11px; padding: 0 4px; white-space: nowrap; }
+.port-wire {
+  font-size: 10px;
+  color: #888;
+  padding: 0 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100px;
 }
+.port-wire.null-val { color: #b58900; font-style: italic; }
 
-.port-source-input {
-  flex: 1;
-  border: none;
-  border-bottom: 1px solid #ccc;
-  font-family: inherit;
-  font-size: 11px;
-  color: #555;
-  padding: 0 2px;
-  background: transparent;
-  min-width: 0;
-}
-.port-source-input:focus { outline: none; border-bottom-color: #000; }
-
-/* pass row: left dot + arrow + right dot, spanning full width */
 .port-row.pass-row {
   display: flex;
   align-items: center;
   gap: 2px;
   padding: 1px 0;
 }
-.pass-label-left, .pass-label-right {
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 85px;
-  padding: 0 2px;
-}
 .pass-arrow { font-size: 10px; color: #888; flex-shrink: 0; }
 
-.port-delete {
-  background: none;
-  border: none;
-  color: #aaa;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0 4px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.port-delete:hover { color: #f00; }
-
-/* Signal rows. Flow lines are DERIVED from declarations; the small dots are
-   an input shortcut only: dragging out->in sets the target row's source. */
+/* Signal rows. Flow lines are DERIVED from declarations. */
 .port-row.sig-row {
-  gap: 2px;
+  gap: 4px;
   padding: 1px 8px;
 }
-.sig-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #fff;
-  border: 1.5px solid #888;
-  flex-shrink: 0;
-  cursor: crosshair;
-}
-.sig-dot:hover { background: #ddd; }
-.port-row.sig-row .sig-dot.sig-in { margin-left: -5px; }
-.port-row.sig-row .sig-dot.sig-out { margin-right: -5px; }
 .sig-kind {
   font-size: 9px;
   color: #666;
@@ -270,38 +183,9 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.sig-input {
-  border: none;
-  border-bottom: 1px solid #eee;
-  background: transparent;
-  font-size: 10px;
-  font-family: inherit;
-  width: 62px;
-  min-width: 0;
-  padding: 0 2px;
-}
-.sig-input:focus { outline: none; border-bottom-color: #000; }
+.sig-name { font-size: 10px; white-space: nowrap; }
 
-/* Add port buttons */
-.add-btns {
-  display: flex;
-  gap: 4px;
-  padding: 4px 8px;
-  border-top: 1px solid #eee;
-  flex-wrap: wrap;
-}
-.add-btn {
-  background: none;
-  border: 1px solid #aaa;
-  font-family: inherit;
-  font-size: 10px;
-  padding: 1px 5px;
-  cursor: pointer;
-  color: #555;
-}
-.add-btn:hover { background: #f5f5f5; border-color: #000; color: #000; }
-
-/* Extra config section */
+/* Config section */
 .config-section {
   border-top: 1px solid #eee;
   padding: 4px 0;
@@ -318,45 +202,15 @@ body {
   align-items: flex-start;
   gap: 2px;
   padding: 1px 8px;
-}
-.config-key {
-  border: none;
-  border-bottom: 1px solid #eee;
-  font-family: inherit;
   font-size: 11px;
-  color: #333;
-  width: 70px;
-  flex-shrink: 0;
-  background: transparent;
 }
-.config-key:focus { outline: none; border-bottom-color: #000; }
-.config-colon { color: #888; padding: 0 2px; font-size: 11px; flex-shrink: 0; }
+.config-key { color: #333; flex-shrink: 0; }
+.config-colon { color: #888; padding: 0 2px; flex-shrink: 0; }
 .config-val {
-  flex: 1;
-  border: none;
-  border-bottom: 1px solid #eee;
-  font-family: inherit;
-  font-size: 11px;
-  color: #333;
-  background: transparent;
-  resize: none;
-  overflow: hidden;
-  min-height: 16px;
-  line-height: 1.3;
+  color: #555;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
-.config-val:focus { outline: none; border-bottom-color: #000; }
-
-/* Wire drag preview */
-#wire-preview {
-  position: absolute;
-  top: 0; left: 0;
-  pointer-events: none;
-  overflow: visible;
-  z-index: 3;
-}
-
-/* Connection highlight */
-path.selected { stroke: #f00 !important; }
 
 /* Notification */
 #notify {
@@ -375,20 +229,17 @@ path.selected { stroke: #f00 !important; }
 <body>
 
 <div id="toolbar">
-  <label for="file-input">Load JSON</label>
+  <select id="config-select"><option value="">— select a config —</option></select>
+  <span class="sep">|</span>
+  <label for="file-input">Load JSON file</label>
   <input type="file" id="file-input" accept=".json" style="display:none">
-  <button id="btn-save">Save JSON</button>
   <span class="sep">|</span>
-  <button id="btn-add-node">+ Add Node</button>
-  <button id="btn-del-node">- Delete Node</button>
-  <span class="sep">|</span>
-  <input id="config-name" type="text" placeholder="pipeline name" value="untitled">
+  <span id="config-name"></span>
 </div>
 
 <div id="canvas-wrapper">
   <div id="canvas">
     <svg id="svg-overlay"></svg>
-    <svg id="wire-preview"></svg>
   </div>
 </div>
 
@@ -396,90 +247,32 @@ path.selected { stroke: #f00 !important; }
 
 <script>
 // ─────────────────────────────────────────────
-//  Constants & State
+//  Read-only pipeline viewer: renders one config's graph — data wires
+//  (matched by variable name), declaration-derived signal flows, per-node
+//  params. No editing of any kind.
 // ─────────────────────────────────────────────
-const FUNCTIONS = [
-  'call_danmaku_buffer',
-  'call_data_query_link',
-  'call_dispatcher',
-  'call_motion_generation',
-  'call_openai_asr',
-  'call_openai_llm',
-  'call_openai_tts',
-  'call_receiver',
-  'default',
-  'frame_collector',
-  'frame_splitter',
-  'call_vad',
-  'call_server_vad',
-  'call_video',
-  'call_joint_stream',
-  'pad',
-  'call_memory_manager',
-];
 
-// Module emit contracts — mirrors the *Step class EMIT_SIGNALS on the server
-// (Modules/*/…Step.py). These modules always emit these signals; the wire name
-// is renamable per node (emit_signals). Editor shows them as editable rows with
-// a fixed internal name; every row is exported in full (explicit source and
-// target). directed = carries an explicit destination (dispatcher envelope):
-// drawn straight to its catcher instead of walking the pass chain.
-const MODULE_EMITS = {
-  call_llm:        [{ name: 'SoS' }, { name: 'EoS' }],
-  call_openai_llm: [{ name: 'SoS' }, { name: 'EoS' }],
-  call_vad:        [{ name: 'vad_start' }, { name: 'vad_end' }],
-  call_server_vad: [{ name: 'vad_start' }, { name: 'vad_end' }],
-  call_dispatcher: [{ name: 'dispatch_start', directed: true },
-                    { name: 'dispatch_end',   directed: true }],
-};
-
-// Materialize contract emits into a node's emitSigs list: every contract name
-// gets a row (loaded rename entries are adopted); rows are flagged contract:true
-// (fixed source, not deletable). Non-contract entries are left as-is.
-function materializeEmits(fn, emitSigs) {
-  const contracts = MODULE_EMITS[fn] || [];
-  // Drop unrenamed contract rows of a previous function (fn switch), keep renames
-  const kept = emitSigs.filter(sg => !(sg.contract && sg.source === sg.target &&
-    !contracts.some(c => c.name === sg.source)));
-  contracts.forEach(c => {
-    const existing = kept.find(sg => sg.source === c.name);
-    if (existing) {
-      existing.contract = true;
-    } else {
-      kept.push({ source: c.name, target: c.name, contract: true });
-    }
-  });
-  return kept;
-}
+// Wire-side null convention: a real JSON null (the config protocol's
+// explicit opt-out) is displayed as the literal text "null".
+const wireShow = v => v === null ? 'null' : (v || '');
 
 const NODE_W = 240;
 const NODE_GAP_X = 60;
-const NODE_GAP_Y = 40;
 const CANVAS_PAD = 40;
 
 // State
-let nodes = [];       // [{id, fn, inputs, outputs, passes, extraConfig, el, x, y}]
-let connections = []; // [{id, fromNodeId, fromPortType, fromPortIdx, toNodeId, toPortType, toPortIdx, el}]
-let nextConnId = 1;
-let selectedConn = null;
-
-// Wire drag state
-let dragging = null; // {fromNodeId, fromPortType, fromPortIdx, startX, startY}
+let nodes = [];       // [{id, fn, inputs, outputs, passes, catchSigs, passSigs, emitSigs, extraConfig, nextNodes, el, x, y}]
+let connections = []; // [{fromNodeId, fromPortType, fromPortIdx, toNodeId, toPortType, toPortIdx}]
 
 // ─────────────────────────────────────────────
 //  Utilities
 // ─────────────────────────────────────────────
-function notify(msg, ms = 2000) {
+function notify(msg, ms = 3000) {
   const el = document.getElementById('notify');
   el.textContent = msg;
   el.style.display = 'block';
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.style.display = 'none'; }, ms);
-}
-
-function getMaxNodeId() {
-  if (!nodes.length) return 0;
-  return Math.max(...nodes.map(n => n.id));
 }
 
 function getNodeById(id) {
@@ -492,7 +285,6 @@ function getNodeById(id) {
 function updateCanvasSize() {
   let maxX = 800, maxY = 600;
   nodes.forEach(n => {
-    const rect = n.el.getBoundingClientRect();
     const h = n.el.offsetHeight;
     maxX = Math.max(maxX, n.x + NODE_W + CANVAS_PAD);
     maxY = Math.max(maxY, n.y + h + CANVAS_PAD);
@@ -503,25 +295,20 @@ function updateCanvasSize() {
   const svg = document.getElementById('svg-overlay');
   svg.setAttribute('width', maxX);
   svg.setAttribute('height', maxY);
-  const wp = document.getElementById('wire-preview');
-  wp.setAttribute('width', maxX);
-  wp.setAttribute('height', maxY);
 }
 
 // ─────────────────────────────────────────────
 //  Port position helpers
 // ─────────────────────────────────────────────
-// Returns {x, y} in canvas coordinates for a port dot
 function getPortPos(nodeId, portType, portIdx) {
   const node = getNodeById(nodeId);
   if (!node) return null;
   const dots = getPortDots(node.el, portType);
   if (!dots || portIdx >= dots.length) return null;
   const dot = dots[portIdx];
-  const canvasRect = document.getElementById('canvas').getBoundingClientRect();
-  const wrapperRect = document.getElementById('canvas-wrapper').getBoundingClientRect();
-  const dotRect = dot.getBoundingClientRect();
   const wrapper = document.getElementById('canvas-wrapper');
+  const wrapperRect = wrapper.getBoundingClientRect();
+  const dotRect = dot.getBoundingClientRect();
   const x = dotRect.left - wrapperRect.left + wrapper.scrollLeft + dotRect.width / 2;
   const y = dotRect.top - wrapperRect.top + wrapper.scrollTop + dotRect.height / 2;
   return { x, y };
@@ -535,19 +322,15 @@ function getPortDots(cardEl, portType) {
   return [];
 }
 
-// ─────────────────────────────────────────────
-//  SVG Bezier helpers
-// ─────────────────────────────────────────────
-function bezierPath(x1, y1, x2, y2) {
+function linePath(x1, y1, x2, y2) {
   return `M ${x1} ${y1} L ${x2} ${y2}`;
 }
 
 // ─────────────────────────────────────────────
-//  Connection rendering
+//  Connection rendering (data wires, matched by variable name)
 // ─────────────────────────────────────────────
 function renderConnections() {
   const svg = document.getElementById('svg-overlay');
-  // Remove old paths
   Array.from(svg.querySelectorAll('path')).forEach(p => p.remove());
 
   connections.forEach(conn => {
@@ -556,22 +339,14 @@ function renderConnections() {
     if (!fromPos || !toPos) return;
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', bezierPath(fromPos.x, fromPos.y, toPos.x, toPos.y));
+    path.setAttribute('d', linePath(fromPos.x, fromPos.y, toPos.x, toPos.y));
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', conn === selectedConn ? '#f00' : '#000');
+    path.setAttribute('stroke', '#000');
     path.setAttribute('stroke-width', '1.5');
     if (conn.fromPortType === 'pass-out') {
       path.setAttribute('stroke-dasharray', '5,3');
     }
-    path.style.pointerEvents = 'stroke';
-    path.style.cursor = 'pointer';
-    path.dataset.connId = conn.id;
-    path.addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectConnection(conn);
-    });
     svg.appendChild(path);
-    conn.el = path;
   });
   renderSignalFlows(svg);
   updateCanvasSize();
@@ -579,21 +354,18 @@ function renderConnections() {
 
 // ─────────────────────────────────────────────
 //  Signal flow derivation & rendering
-//  Signals are never wired by hand: their flow is DERIVED from declarations —
-//  broadcast emits walk the physical chain (array order) through pass/catch
-//  declarations; directed emits (dispatcher envelope) connect straight to
-//  their catcher; signals declared on the head node come from the client.
-//  A hop with no declaration is a wiring error: drawn red (runtime would
-//  drop the signal there).
+//  Signal flows are DERIVED from the declarations — broadcast emits walk
+//  the first-edge chain (next_nodes[0], the server's relay addressing)
+//  through pass/catch declarations; dispatcher emits/passes are directed
+//  envelopes connecting straight to their catcher; signals declared on the
+//  head node come from the client. A hop with no declaration is a wiring
+//  error: drawn red (runtime would drop the signal there).
 // ─────────────────────────────────────────────
 function computeSignalFlows(nodeList) {
   const segs = [];  // {from:{nodeId,kind,source}|null(external), to:{nodeId,kind,source}, warn, external}
   const byId = {};
   nodeList.forEach(n => { byId[n.id] = n; });
 
-  // Walk a wire from `startNode`'s outgoing side onward. Signals are
-  // re-addressed to each node's FIRST edge (node.firstEdge), mirroring the
-  // server's relay addressing — the same default destination data gets.
   function walk(startNode, wire, from) {
     let w = wire, f = from;
     let cur = byId[startNode.firstEdge];
@@ -634,13 +406,14 @@ function computeSignalFlows(nodeList) {
   }
 
   nodeList.forEach(n => {
-    const contracts = MODULE_EMITS[n.fn] || [];
+    // Dispatcher emits are directed envelopes (explicit destination): drawn
+    // straight to their catcher instead of walking the pass chain.
+    const directed = n.fn === 'call_dispatcher';
     (n.emitSigs || []).filter(s => s.source).forEach(sg => {
+      if (sg.target === null) return;   // suppressed emit (explicit null): not sent
       const wire = sg.target || sg.source;
       const from = { nodeId: n.id, kind: 'emit', source: sg.source };
-      const directed = contracts.some(c => c.name === sg.source && c.directed);
       if (directed) {
-        // straight to every node catching this wire name
         nodeList.forEach(m => {
           if (m === n) return;
           if ((m.catchSigs || []).some(s => s.source === wire)) {
@@ -683,7 +456,7 @@ function computeSignalFlows(nodeList) {
       const p = (n0.passSigs || []).find(s => s.source === sg.source);
       segs.push({ from: null, external: true,
                   to: { nodeId: n0.id, kind: c ? 'catch' : 'pass', source: sg.source }, warn: false });
-      if (p) walk(1, p.target || p.source, { nodeId: n0.id, kind: 'pass', source: sg.source });
+      if (p) walk(n0, p.target || p.source, { nodeId: n0.id, kind: 'pass', source: sg.source });
     });
   }
   return segs;
@@ -699,8 +472,8 @@ function getSigRowPos(nodeId, kind, source, side) {
     el = node.el.querySelector(`[data-sig="${kind}-${CSS.escape(source)}"]`);
   }
   if (!el) return null;
-  const wrapperRect = document.getElementById('canvas-wrapper').getBoundingClientRect();
   const wrapper = document.getElementById('canvas-wrapper');
+  const wrapperRect = wrapper.getBoundingClientRect();
   const r = el.getBoundingClientRect();
   const x = (side === 'right' ? r.right : r.left) - wrapperRect.left + wrapper.scrollLeft;
   const y = r.top - wrapperRect.top + wrapper.scrollTop + Math.min(r.height, 22) / 2;
@@ -709,12 +482,9 @@ function getSigRowPos(nodeId, kind, source, side) {
 
 function renderSignalFlows(svg) {
   Array.from(svg.querySelectorAll('path.sig-flow')).forEach(p => p.remove());
-  // Resolve each node's first edge (mirrors exportJSON's next_nodes[0]:
-  // first wired connection, else first preserved virtual entry, else exit)
+  // First edge = next_nodes[0], exactly the server's relay addressing
   nodes.forEach(n => {
-    const conn = connections.find(c => c.fromNodeId === n.id);
-    n.firstEdge = conn ? conn.toNodeId
-      : ((n.extraNext || [])[0] != null ? n.extraNext[0] : -1);
+    n.firstEdge = (n.nextNodes && n.nextNodes.length) ? n.nextNodes[0] : -1;
   });
   const segs = computeSignalFlows(nodes);
   segs.forEach(seg => {
@@ -734,14 +504,13 @@ function renderSignalFlows(svg) {
     // drawn as a small leftward arc between the catch row and the pass row
     const d = seg.internal
       ? `M ${fromPos.x} ${fromPos.y} C ${fromPos.x - 14} ${fromPos.y}, ${toPos.x - 14} ${toPos.y}, ${toPos.x} ${toPos.y}`
-      : bezierPath(fromPos.x, fromPos.y, toPos.x, toPos.y);
+      : linePath(fromPos.x, fromPos.y, toPos.x, toPos.y);
     path.setAttribute('d', d);
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', seg.warn ? '#d33' : '#999');
     path.setAttribute('stroke-width', '1');
     path.setAttribute('stroke-dasharray', '3,3');
     path.setAttribute('class', 'sig-flow');
-    path.style.pointerEvents = 'none';
     if (seg.warn) {
       const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
       title.textContent = `undeclared signal '${seg.to.source}' would be dropped here`;
@@ -751,119 +520,73 @@ function renderSignalFlows(svg) {
   });
 }
 
-function selectConnection(conn) {
-  selectedConn = conn;
-  renderConnections();
-}
-
-function deleteSelectedConnection() {
-  if (!selectedConn) return;
-  removeConnection(selectedConn);
-  selectedConn = null;
-  renderConnections();
-}
-
-function removeConnection(conn) {
-  connections = connections.filter(c => c !== conn);
-  // Clear source on disconnected port
-  const toNode = getNodeById(conn.toNodeId);
-  if (toNode) {
-    if (conn.toPortType === 'input' && toNode.inputs[conn.toPortIdx]) {
-      toNode.inputs[conn.toPortIdx].source = '';
-    } else if (conn.toPortType === 'pass-in' && toNode.passes[conn.toPortIdx]) {
-      toNode.passes[conn.toPortIdx].source = '';
-    }
-    rebuildNodeBody(toNode);
-  }
-}
-
 // ─────────────────────────────────────────────
-//  Node creation
+//  Node card builders (all read-only)
 // ─────────────────────────────────────────────
-function createNode(options = {}) {
-  const id = options.id != null ? options.id : (getMaxNodeId() + 1);
-  const fn = options.fn || FUNCTIONS[0];
-  const inputs = options.inputs || [];   // [{name, source}]
-  const outputs = options.outputs || []; // [{name, target}]
-  const passes = options.passes || [];   // [{source, target}]
-  // Signal declarations (four-state routing): [{source, target}], target defaults
-  // to source (same-name). Flows are drawn automatically (declaration-driven),
-  // never wired by hand.
-  const catchSigs = options.catchSigs || [];
-  const passSigs = options.passSigs || [];
-  const emitSigs = materializeEmits(fn, options.emitSigs || []);
-  const extraConfig = options.extraConfig || {}; // {key: value}
-  const extraNext = options.extraNext || [];     // virtual next_nodes entries (e.g. -1 = exit)
-  const x = options.x || CANVAS_PAD;
-  const y = options.y || CANVAS_PAD;
-
-  const nodeObj = { id, fn, inputs, outputs, passes, catchSigs, passSigs, emitSigs, extraConfig, extraNext, x, y, el: null };
+function createNode(options) {
+  const nodeObj = {
+    id: options.id,
+    fn: options.fn,
+    inputs: options.inputs || [],     // [{name, source}]
+    outputs: options.outputs || [],   // [{name, target}]
+    passes: options.passes || [],     // [{source, target}]
+    catchSigs: options.catchSigs || [],
+    passSigs: options.passSigs || [],
+    emitSigs: options.emitSigs || [],
+    extraConfig: options.extraConfig || {},
+    nextNodes: options.nextNodes || [],
+    x: options.x, y: options.y, el: null,
+  };
   nodes.push(nodeObj);
 
   // Column background stripe
-  const hue = (id * 47) % 360;
+  const hue = (nodeObj.id * 47) % 360;
   const colBg = document.createElement('div');
   colBg.className = 'col-bg';
-  const colLeft = x - NODE_GAP_X / 2;
+  const colLeft = nodeObj.x - NODE_GAP_X / 2;
   const colWidth = NODE_W + NODE_GAP_X;
   colBg.style.cssText = `position:absolute;left:${colLeft}px;top:0;width:${colWidth}px;height:100%;background:hsl(${hue},40%,88%);z-index:0;pointer-events:none;`;
   document.getElementById('canvas').appendChild(colBg);
 
   nodeObj.el = buildNodeCard(nodeObj);
-  nodeObj.el.style.left = x + 'px';
-  nodeObj.el.style.top  = y + 'px';
+  nodeObj.el.style.left = nodeObj.x + 'px';
+  nodeObj.el.style.top  = nodeObj.y + 'px';
   document.getElementById('canvas').appendChild(nodeObj.el);
-  updateCanvasSize();
   return nodeObj;
 }
 
-// ─────────────────────────────────────────────
-//  Node card DOM builder
-// ─────────────────────────────────────────────
+function wireSpan(value, cls) {
+  const span = document.createElement('span');
+  span.className = cls + (value === null ? ' null-val' : '');
+  span.textContent = wireShow(value);
+  return span;
+}
+
 function buildNodeCard(nodeObj) {
   const card = document.createElement('div');
   card.className = 'node-card';
   card.dataset.nodeId = nodeObj.id;
 
-  // Header
+  // Header: [id] function
   const header = document.createElement('div');
   header.className = 'node-header';
-
   const idLabel = document.createElement('span');
   idLabel.className = 'node-id-label';
   idLabel.textContent = `[${nodeObj.id}]`;
-
-  const sel = document.createElement('select');
-  sel.className = 'node-func-select';
-  FUNCTIONS.forEach(f => {
-    const opt = document.createElement('option');
-    opt.value = f;
-    opt.textContent = f;
-    if (f === nodeObj.fn) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  sel.addEventListener('change', () => {
-    nodeObj.fn = sel.value;
-    // Re-materialize contract emits for the new module type
-    nodeObj.emitSigs = materializeEmits(nodeObj.fn, nodeObj.emitSigs);
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
+  const fnLabel = document.createElement('span');
+  fnLabel.className = 'node-func-name';
+  fnLabel.textContent = nodeObj.fn;
   header.appendChild(idLabel);
-  header.appendChild(sel);
+  header.appendChild(fnLabel);
   card.appendChild(header);
 
-  // Vertical-only drag within column
-  let dragStartY = 0, dragStartTop = 0;
+  // Vertical-only drag: view rearrangement, not an edit
   header.addEventListener('mousedown', (e) => {
-    if (e.target === sel) return;
     e.preventDefault();
-    dragStartY = e.clientY;
-    dragStartTop = parseInt(card.style.top) || 0;
+    const dragStartY = e.clientY;
+    const dragStartTop = parseInt(card.style.top) || 0;
     const onMove = (ev) => {
-      const dy = ev.clientY - dragStartY;
-      card.style.top = Math.max(0, dragStartTop + dy) + 'px';
+      card.style.top = Math.max(0, dragStartTop + ev.clientY - dragStartY) + 'px';
       renderConnections();
     };
     const onUp = () => {
@@ -876,844 +599,159 @@ function buildNodeCard(nodeObj) {
     document.addEventListener('mouseup', onUp);
   });
 
-  // Body
   const body = document.createElement('div');
   body.className = 'node-body';
   card.appendChild(body);
 
-  // Rebuild body contents
-  rebuildNodeBody(nodeObj, body);
+  const section = (title) => {
+    const sec = document.createElement('div');
+    sec.className = 'port-section';
+    const t = document.createElement('div');
+    t.className = 'port-section-title';
+    t.textContent = title;
+    sec.appendChild(t);
+    return sec;
+  };
+
+  // INPUTS: dot | wire source | contract name
+  if (nodeObj.inputs.length) {
+    const sec = section('Inputs');
+    nodeObj.inputs.forEach(inp => {
+      const row = document.createElement('div');
+      row.className = 'port-row input-row';
+      const dot = document.createElement('div');
+      dot.className = 'port-dot';
+      row.appendChild(dot);
+      row.appendChild(wireSpan(inp.source, 'port-wire'));
+      const name = document.createElement('span');
+      name.className = 'port-name';
+      name.textContent = inp.name;
+      name.style.marginLeft = 'auto';
+      row.appendChild(name);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
+
+  // OUTPUTS: contract name | wire target | dot
+  if (nodeObj.outputs.length) {
+    const sec = section('Outputs');
+    nodeObj.outputs.forEach(out => {
+      const row = document.createElement('div');
+      row.className = 'port-row output-row';
+      const name = document.createElement('span');
+      name.className = 'port-name';
+      name.textContent = out.name;
+      name.style.marginRight = 'auto';
+      row.appendChild(name);
+      row.appendChild(wireSpan(out.target, 'port-wire'));
+      const dot = document.createElement('div');
+      dot.className = 'port-dot';
+      row.appendChild(dot);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
+
+  // PASS: dot | source → target | dot
+  if (nodeObj.passes.length) {
+    const sec = section('Pass');
+    nodeObj.passes.forEach(pv => {
+      const row = document.createElement('div');
+      row.className = 'port-row pass-row';
+      const dotIn = document.createElement('div');
+      dotIn.className = 'port-dot pass-in';
+      row.appendChild(dotIn);
+      row.appendChild(wireSpan(pv.source, 'port-wire'));
+      const arrow = document.createElement('span');
+      arrow.className = 'pass-arrow';
+      arrow.textContent = '→';
+      row.appendChild(arrow);
+      row.appendChild(wireSpan(pv.target, 'port-wire'));
+      const dotOut = document.createElement('div');
+      dotOut.className = 'port-dot pass-out';
+      dotOut.style.marginLeft = 'auto';
+      row.appendChild(dotOut);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
+
+  // SIGNALS: kind badge | source → target (four-state declarations; flow
+  // lines are declaration-derived, anchored on these rows via data-sig)
+  const sigLists = [['catch', nodeObj.catchSigs], ['pass', nodeObj.passSigs], ['emit', nodeObj.emitSigs]];
+  if (sigLists.some(([, l]) => l.length)) {
+    const sec = section('Signals');
+    sigLists.forEach(([kind, list]) => {
+      list.forEach(sg => {
+        const row = document.createElement('div');
+        row.className = 'port-row sig-row';
+        row.dataset.sig = `${kind}-${sg.source}`;
+        const badge = document.createElement('span');
+        badge.className = 'sig-kind';
+        badge.textContent = kind;
+        row.appendChild(badge);
+        row.appendChild(wireSpan(sg.source, 'sig-name'));
+        const arrow = document.createElement('span');
+        arrow.className = 'pass-arrow';
+        arrow.textContent = '→';
+        row.appendChild(arrow);
+        row.appendChild(wireSpan(sg.target, 'sig-name'));
+        sec.appendChild(row);
+      });
+    });
+    body.appendChild(sec);
+  }
+
+  // CONFIG: module params (everything beyond the wiring declarations)
+  const entries = Object.entries(nodeObj.extraConfig);
+  if (entries.length || nodeObj.nextNodes.length) {
+    const sec = document.createElement('div');
+    sec.className = 'config-section';
+    const t = document.createElement('div');
+    t.className = 'config-section-title';
+    t.textContent = 'Config';
+    sec.appendChild(t);
+    const addParam = (k, v) => {
+      const row = document.createElement('div');
+      row.className = 'config-param';
+      const key = document.createElement('span');
+      key.className = 'config-key';
+      key.textContent = k;
+      const colon = document.createElement('span');
+      colon.className = 'config-colon';
+      colon.textContent = ':';
+      const val = document.createElement('span');
+      val.className = 'config-val';
+      val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+      row.appendChild(key);
+      row.appendChild(colon);
+      row.appendChild(val);
+      sec.appendChild(row);
+    };
+    addParam('next_nodes', nodeObj.nextNodes);
+    entries.forEach(([k, v]) => addParam(k, v));
+    body.appendChild(sec);
+  }
 
   return card;
 }
 
-function rebuildNodeBody(nodeObj, body) {
-  if (!body) body = nodeObj.el.querySelector('.node-body');
-  body.innerHTML = '';
-
-  // INPUTS section
-  const inputsSec = document.createElement('div');
-  inputsSec.className = 'port-section';
-  const inputsTitle = document.createElement('div');
-  inputsTitle.className = 'port-section-title';
-  inputsTitle.textContent = 'Inputs';
-  inputsSec.appendChild(inputsTitle);
-
-  nodeObj.inputs.forEach((inp, idx) => {
-    inputsSec.appendChild(buildInputRow(nodeObj, inp, idx));
-  });
-  body.appendChild(inputsSec);
-
-  // OUTPUTS section
-  const outputsSec = document.createElement('div');
-  outputsSec.className = 'port-section';
-  const outputsTitle = document.createElement('div');
-  outputsTitle.className = 'port-section-title';
-  outputsTitle.textContent = 'Outputs';
-  outputsSec.appendChild(outputsTitle);
-
-  nodeObj.outputs.forEach((out, idx) => {
-    outputsSec.appendChild(buildOutputRow(nodeObj, out, idx));
-  });
-  body.appendChild(outputsSec);
-
-  // PASS section
-  const passSec = document.createElement('div');
-  passSec.className = 'port-section';
-  const passTitle = document.createElement('div');
-  passTitle.className = 'port-section-title';
-  passTitle.textContent = 'Pass';
-  passSec.appendChild(passTitle);
-
-  nodeObj.passes.forEach((pv, idx) => {
-    passSec.appendChild(buildPassRow(nodeObj, pv, idx));
-  });
-  body.appendChild(passSec);
-
-  // Add buttons
-  const addBtns = document.createElement('div');
-  addBtns.className = 'add-btns';
-
-  const addInBtn = document.createElement('button');
-  addInBtn.className = 'add-btn';
-  addInBtn.textContent = '+ input';
-  addInBtn.addEventListener('click', () => {
-    nodeObj.inputs.push({ name: 'in', source: '' });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  const addOutBtn = document.createElement('button');
-  addOutBtn.className = 'add-btn';
-  addOutBtn.textContent = '+ output';
-  addOutBtn.addEventListener('click', () => {
-    const name = 'out';
-    nodeObj.outputs.push({ name, target: `${nodeObj.id}_${name}` });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  const addPassBtn = document.createElement('button');
-  addPassBtn.className = 'add-btn';
-  addPassBtn.textContent = '+ pass';
-  addPassBtn.addEventListener('click', () => {
-    nodeObj.passes.push({ source: '', target: `${nodeObj.id}_pass` });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  addBtns.appendChild(addInBtn);
-  addBtns.appendChild(addOutBtn);
-  addBtns.appendChild(addPassBtn);
-  body.appendChild(addBtns);
-
-  // SIGNALS section (four-state declarations; no wires — hop-by-hop routing)
-  const sigSec = document.createElement('div');
-  sigSec.className = 'port-section';
-  const sigTitle = document.createElement('div');
-  sigTitle.className = 'port-section-title';
-  sigTitle.textContent = 'Signals';
-  sigSec.appendChild(sigTitle);
-
-  nodeObj.catchSigs.forEach((sg, idx) => {
-    sigSec.appendChild(buildSignalRow(nodeObj, nodeObj.catchSigs, sg, idx, 'catch'));
-  });
-  nodeObj.passSigs.forEach((sg, idx) => {
-    sigSec.appendChild(buildSignalRow(nodeObj, nodeObj.passSigs, sg, idx, 'pass'));
-  });
-  nodeObj.emitSigs.forEach((sg, idx) => {
-    sigSec.appendChild(buildSignalRow(nodeObj, nodeObj.emitSigs, sg, idx, 'emit'));
-  });
-
-  const sigBtns = document.createElement('div');
-  sigBtns.className = 'add-btns';
-  [['+ catch', nodeObj.catchSigs], ['+ pass sig', nodeObj.passSigs], ['+ emit', nodeObj.emitSigs]].forEach(([label, list]) => {
-    const btn = document.createElement('button');
-    btn.className = 'add-btn';
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      list.push({ source: '', target: '' });
-      rebuildNodeBody(nodeObj);
-      renderConnections();
-    });
-    sigBtns.appendChild(btn);
-  });
-  sigSec.appendChild(sigBtns);
-  body.appendChild(sigSec);
-
-  // Extra config
-  const cfgSec = document.createElement('div');
-  cfgSec.className = 'config-section';
-  const cfgTitle = document.createElement('div');
-  cfgTitle.className = 'config-section-title';
-  cfgTitle.textContent = 'Config';
-  cfgSec.appendChild(cfgTitle);
-
-  Object.entries(nodeObj.extraConfig).forEach(([k, v]) => {
-    cfgSec.appendChild(buildConfigRow(nodeObj, k, v));
-  });
-
-  const addCfgBtn = document.createElement('button');
-  addCfgBtn.className = 'add-btn';
-  addCfgBtn.style.margin = '2px 8px';
-  addCfgBtn.textContent = '+ param';
-  addCfgBtn.addEventListener('click', () => {
-    const key = 'key';
-    nodeObj.extraConfig[key] = '';
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-  cfgSec.appendChild(addCfgBtn);
-  body.appendChild(cfgSec);
-}
-
-function buildInputRow(nodeObj, inp, idx) {
-  const row = document.createElement('div');
-  row.className = 'port-row input-row';
-
-  const dot = document.createElement('div');
-  dot.className = 'port-dot';
-  dot.title = 'Input port – drag from output to connect';
-  setupPortDotEvents(dot, nodeObj, 'input', idx);
-
-  const nameInput = document.createElement('input');
-  nameInput.className = 'port-label';
-  nameInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:70px;font-size:11px;font-family:inherit;';
-  nameInput.value = inp.name;
-  nameInput.addEventListener('change', () => {
-    inp.name = nameInput.value;
-  });
-  nameInput.addEventListener('mousedown', e => e.stopPropagation());
-
-  const sourceInp = document.createElement('input');
-  sourceInp.className = 'port-source-input';
-  sourceInp.placeholder = '';
-  sourceInp.value = inp.source || '';
-  sourceInp.disabled = true;
-  sourceInp.style.opacity = '0.6';
-  sourceInp.addEventListener('mousedown', e => e.stopPropagation());
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'port-delete';
-  delBtn.textContent = '✕';
-  delBtn.addEventListener('click', () => {
-    // Remove connected connections
-    connections = connections.filter(c => !(c.toNodeId === nodeObj.id && c.toPortType === 'input' && c.toPortIdx === idx));
-    nodeObj.inputs.splice(idx, 1);
-    // Fix indices
-    connections.forEach(c => {
-      if (c.toNodeId === nodeObj.id && c.toPortType === 'input' && c.toPortIdx > idx) c.toPortIdx--;
-    });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  row.appendChild(dot);
-  row.appendChild(sourceInp);
-  row.appendChild(nameInput);
-  row.appendChild(delBtn);
-  return row;
-}
-
-function buildOutputRow(nodeObj, out, idx) {
-  const row = document.createElement('div');
-  row.className = 'port-row output-row';
-
-  const dot = document.createElement('div');
-  dot.className = 'port-dot';
-  dot.title = 'Output port – drag to connect';
-  dot.style.marginLeft = 'auto';
-  setupPortDotEvents(dot, nodeObj, 'output', idx);
-
-  const nameInput = document.createElement('input');
-  nameInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:60px;font-size:11px;font-family:inherit;text-align:right;';
-  nameInput.value = out.name;
-  nameInput.addEventListener('change', () => {
-    out.name = nameInput.value;
-  });
-  nameInput.addEventListener('mousedown', e => e.stopPropagation());
-
-  const targetInput = document.createElement('input');
-  targetInput.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;width:75px;font-size:10px;font-family:inherit;color:#888;text-align:right;';
-  targetInput.value = out.target || `${nodeObj.id}_${out.name}`;
-  targetInput.addEventListener('change', () => {
-    out.target = targetInput.value;
-    // Update all downstream connections that reference this output
-    connections.forEach(conn => {
-      if (conn.fromNodeId === nodeObj.id && conn.fromPortType === 'output' && conn.fromPortIdx === idx) {
-        updatePortSources(conn);
-        const toNode = getNodeById(conn.toNodeId);
-        if (toNode) rebuildNodeBody(toNode);
-      }
-    });
-    renderConnections();
-  });
-  targetInput.addEventListener('mousedown', e => e.stopPropagation());
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'port-delete';
-  delBtn.textContent = '✕';
-  delBtn.addEventListener('click', () => {
-    connections = connections.filter(c => !(c.fromNodeId === nodeObj.id && c.fromPortType === 'output' && c.fromPortIdx === idx));
-    nodeObj.outputs.splice(idx, 1);
-    connections.forEach(c => {
-      if (c.fromNodeId === nodeObj.id && c.fromPortType === 'output' && c.fromPortIdx > idx) c.fromPortIdx--;
-    });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  row.appendChild(delBtn);
-  row.appendChild(nameInput);
-  row.appendChild(targetInput);
-  row.appendChild(dot);
-  return row;
-}
-
-function buildPassRow(nodeObj, pv, idx) {
-  const row = document.createElement('div');
-  row.className = 'port-row pass-row';
-
-  // Left dot (receives from upstream output)
-  const dotIn = document.createElement('div');
-  dotIn.className = 'port-dot pass-in';
-  dotIn.title = 'Pass-in port – drag from output to connect';
-  setupPortDotEvents(dotIn, nodeObj, 'pass-in', idx);
-
-  const srcLabel = document.createElement('input');
-  srcLabel.className = 'pass-label-left';
-  srcLabel.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;font-size:10px;font-family:inherit;color:#888;width:70px;';
-  srcLabel.value = pv.source || '';
-  srcLabel.placeholder = '';
-  srcLabel.disabled = true;
-  srcLabel.style.opacity = '0.6';
-  srcLabel.addEventListener('mousedown', e => e.stopPropagation());
-
-  const arrow = document.createElement('span');
-  arrow.className = 'pass-arrow';
-  arrow.textContent = '→';
-
-  const tgtLabel = document.createElement('input');
-  tgtLabel.className = 'pass-label-right';
-  tgtLabel.style.cssText = 'border:none;border-bottom:1px solid #eee;background:transparent;font-size:10px;font-family:inherit;width:70px;';
-  tgtLabel.value = pv.target || '';
-  tgtLabel.placeholder = 'target';
-  tgtLabel.addEventListener('change', () => {
-    pv.target = tgtLabel.value;
-    // Update downstream connections referencing this pass-out
-    connections.forEach(conn => {
-      if (conn.fromNodeId === nodeObj.id && conn.fromPortType === 'pass-out' && conn.fromPortIdx === idx) {
-        updatePortSources(conn);
-        const toNode = getNodeById(conn.toNodeId);
-        if (toNode) rebuildNodeBody(toNode);
-      }
-    });
-    renderConnections();
-  });
-  tgtLabel.addEventListener('mousedown', e => e.stopPropagation());
-
-  // Right dot (pass-out: connects to downstream inputs)
-  const dotOut = document.createElement('div');
-  dotOut.className = 'port-dot pass-out';
-  dotOut.title = 'Pass-out port – drag to downstream input';
-  setupPortDotEvents(dotOut, nodeObj, 'pass-out', idx);
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'port-delete';
-  delBtn.textContent = '✕';
-  delBtn.addEventListener('click', () => {
-    connections = connections.filter(c => !(
-      (c.toNodeId === nodeObj.id && c.toPortType === 'pass-in' && c.toPortIdx === idx) ||
-      (c.fromNodeId === nodeObj.id && c.fromPortType === 'pass-out' && c.fromPortIdx === idx)
-    ));
-    nodeObj.passes.splice(idx, 1);
-    connections.forEach(c => {
-      if (c.toNodeId === nodeObj.id && c.toPortType === 'pass-in' && c.toPortIdx > idx) c.toPortIdx--;
-      if (c.fromNodeId === nodeObj.id && c.fromPortType === 'pass-out' && c.fromPortIdx > idx) c.fromPortIdx--;
-    });
-    rebuildNodeBody(nodeObj);
-    renderConnections();
-  });
-
-  row.appendChild(dotIn);
-  row.appendChild(srcLabel);
-  row.appendChild(arrow);
-  row.appendChild(tgtLabel);
-  row.appendChild(delBtn);
-  dotOut.style.marginLeft = 'auto';
-  row.appendChild(dotOut);
-  return row;
-}
-
-// Signal declaration row: kind badge + source -> target (target empty = same name).
-// catch: arriving wire name -> name given to process(); pass: relay rename;
-// emit: module internal name (fixed by the class contract) -> wire name.
-// Contract emit rows keep the source locked and cannot be deleted — the module
-// always emits them; only their wire name is per-node configurable.
-function buildSignalRow(nodeObj, list, sg, idx, kind) {
-  const row = document.createElement('div');
-  row.className = 'port-row sig-row';
-  row.dataset.sig = `${kind}-${sg.source}`;
-
-  const badge = document.createElement('span');
-  badge.className = 'sig-kind';
-  badge.textContent = kind;
-
-  // Live sync: data + the row's data-sig locator (flow lines look rows up by
-  // current source name) + redraw on every keystroke
-  const sync = () => {
-    sg.source = srcInp.value.trim();
-    sg.target = tgtInp.value.trim();
-    row.dataset.sig = `${kind}-${sg.source}`;
-    renderConnections();
-  };
-
-  const srcInp = document.createElement('input');
-  srcInp.className = 'sig-input';
-  srcInp.value = sg.source || '';
-  srcInp.placeholder = kind === 'emit' ? 'internal' : 'source';
-  if (sg.contract) {
-    srcInp.disabled = true;
-    srcInp.style.opacity = '0.6';
-    srcInp.title = 'module contract (EMIT_SIGNALS) — internal name is fixed';
-  } else {
-    srcInp.addEventListener('input', sync);
-  }
-  srcInp.addEventListener('mousedown', e => e.stopPropagation());
-
-  const arrow = document.createElement('span');
-  arrow.className = 'pass-arrow';
-  arrow.textContent = '→';
-
-  const tgtInp = document.createElement('input');
-  tgtInp.className = 'sig-input';
-  tgtInp.value = sg.target || '';
-  tgtInp.placeholder = 'same';
-  tgtInp.addEventListener('input', sync);
-  tgtInp.addEventListener('mousedown', e => e.stopPropagation());
-
-  // Wire dots (input shortcut): catch/pass rows accept a drop on the left
-  // (sets this row's source); emit/pass rows drag out on the right (their
-  // wire name = target). The drawn flow lines stay declaration-derived.
-  if (kind === 'catch' || kind === 'pass') {
-    const dotIn = document.createElement('div');
-    dotIn.className = 'sig-dot sig-in';
-    dotIn.title = 'drop a signal wire here to set this source';
-    dotIn.__sigEntry = sg;
-    dotIn.__sigNode = nodeObj;
-    row.appendChild(dotIn);
-  }
-
-  row.appendChild(badge);
-  row.appendChild(srcInp);
-  row.appendChild(arrow);
-  row.appendChild(tgtInp);
-
-  if (!sg.contract) {
-    const delBtn = document.createElement('button');
-    delBtn.className = 'port-delete';
-    delBtn.textContent = '✕';
-    delBtn.style.marginLeft = 'auto';
-    delBtn.addEventListener('click', () => {
-      list.splice(idx, 1);
-      rebuildNodeBody(nodeObj);
-      renderConnections();
-    });
-    row.appendChild(delBtn);
-  }
-
-  if (kind === 'emit' || kind === 'pass') {
-    const dotOut = document.createElement('div');
-    dotOut.className = 'sig-dot sig-out';
-    dotOut.title = 'drag to a downstream catch/pass source';
-    if (sg.contract) dotOut.style.marginLeft = 'auto';
-    dotOut.addEventListener('mousedown',
-      e => startSigWire(e, nodeObj, sg, kind));
-    row.appendChild(dotOut);
-  }
-  return row;
-}
-
-// Lightweight signal wire drag: purely an input shortcut — on drop the
-// target row's source is set to the dragged wire name, then the flow lines
-// re-derive from the declarations (nothing is stored in `connections`).
-function startSigWire(e, nodeObj, sg, kind) {
-  e.preventDefault();
-  e.stopPropagation();
-  const svg = document.getElementById('wire-preview');
-  const wrapper = document.getElementById('canvas-wrapper');
-  const ghost = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  ghost.setAttribute('fill', 'none');
-  ghost.setAttribute('stroke', '#666');
-  ghost.setAttribute('stroke-width', '1.2');
-  ghost.setAttribute('stroke-dasharray', '3,3');
-  ghost.style.pointerEvents = 'none';
-  svg.appendChild(ghost);
-
-  const fromPos = () => getSigRowPos(nodeObj.id, kind, sg.source, 'right');
-  const onMove = ev => {
-    const f = fromPos();
-    if (!f) return;
-    const wr = wrapper.getBoundingClientRect();
-    const x = ev.clientX - wr.left + wrapper.scrollLeft;
-    const y = ev.clientY - wr.top + wrapper.scrollTop;
-    ghost.setAttribute('d', bezierPath(f.x, f.y, x, y));
-  };
-  const onUp = ev => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-    ghost.remove();
-    const drop = ev.target.closest ? ev.target.closest('.sig-dot.sig-in') : null;
-    if (drop && drop.__sigEntry) {
-      drop.__sigEntry.source = sg.target || sg.source;
-      rebuildNodeBody(drop.__sigNode);
-    }
-    renderConnections();
-  };
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-}
-
-function buildConfigRow(nodeObj, key, value) {
-  const row = document.createElement('div');
-  row.className = 'config-param';
-
-  const keyInp = document.createElement('input');
-  keyInp.className = 'config-key';
-  keyInp.value = key;
-  keyInp.addEventListener('mousedown', e => e.stopPropagation());
-
-  const colon = document.createElement('span');
-  colon.className = 'config-colon';
-  colon.textContent = ':';
-
-  const valStr = typeof value === 'string' ? value : JSON.stringify(value);
-  const valInp = document.createElement('textarea');
-  valInp.className = 'config-val';
-  valInp.value = valStr;
-  valInp.rows = 1;
-  valInp.addEventListener('input', () => {
-    // Auto-grow
-    valInp.style.height = 'auto';
-    valInp.style.height = valInp.scrollHeight + 'px';
-  });
-  valInp.addEventListener('mousedown', e => e.stopPropagation());
-
-  // On key rename: remove old key, add new
-  keyInp.addEventListener('change', () => {
-    const oldKey = key;
-    const newKey = keyInp.value;
-    if (oldKey !== newKey) {
-      const val = nodeObj.extraConfig[oldKey];
-      delete nodeObj.extraConfig[oldKey];
-      nodeObj.extraConfig[newKey] = val;
-      key = newKey;
-    }
-  });
-  valInp.addEventListener('change', () => {
-    const k = keyInp.value;
-    try {
-      nodeObj.extraConfig[k] = JSON.parse(valInp.value);
-    } catch {
-      nodeObj.extraConfig[k] = valInp.value;
-    }
-  });
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'port-delete';
-  delBtn.textContent = '✕';
-  delBtn.addEventListener('click', () => {
-    delete nodeObj.extraConfig[keyInp.value];
-    rebuildNodeBody(nodeObj);
-  });
-
-  // Initialize value
-  valInp.addEventListener('mousedown', e => e.stopPropagation());
-  setTimeout(() => {
-    valInp.style.height = 'auto';
-    valInp.style.height = valInp.scrollHeight + 'px';
-  }, 0);
-
-  row.appendChild(keyInp);
-  row.appendChild(colon);
-  row.appendChild(valInp);
-  row.appendChild(delBtn);
-  return row;
-}
-
 // ─────────────────────────────────────────────
-//  Port event setup (wire dragging)
+//  Load & render a config document
 // ─────────────────────────────────────────────
-function setupPortDotEvents(dot, nodeObj, portType, portIdx) {
-  dot.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const wrapper = document.getElementById('canvas-wrapper');
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const dotRect = dot.getBoundingClientRect();
-    const sx = dotRect.left - wrapperRect.left + wrapper.scrollLeft + dotRect.width / 2;
-    const sy = dotRect.top  - wrapperRect.top  + wrapper.scrollTop  + dotRect.height / 2;
-
-    dragging = {
-      fromNodeId: nodeObj.id,
-      fromPortType: portType,
-      fromPortIdx: portIdx,
-      startX: sx,
-      startY: sy,
-    };
-    dot.classList.add('active');
-    document.addEventListener('mousemove', onWireDrag);
-    document.addEventListener('mouseup', onWireDrop);
-  });
-}
-
-function onWireDrag(e) {
-  if (!dragging) return;
-  const wrapper = document.getElementById('canvas-wrapper');
-  const wrapperRect = wrapper.getBoundingClientRect();
-  const mx = e.clientX - wrapperRect.left + wrapper.scrollLeft;
-  const my = e.clientY - wrapperRect.top  + wrapper.scrollTop;
-
-  const svg = document.getElementById('wire-preview');
-  svg.innerHTML = '';
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', bezierPath(dragging.startX, dragging.startY, mx, my));
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', '#888');
-  path.setAttribute('stroke-width', '1.5');
-  path.setAttribute('stroke-dasharray', '4,3');
-  svg.appendChild(path);
-}
-
-function onWireDrop(e) {
-  if (!dragging) return;
-  document.removeEventListener('mousemove', onWireDrag);
-  document.removeEventListener('mouseup', onWireDrop);
-  document.getElementById('wire-preview').innerHTML = '';
-
-  // Clear active dot
-  const fromNode = getNodeById(dragging.fromNodeId);
-  if (fromNode) {
-    const dots = getPortDots(fromNode.el, dragging.fromPortType);
-    if (dots[dragging.fromPortIdx]) dots[dragging.fromPortIdx].classList.remove('active');
-  }
-
-  // Hit-test: which port dot is at mouse position?
-  const target = document.elementFromPoint(e.clientX, e.clientY);
-  if (target && target.classList.contains('port-dot')) {
-    // Determine target node and port
-    const targetCard = target.closest('.node-card');
-    if (!targetCard) { dragging = null; return; }
-    const targetNodeId = parseInt(targetCard.dataset.nodeId);
-    const targetNode = getNodeById(targetNodeId);
-    if (!targetNode || targetNodeId === dragging.fromNodeId) { dragging = null; return; }
-
-    let toPortType = null, toPortIdx = -1;
-    if (target.classList.contains('pass-in')) toPortType = 'pass-in';
-    else if (target.classList.contains('pass-out')) toPortType = 'pass-out';
-    else if (target.closest('.port-row.input-row')) toPortType = 'input';
-    else if (target.closest('.port-row.output-row')) toPortType = 'output';
-
-    if (!toPortType) { dragging = null; return; }
-
-    // Find index
-    const dots = getPortDots(targetNode.el, toPortType);
-    toPortIdx = Array.from(dots).indexOf(target);
-    if (toPortIdx < 0) { dragging = null; return; }
-
-    // Validate connection direction:
-    // output → input, output → pass-in, pass-out → input, pass-out → pass-in
-    const from = dragging.fromPortType;
-    const to = toPortType;
-    const validPairs = [
-      ['output', 'input'],
-      ['output', 'pass-in'],
-      ['pass-out', 'input'],
-      ['pass-out', 'pass-in'],
-    ];
-    const valid = validPairs.some(([f, t]) => f === from && t === to);
-    if (!valid) {
-      notify('Invalid connection direction');
-      dragging = null;
-      return;
-    }
-
-    // Remove existing connection to same target port (one input per port)
-    if (to === 'input' || to === 'pass-in') {
-      connections = connections.filter(c => !(c.toNodeId === targetNodeId && c.toPortType === to && c.toPortIdx === toPortIdx));
-    }
-
-    // Create connection
-    const conn = {
-      id: nextConnId++,
-      fromNodeId: dragging.fromNodeId,
-      fromPortType: from,
-      fromPortIdx: dragging.fromPortIdx,
-      toNodeId: targetNodeId,
-      toPortType: to,
-      toPortIdx: toPortIdx,
-      el: null,
-    };
-    connections.push(conn);
-
-    // Update source values
-    updatePortSources(conn);
-    renderConnections();
-    rebuildNodeBody(targetNode);
-    renderConnections();
-  }
-
-  dragging = null;
-}
-
-// When connection is made, update source fields
-function updatePortSources(conn) {
-  const fromNode = getNodeById(conn.fromNodeId);
-  const toNode   = getNodeById(conn.toNodeId);
-  if (!fromNode || !toNode) return;
-
-  let sourceValue = '';
-  if (conn.fromPortType === 'output') {
-    sourceValue = fromNode.outputs[conn.fromPortIdx]?.target || '';
-  } else if (conn.fromPortType === 'pass-out') {
-    sourceValue = fromNode.passes[conn.fromPortIdx]?.target || '';
-  }
-
-  if (conn.toPortType === 'input') {
-    if (toNode.inputs[conn.toPortIdx]) {
-      toNode.inputs[conn.toPortIdx].source = sourceValue;
-    }
-  } else if (conn.toPortType === 'pass-in') {
-    if (toNode.passes[conn.toPortIdx]) {
-      toNode.passes[conn.toPortIdx].source = sourceValue;
-    }
-  }
-}
-
-// Node dragging removed: layout is column-based (auto-positioned by loadPipeline / createNode).
-
-// ─────────────────────────────────────────────
-//  Node deletion
-// ─────────────────────────────────────────────
-function deleteNode(nodeObj) {
-  connections = connections.filter(c => c.fromNodeId !== nodeObj.id && c.toNodeId !== nodeObj.id);
-  // Clear source on disconnected ports
-  connections.forEach(c => {
-    // no-op: connections to this node already removed
-  });
-  nodes = nodes.filter(n => n !== nodeObj);
-  nodeObj.el.remove();
-  // Rebuild remaining nodes to update disabled states
-  nodes.forEach(n => rebuildNodeBody(n));
-  renderConnections();
-  updateCanvasSize();
-}
-
-// ─────────────────────────────────────────────
-//  Keyboard: Delete key removes selected connection
-// ─────────────────────────────────────────────
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    dragging = null;
-    document.getElementById('wire-preview').innerHTML = '';
-    document.removeEventListener('mousemove', onWireDrag);
-    document.removeEventListener('mouseup', onWireDrop);
-  }
-  if (e.key === 'Delete' || e.key === 'Backspace') {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    deleteSelectedConnection();
-  }
-});
-
-// Click on canvas deselects
-document.getElementById('canvas').addEventListener('click', (e) => {
-  if (e.target === document.getElementById('canvas') || e.target === document.getElementById('svg-overlay')) {
-    selectedConn = null;
-    renderConnections();
-  }
-});
-
-// ─────────────────────────────────────────────
-//  Save JSON
-// ─────────────────────────────────────────────
-function exportJSON() {
-  const pipeline = nodes.map(nodeObj => {
-    // Derive next_nodes from outgoing connections (output port to any input/pass-in)
-    const nextSet = new Set();
-    connections.forEach(conn => {
-      if (conn.fromNodeId === nodeObj.id) {
-        nextSet.add(conn.toNodeId);
-      }
-    });
-    const next_nodes = Array.from(nextSet);
-    // Re-append preserved virtual entries (e.g. -1 = exit); unwired nodes are terminals
-    (nodeObj.extraNext || []).forEach(nid => {
-      if (!next_nodes.includes(nid)) next_nodes.push(nid);
-    });
-    if (next_nodes.length === 0) next_nodes.push(-1);
-
-    // Parse extra config values
-    const extras = {};
-    Object.entries(nodeObj.extraConfig).forEach(([k, v]) => {
-      if (typeof v === 'string') {
-        try { extras[k] = JSON.parse(v); } catch { extras[k] = v; }
-      } else {
-        extras[k] = v;
-      }
-    });
-
-    // Signal declarations: explicit {source, target} (target empty = same name),
-    // keys omitted when empty — matches the hand-written config style. emit rows
-    // (module contract, wire name renamable) are written out in full: the
-    // explicit list documents what the node sends, same style as catch/pass.
-    const sigDecls = list => list
-      .filter(sg => sg.source)
-      .map(sg => ({ source: sg.source, target: sg.target || sg.source }));
-    const catch_signals = sigDecls(nodeObj.catchSigs);
-    const pass_signals = sigDecls(nodeObj.passSigs);
-    const emit_signals = sigDecls(nodeObj.emitSigs);
-
-    const config = {
-      input_vars: nodeObj.inputs.map(inp => ({ source: inp.source, target: inp.name })),
-      pass_vars: nodeObj.passes.map(pv => ({ source: pv.source, target: pv.target })),
-      output_vars: nodeObj.outputs.map(out => ({ source: out.name, target: out.target })),
-      ...(catch_signals.length ? { catch_signals } : {}),
-      ...(pass_signals.length ? { pass_signals } : {}),
-      ...(emit_signals.length ? { emit_signals } : {}),
-      next_nodes,
-      ...extras,
-    };
-
-    return { node_id: nodeObj.id, function: nodeObj.fn, config };
-  });
-
-  return { pipeline };
-}
-
-document.getElementById('btn-save').addEventListener('click', () => {
-  const data = exportJSON();
-  const name = document.getElementById('config-name').value || 'pipeline';
-  const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${name}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  notify('JSON saved');
-});
-
-// ─────────────────────────────────────────────
-//  Load JSON
-// ─────────────────────────────────────────────
-document.getElementById('file-input').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    try {
-      const data = JSON.parse(ev.target.result);
-      loadPipeline(data);
-      const name = file.name.replace(/\.json$/, '');
-      document.getElementById('config-name').value = name;
-      notify('Loaded: ' + file.name);
-    } catch (err) {
-      notify('Error parsing JSON: ' + err.message, 4000);
-    }
-  };
-  reader.readAsText(file);
-  e.target.value = ''; // reset so same file can be reloaded
-});
-
 function loadPipeline(data) {
-  // Clear existing
   nodes.forEach(n => n.el.remove());
   nodes = [];
   connections = [];
-  selectedConn = null;
-  nextConnId = 1;
   document.getElementById('svg-overlay').innerHTML = '';
-  // Remove old column backgrounds
   document.querySelectorAll('.col-bg').forEach(el => el.remove());
 
   const pipeline = data.pipeline || [];
+  const nodeDataMap = {};
+  pipeline.forEach(item => { nodeDataMap[item.node_id] = item; });
 
-  // Build lookup: target_value → {nodeId, portType, portIdx}
-  // This is built after we create all nodes
-  const nodeDataMap = {}; // nodeId → raw node data
-
-  pipeline.forEach(item => {
-    nodeDataMap[item.node_id] = item;
-  });
-
-  // Topological sort for layout
-  const sorted = topoSort(pipeline);
-
-  // Column position = node_id (empty IDs are empty columns)
-
-  // Create nodes
+  // Column position = node_id (missing IDs are empty columns)
   pipeline.forEach((item) => {
     const x = CANVAS_PAD + item.node_id * (NODE_W + NODE_GAP_X);
     const y = CANVAS_PAD;
@@ -1722,15 +760,13 @@ function loadPipeline(data) {
     const inputs  = (cfg.input_vars  || []).map(iv => ({ name: iv.target, source: iv.source }));
     const outputs = (cfg.output_vars || []).map(ov => ({ name: ov.source, target: ov.target }));
     const passes  = (cfg.pass_vars   || []).map(pv => ({ source: pv.source, target: pv.target }));
-    // Signal declarations are explicit {source, target} objects (the strict
-    // config protocol — no shorthand; export always writes both fields)
+    // Signal declarations are explicit {source, target} objects; a real
+    // null (explicit opt-out) is preserved, distinct from empty.
     const parseSigs = arr => (arr || []).map(e => (
-      { source: e.source || '', target: e.target || '' }));
-    const catchSigs = parseSigs(cfg.catch_signals);
-    const passSigs = parseSigs(cfg.pass_signals);
-    const emitSigs = parseSigs(cfg.emit_signals);
+      { source: e.source === null ? null : (e.source || ''),
+        target: e.target === null ? null : (e.target || '') }));
 
-    // Extra config = everything except reserved keys
+    // Module params = everything except the wiring declarations
     const reserved = new Set(['input_vars', 'output_vars', 'pass_vars', 'next_nodes',
                               'catch_signals', 'pass_signals', 'emit_signals']);
     const extraConfig = {};
@@ -1738,23 +774,21 @@ function loadPipeline(data) {
       if (!reserved.has(k)) extraConfig[k] = v;
     });
 
-    // Preserve virtual next_nodes entries (ids with no real node, e.g. -1 = exit)
-    const extraNext = (cfg.next_nodes || []).filter(nid => !nodeDataMap.hasOwnProperty(nid));
-
     createNode({ id: item.node_id, fn: item.function, inputs, outputs, passes,
-                 catchSigs, passSigs, emitSigs, extraConfig, extraNext, x, y });
+                 catchSigs: parseSigs(cfg.catch_signals),
+                 passSigs: parseSigs(cfg.pass_signals),
+                 emitSigs: parseSigs(cfg.emit_signals),
+                 extraConfig,
+                 nextNodes: (cfg.next_nodes || []).slice(), x, y });
   });
 
-  // Build target → {nodeId, portType('output'|'pass-out'), portIdx}
-  // output_vars targets take priority: register them first, then only add pass_vars
-  // targets that don't already exist (avoids collision when both share the same target value).
+  // Data wires, matched by variable name: producer (output target, or pass
+  // target for relays) → consumer (input/pass source). Output targets take
+  // priority on a name shared with a pass relay; terminal nodes' outputs go
+  // to the client and are not producers for other nodes.
   const targetLookup = {};
-  // Find node configs to check next_nodes
-  const nodeConfigMap = {};
-  (data.pipeline || []).forEach(item => { nodeConfigMap[item.node_id] = item.config; });
   nodes.forEach(nodeObj => {
-    // Skip terminal nodes (only virtual next_nodes like -1) — outputs go to client
-    const cfg = nodeConfigMap[nodeObj.id] || {};
+    const cfg = (nodeDataMap[nodeObj.id] || {}).config || {};
     if ((cfg.next_nodes || []).filter(nid => nodeDataMap.hasOwnProperty(nid)).length === 0) return;
     nodeObj.outputs.forEach((out, idx) => {
       if (out.target) targetLookup[out.target] = { nodeId: nodeObj.id, portType: 'output', portIdx: idx };
@@ -1768,99 +802,92 @@ function loadPipeline(data) {
     });
   });
 
-  // Create connections from input_vars.source
   nodes.forEach(toNode => {
     toNode.inputs.forEach((inp, toIdx) => {
-      const src = inp.source;
-      if (src && targetLookup[src]) {
-        const { nodeId: fromNodeId, portType: fromPortType, portIdx: fromPortIdx } = targetLookup[src];
-        connections.push({
-          id: nextConnId++,
-          fromNodeId, fromPortType, fromPortIdx,
-          toNodeId: toNode.id, toPortType: 'input', toPortIdx: toIdx,
-          el: null,
-        });
+      if (inp.source && targetLookup[inp.source]) {
+        const { nodeId, portType, portIdx } = targetLookup[inp.source];
+        connections.push({ fromNodeId: nodeId, fromPortType: portType, fromPortIdx: portIdx,
+                           toNodeId: toNode.id, toPortType: 'input', toPortIdx: toIdx });
       }
     });
-    // Create connections from pass_vars.source
     toNode.passes.forEach((pv, toIdx) => {
-      const src = pv.source;
-      if (src && targetLookup[src]) {
-        const { nodeId: fromNodeId, portType: fromPortType, portIdx: fromPortIdx } = targetLookup[src];
-        connections.push({
-          id: nextConnId++,
-          fromNodeId, fromPortType, fromPortIdx,
-          toNodeId: toNode.id, toPortType: 'pass-in', toPortIdx: toIdx,
-          el: null,
-        });
+      if (pv.source && targetLookup[pv.source]) {
+        const { nodeId, portType, portIdx } = targetLookup[pv.source];
+        connections.push({ fromNodeId: nodeId, fromPortType: portType, fromPortIdx: portIdx,
+                           toNodeId: toNode.id, toPortType: 'pass-in', toPortIdx: toIdx });
       }
     });
   });
 
-  // Re-render node bodies now that connections exist (updates disabled state on source fields)
-  nodes.forEach(n => rebuildNodeBody(n));
   renderConnections();
   updateCanvasSize();
 }
 
-function topoSort(pipeline) {
-  // Simple Kahn's algorithm
-  const idMap = {};
-  pipeline.forEach(item => { idMap[item.node_id] = item; });
-  const inDeg = {};
-  pipeline.forEach(item => { inDeg[item.node_id] = 0; });
-  pipeline.forEach(item => {
-    (item.config.next_nodes || []).forEach(nid => {
-      inDeg[nid] = (inDeg[nid] || 0) + 1;
-    });
-  });
-  const queue = pipeline.filter(item => inDeg[item.node_id] === 0);
-  const result = [];
-  while (queue.length) {
-    const item = queue.shift();
-    result.push(item);
-    (item.config.next_nodes || []).forEach(nid => {
-      inDeg[nid]--;
-      if (inDeg[nid] === 0 && idMap[nid]) queue.push(idMap[nid]);
-    });
+// ─────────────────────────────────────────────
+//  Config sources: server dropdown + local file
+// ─────────────────────────────────────────────
+async function populateConfigList() {
+  try {
+    const r = await fetch('/api/configs');
+    const res = await r.json();
+    if (!res.success) throw new Error(res.message);
+    const sel = document.getElementById('config-select');
+    res.data.configs
+      .filter(c => c.type === 'config')
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.name;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
+  } catch (err) {
+    notify('Config list unavailable: ' + err.message, 5000);
   }
-  return result;
 }
 
-// ─────────────────────────────────────────────
-//  Add Node button
-// ─────────────────────────────────────────────
-document.getElementById('btn-add-node').addEventListener('click', () => {
-  const idStr = prompt('Enter node ID (integer):');
-  if (idStr === null) return;
-  const newId = parseInt(idStr, 10);
-  if (isNaN(newId) || newId < 0) { alert('Invalid ID'); return; }
-  if (nodes.some(n => n.id === newId)) { alert('ID already exists'); return; }
-  const x = CANVAS_PAD + newId * (NODE_W + NODE_GAP_X);
-  const y = CANVAS_PAD;
-  createNode({ id: newId, x, y });
-  updateCanvasSize();
+document.getElementById('config-select').addEventListener('change', async (e) => {
+  const name = e.target.value;
+  if (!name) return;
+  try {
+    const r = await fetch(`/api/config/config/${encodeURIComponent(name)}`);
+    const res = await r.json();
+    if (!res.success) throw new Error(res.message);
+    loadPipeline(JSON.parse(res.data.content));
+    document.getElementById('config-name').textContent = name + '.json';
+    notify('Loaded: ' + name);
+  } catch (err) {
+    notify('Error loading config: ' + err.message, 5000);
+  }
 });
 
-document.getElementById('btn-del-node').addEventListener('click', () => {
-  const idStr = prompt('Enter node ID to delete:');
-  if (idStr === null) return;
-  const id = parseInt(idStr, 10);
-  const node = getNodeById(id);
-  if (!node) { alert('Node not found'); return; }
-  deleteNode(node);
+document.getElementById('file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      loadPipeline(JSON.parse(ev.target.result));
+      document.getElementById('config-select').value = '';
+      document.getElementById('config-name').textContent = file.name;
+      notify('Loaded: ' + file.name);
+    } catch (err) {
+      notify('Error parsing JSON: ' + err.message, 5000);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = ''; // reset so the same file can be reloaded
 });
 
-// ─────────────────────────────────────────────
-//  Re-render on scroll (port positions shift)
-// ─────────────────────────────────────────────
+// Re-render on scroll (port positions shift)
 document.getElementById('canvas-wrapper').addEventListener('scroll', () => {
   renderConnections();
 });
 
 // ─────────────────────────────────────────────
-//  Init: start with empty canvas
+//  Init
 // ─────────────────────────────────────────────
+populateConfigList();
 updateCanvasSize();
 </script>
 </body>
