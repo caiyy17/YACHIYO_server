@@ -645,7 +645,7 @@ async def run_test():
 
     # --- Send speech ---
     test_start = time.time()
-    client_dc.send(json.dumps({"signal": "recording_start"}))
+    client_dc.send(json.dumps({"direct": True, "signal": "recording_start"}))
     send_audio.speaking = True  # start sending speech audio after recording_start
     print(f"[Client] recording_start → sending {speech_duration:.1f}s of speech...")
 
@@ -653,7 +653,7 @@ async def run_test():
         await asyncio.sleep(0.1)
     await asyncio.sleep(0.5)
 
-    client_dc.send(json.dumps({"signal": "recording_end"}))
+    client_dc.send(json.dumps({"direct": True, "signal": "recording_end"}))
     print("[Client] recording_end → waiting for pipeline response...")
 
     # --- Wait for test duration (30s total from connection) ---
@@ -905,7 +905,7 @@ async def run_cancel_test():
     failures = []
 
     def send_signal(name):
-        client_dc.send(json.dumps({"signal": name}))
+        client_dc.send(json.dumps({"direct": True, "signal": name}))
 
     def reset_speech():
         send_audio._index = 0
@@ -1500,7 +1500,7 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
 
         # Send speech
         test_start = time.time()
-        client_dc.send(json.dumps({"signal": "recording_start"}))
+        client_dc.send(json.dumps({"direct": True, "signal": "recording_start"}))
         send_audio.speaking = True  # start sending speech after recording_start
         print(f"[{client_id}] recording_start sent")
 
@@ -1508,7 +1508,7 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.5)
 
-        client_dc.send(json.dumps({"signal": "recording_end"}))
+        client_dc.send(json.dumps({"direct": True, "signal": "recording_end"}))
         print(f"[{client_id}] recording_end sent")
 
         # Wait for test duration

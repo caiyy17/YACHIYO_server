@@ -32,11 +32,14 @@ Standard frame format:
   Input (WebRTC → pipeline):
     {"audio": ["<pcm1>", ...], "video": ["<jpeg1>", ...],
      "data": [{...}, null], "timestamp": ...}
-    {"signal": "recording_start/recording_end", "timestamp": ...}
+    {"direct": true, "signal": "recording_start/recording_end", ...}
   Input uses the same group structure as output.
-  Signals are standalone WebSocket messages (not grouped): held
-  assembler_offset + dc_offset after arrival, due ones flush at the next
-  group boundary (FIFO).
+  Any message carrying "direct": true (the flag is consumed at the
+  gateway; signals included — the flag is the ONLY lane selector) rides
+  the DIRECT lane: standalone WebSocket messages (not grouped) entering
+  the pipeline as ordinary pipeline messages, held assembler_offset +
+  dc_offset after arrival, due ones flushing at the next group boundary
+  (FIFO).
   Data items are stamped with arrival time and window-matched into the
   group carrying media of the same client-side moment (window lags the
   tick grid by dc_offset); overflow/late items are dropped, gaps repeat
@@ -111,7 +114,7 @@ DEFAULT_CONSUMER_OFFSET = 0.005   # consumer fills buffers 5ms before tracks con
 DEFAULT_ASSEMBLER_OFFSET = 0.1    # assembler waits this long past each group end
 DEFAULT_AUDIO_OFFSET = 0.0        # per-lane window trim beyond the tick grid
 DEFAULT_VIDEO_OFFSET = 0.0
-DEFAULT_DC_OFFSET = 0.0           # data window lag; signal hold adds assembler_offset
+DEFAULT_DC_OFFSET = 0.0           # data window lag; direct-lane hold adds assembler_offset
 DEFAULT_CANCEL_OFFSET = 0         # added to cancel's stamp; 0: FIFO flush order protects the paired start
 MAX_LANE_BUFFER = 1000            # frames; a lane past this means the assembler stalled (e.g. another lane never opened) -> abort
 
@@ -423,8 +426,8 @@ class WebRTCSession:
 
         # Startup buffer and timing offsets. Per-lane offsets are trims
         # beyond the tick grid: audio/video shift their PTS windows, dc
-        # shifts the data window and adds to the signal hold (total hold =
-        # assembler_offset + dc_offset). The signal hold must exceed the
+        # shifts the data window and adds to the direct-lane hold (total =
+        # assembler_offset + dc_offset). The hold must exceed the
         # media path's total lag (arrival lead ~80ms + assembler_offset +
         # one group period) for e.g. recording_end to land after the tail.
         self.startup_buffer = startup_buffer
@@ -459,9 +462,10 @@ class WebRTCSession:
         self._last_video_frame = None        # Last received video frame (for drop fill)
         self._input_data_buffer = deque()    # (arrival_ts, data dict) from DataChannel
         self._last_data_item = None          # Last received data item (for gap fill)
-        # Client signals waiting for next group boundary: (due_time, raw_msg),
-        # due dc_offset after arrival.
-        self._input_signal_buffer = deque()
+        # Direct lane: signals and direct-flagged data messages waiting for
+        # the next group boundary: (due_time, json_str), due
+        # assembler_offset + dc_offset after arrival.
+        self._input_direct_buffer = deque()
         self._audio_pts_origin = None        # First audio PTS (for gap detection)
 
     def _on_signal(self, msg):
@@ -637,19 +641,23 @@ class WebRTCSession:
 
     async def _forward_dc_message(self, raw_msg):
         """Handle DataChannel message from client.
-        Signals are held assembler_offset + dc_offset and flush at group
-        boundaries (FIFO). Data items are stamped with arrival time and
+        The "direct": true flag (consumed here) is the ONLY lane
+        selector: flagged messages — signals included — take the direct
+        lane (held assembler_offset + dc_offset, flushed at group
+        boundaries FIFO, entering the pipeline as standalone messages);
+        everything else is a data-lane item, stamped with arrival time and
         window-matched into the group carrying media of the same
-        client-side moment."""
+        client-side moment. The gateway never inspects message content to
+        route."""
         try:
             msg = json.loads(raw_msg)
         except json.JSONDecodeError:
             return
 
-        if msg.get("signal"):
-            self._input_signal_buffer.append(
+        if msg.pop("direct", False):
+            self._input_direct_buffer.append(
                 (time.time() + self.assembler_offset + self.dc_offset,
-                 raw_msg))
+                 json.dumps(msg)))
         else:
             self._input_data_buffer.append((time.time(), msg))
         await self._abort_if_lane_overflow()
@@ -661,7 +669,7 @@ class WebRTCSession:
         counts = {"audio": len(self._input_audio_buffer),
                   "video": len(self._input_video_buffer),
                   "data": len(self._input_data_buffer),
-                  "signal": len(self._input_signal_buffer)}
+                  "direct": len(self._input_direct_buffer)}
         over = [k for k, v in counts.items() if v > MAX_LANE_BUFFER]
         if not over:
             return False
@@ -933,18 +941,18 @@ class WebRTCSession:
                 data_group.append(self._last_data_item)
                 _data_fill += 1
 
-            # === Flush pending signals at group boundary ===
+            # === Flush the direct lane at group boundary ===
             # Timestamp set at send time, same basis as group timestamp.
             # Head not yet due (dc_offset hold) blocks the queue: FIFO order.
-            while self._input_signal_buffer:
-                if self._input_signal_buffer[0][0] > time.time():
+            while self._input_direct_buffer:
+                if self._input_direct_buffer[0][0] > time.time():
                     break
-                sig = json.loads(self._input_signal_buffer.popleft()[1])
-                sig["timestamp"] = time.time()
-                if sig.get("signal") == "cancel":
-                    sig["timestamp"] += self.cancel_offset
+                m = json.loads(self._input_direct_buffer.popleft()[1])
+                m["timestamp"] = time.time()
+                if m.get("signal") == "cancel":
+                    m["timestamp"] += self.cancel_offset
                 if self.ws:
-                    await self.ws.send(json.dumps(sig))
+                    await self.ws.send(json.dumps(m))
 
             # === Send group ===
             if self.ws:
@@ -1307,7 +1315,7 @@ class WebRTCServer:
         session_kwargs["assembler_offset"] = assembler_ms / 1000
         # Per-lane trims beyond the tick grid (default 0): audio/video
         # shift their PTS windows, dc shifts the data window and adds to
-        # the signal hold (total hold = assembler_offset + dc_offset).
+        # the direct-lane hold (total = assembler_offset + dc_offset).
         for cfg_key, kwarg, frame_ms in (
                 ("audio_offset_ms", "audio_offset", 1000 / audio_fps),
                 ("video_offset_ms", "video_offset",
@@ -1321,11 +1329,11 @@ class WebRTCServer:
                     {"error": f"webrtc.{cfg_key} must be a finite number, "
                               f"got {lane_ms!r}"}, status=400)
             if frame_ms is None:
-                # dc: signal hold (assembler + dc) must stay non-negative
+                # dc: direct-lane hold (assembler + dc) must stay non-negative
                 if assembler_ms + lane_ms < 0:
                     return web.json_response(
                         {"error": f"webrtc.{cfg_key} {lane_ms!r} makes the "
-                                  f"signal hold negative (assembler_offset "
+                                  f"direct-lane hold negative (assembler_offset "
                                   f"{assembler_ms}ms + dc)"}, status=400)
             else:
                 # audio/video: margin target (assembler + trim − half a

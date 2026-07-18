@@ -3,6 +3,8 @@ import io
 import wave
 from collections import deque
 
+import numpy as np
+
 from ..base.SpanProcessingStep import SpanProcessingStep
 
 SAMPLE_RATE = 48000
@@ -162,23 +164,30 @@ class VADStep(SpanProcessingStep):
 
         audio_b64 = data.get("audio_data", "")
         if not audio_b64:
-            return
+            return None
         pcm = self._ingest(audio_b64, data.get("timestamp"))
-        if pcm is None or self._mark is None:
-            return
-        self._seg += pcm
-        # a segment left open past the cap (no recording_end) is force-ended
-        if self._end_target is None \
-                and (self._total - self._mark) >= self.seg_cap:
-            self.logger.warning(
-                f"segment exceeded {self.seg_cap / self.sample_rate:.0f}s "
-                f"without recording_end; force-ending"
-            )
-            self._end_target = self._mark + self.seg_cap
-        if self.stream:
-            self._drain_chunks()
-        if self._end_target is not None and self._total >= self._end_target:
-            self._finalize()
+        if pcm is None:
+            return None
+        if self._mark is not None:
+            self._seg += pcm
+            # a segment left open past the cap (no recording_end) is
+            # force-ended
+            if self._end_target is None \
+                    and (self._total - self._mark) >= self.seg_cap:
+                self.logger.warning(
+                    f"segment exceeded "
+                    f"{self.seg_cap / self.sample_rate:.0f}s without "
+                    f"recording_end; force-ending"
+                )
+                self._end_target = self._mark + self.seg_cap
+            if self.stream:
+                self._drain_chunks()
+            if self._end_target is not None \
+                    and self._total >= self._end_target:
+                self._finalize()
+        # the ingested (rate-normalized) PCM, for subclasses that consume
+        # the same bytes the ring did (e.g. a detector feed)
+        return pcm
 
     # ── signal handlers ──
 
@@ -226,11 +235,18 @@ class VADStep(SpanProcessingStep):
         except Exception as e:
             self.logger.error(f"failed to decode audio chunk: {e}")
             return None
-        if sr != self.sample_rate and not self._rate_warned:
-            self.logger.warning(
-                f"chunk sample rate {sr} != configured {self.sample_rate}; "
-                f"segment timing will be wrong")
-            self._rate_warned = True
+        if sr != self.sample_rate:
+            # rate mismatch is only discoverable at runtime (first chunk),
+            # so it degrades gracefully: every chunk is resampled to the
+            # configured rate — margins, ring and the segment WAV header
+            # all stay correct. One warning flags the conversion cost.
+            if not self._rate_warned:
+                self.logger.warning(
+                    f"chunk sample rate {sr} != configured "
+                    f"{self.sample_rate}; resampling every chunk — set the "
+                    f"node's sample_rate to the client's rate to avoid it")
+                self._rate_warned = True
+            pcm = self._resample(pcm, sr)
         n = len(pcm) // 2
         if n == 0:
             return None  # empty frame carries no audio; keep it out of the ring
@@ -241,6 +257,14 @@ class VADStep(SpanProcessingStep):
             _, old, _ = self._ring.popleft()
             self._held -= len(old) // 2
         return pcm
+
+    def _resample(self, pcm, src_rate):
+        """Linear-interp PCM16 to the configured rate (speech-grade)."""
+        x = np.frombuffer(pcm, dtype=np.int16)
+        n_out = round(len(x) * self.sample_rate / src_rate)
+        pos = np.arange(n_out) * (src_rate / self.sample_rate)
+        return np.interp(pos, np.arange(len(x)),
+                         x.astype(np.float64)).astype(np.int16).tobytes()
 
     def _slice(self, a, b):
         """PCM bytes for the absolute sample range [a, b), a >= ring start."""

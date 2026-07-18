@@ -1,3 +1,4 @@
+import base64
 import json
 
 import requests
@@ -62,7 +63,9 @@ class ServerVADStep(VADStep):
     """Model-driven VAD: the segment machinery is the base class's, the
     signal source is a detector service instead of client signals.
 
-    Every ingested chunk is also fed to the service; its events drive the
+    Every ingested chunk is also fed to the service — the exact
+    rate-normalized bytes the ring ingested (single decode); its events
+    drive the
     turn — speech_started opens a barge-in: the node submits a cancel
     event (stamp = the activation chunk's stamp, i.e. the new turn's own;
     source = this node's id) through the pipeline's event handler, which
@@ -170,20 +173,18 @@ class ServerVADStep(VADStep):
                 self._resume_detection()
             return
 
-        audio_b64 = data.get("audio_data", "")
         msg_ts = data.get("timestamp")
-        super().span_process(data, pass_data)
+        pcm = super().span_process(data, pass_data)
         if self._manual:
             if self._mark is None:   # tail filled, manual turn finalized
                 self._resume_detection()
             return                   # suspended: nothing goes to the service
-        if not audio_b64:
-            return
-        pcm_b64 = self._wav_to_pcm_b64(audio_b64)
-        if pcm_b64 is None:
+        if pcm is None:
             return
         try:
-            events = self._detector.feed(pcm_b64)
+            # the exact bytes the ring ingested (already rate-normalized)
+            events = self._detector.feed(
+                base64.b64encode(pcm).decode("ascii"))
         except Exception as e:
             self.logger.error(f"vad service call failed: {e}")
             return
@@ -248,15 +249,3 @@ class ServerVADStep(VADStep):
         if self._detector is not None:
             self._detector.close()
 
-    @staticmethod
-    def _wav_to_pcm_b64(wav_b64):
-        """The detector wants raw PCM; chunks arrive as WAV."""
-        import base64
-        import io
-        import wave
-        try:
-            with wave.open(io.BytesIO(base64.b64decode(wav_b64)), "rb") as wf:
-                pcm = wf.readframes(wf.getnframes())
-            return base64.b64encode(pcm).decode("ascii")
-        except Exception:
-            return None

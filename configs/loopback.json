@@ -46,9 +46,7 @@
                         "target": "connection_start"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ]
+                "next_nodes": [2]
             }
         },
         {
@@ -91,9 +89,7 @@
                     }
                 ],
                 "pass_signals": [],
-                "next_nodes": [
-                    -1
-                ]
+                "next_nodes": [-1]
             }
         }
     ]

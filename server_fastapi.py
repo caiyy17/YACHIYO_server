@@ -278,7 +278,11 @@ class ClientConnection:
                 self.connected = False
                 break
             except Exception as e:
-                self.logger.error(f"Received: socket receive failed, stopping: {e}")
+                if self.connected:
+                    self.logger.error(
+                        f"Received: socket receive failed, stopping: {e}")
+                else:   # our own close() unblocked the receive — routine
+                    self.log_info(f"Received: connection closed locally: {e}")
                 self.connected = False
                 break
 
@@ -357,6 +361,10 @@ class ClientConnection:
     async def close(self):
         if self.connected:
             self.log_info(f"Close: Closing connection for client {self.client_id}")
+            # declare the shutdown BEFORE closing the socket: the receive
+            # loop distinguishes a peer failure (ERROR) from our own close
+            # (routine) by this flag
+            self.connected = False
             try:
                 await self.websocket.close()
             except Exception as e:

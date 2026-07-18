@@ -96,7 +96,10 @@ class SileroDetector:
         from silero_vad import load_silero_vad, VADIterator
         from scipy.signal import resample_poly
         if sample_rate % 16000 != 0:
-            raise ValueError("sample_rate must be a multiple of 16000")
+            raise ValueError(
+                f"silero requires a sample_rate that is a multiple of "
+                f"16000, got {sample_rate} (48000 is the WebRTC standard; "
+                f"44.1kHz-family clients must resample or use energy)")
         self._torch = torch
         self._resample = resample_poly
         self._down = sample_rate // 16000

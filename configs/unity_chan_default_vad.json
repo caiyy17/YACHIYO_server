@@ -38,9 +38,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    2
-                ],
+                "next_nodes": [2],
                 "start_offset_ms": -200,
                 "end_offset_ms": 0,
                 "manual_start_offset_ms": -200,
@@ -70,9 +68,7 @@
                         "target": null
                     }
                 ],
-                "next_nodes": [
-                    3
-                ],
+                "next_nodes": [3],
                 "model": "qwen_asr",
                 "pass_signals": [
                     {
@@ -130,9 +126,7 @@
                         "target": "EoS"
                     }
                 ],
-                "next_nodes": [
-                    4
-                ],
+                "next_nodes": [4],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -156,10 +150,7 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": [
-                    "get_weather",
-                    "web_search"
-                ],
+                "tool_names": ["get_weather", "web_search"],
                 "pass_signals": [
                     {
                         "source": "recording_start",
@@ -220,9 +211,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    5
-                ],
+                "next_nodes": [5],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -281,9 +270,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    6
-                ],
+                "next_nodes": [6],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
@@ -362,9 +349,7 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [
-                    -1
-                ],
+                "next_nodes": [-1],
                 "model": "qwen_tts",
                 "voice": "test_cn"
             }

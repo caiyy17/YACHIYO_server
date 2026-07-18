@@ -338,7 +338,7 @@ async function disconnect() {
 
 function sendSignal(signal) {
   if (dc && dc.readyState === 'open') {
-    dc.send(JSON.stringify({signal}));
+    dc.send(JSON.stringify({direct: true, signal}));
     log(`Sent: ${signal}`);
   }
 }
