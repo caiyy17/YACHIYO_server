@@ -354,55 +354,72 @@ function renderConnections() {
 
 // ─────────────────────────────────────────────
 //  Signal flow derivation & rendering
-//  Signal flows are DERIVED from the declarations — broadcast emits walk
-//  the first-edge chain (next_nodes[0], the server's relay addressing)
-//  through pass/catch declarations; dispatcher emits/passes are directed
-//  envelopes connecting straight to their catcher; signals declared on the
-//  head node come from the client. A hop with no declaration is a wiring
-//  error: drawn red (runtime would drop the signal there).
+//  Signal flows are DERIVED from the declarations and STRICTLY follow the
+//  declared next_nodes edges: a relayed/emitted signal connects to every
+//  next node that declares it (catch and/or pass), and the walk recurses
+//  through passes. The dispatcher is the directed exception, mirroring the
+//  server: its pass relay jumps straight to its receiver (the last
+//  next_nodes entry), its dispatch_signals copies go to the branch nodes.
+//  Signals declared on the head node come from the client. A hop where NO
+//  next node declares the wire is a wiring error: drawn red at next_nodes[0]
+//  (where the server would drop it).
 // ─────────────────────────────────────────────
 function computeSignalFlows(nodeList) {
   const segs = [];  // {from:{nodeId,kind,source}|null(external), to:{nodeId,kind,source}, warn, external}
   const byId = {};
   nodeList.forEach(n => { byId[n.id] = n; });
 
-  function walk(startNode, wire, from) {
-    let w = wire, f = from;
-    let cur = byId[startNode.firstEdge];
-    const guard = new Set();
-    while (cur) {
-      if (guard.has(cur.id)) return;   // cycle guard
-      guard.add(cur.id);
-      const c = (cur.catchSigs || []).find(s => s.source === w);
-      const p = (cur.passSigs || []).find(s => s.source === w);
-      if (c) segs.push({ from: f, to: { nodeId: cur.id, kind: 'catch', source: w }, warn: false });
-      if (p) {
-        if (!c) {
-          segs.push({ from: f, to: { nodeId: cur.id, kind: 'pass', source: w }, warn: false });
-        } else {
-          // consume-then-relay: in-node hop from the catch row to the pass row
-          segs.push({ from: { nodeId: cur.id, kind: 'catch', source: w },
-                      to: { nodeId: cur.id, kind: 'pass', source: w },
-                      warn: false, internal: true });
-        }
-        f = { nodeId: cur.id, kind: 'pass', source: w };
-        w = p.target || p.source;
-        if (cur.fn === 'call_dispatcher') {
-          // Dispatcher pass is DIRECTED to its receiver: jump straight to
-          // the declarer instead of following the edge hop by hop.
-          cur = nodeList.find(m => m !== cur &&
-            ((m.catchSigs || []).some(s => s.source === w) ||
-             (m.passSigs || []).some(s => s.source === w))) || null;
-          continue;
-        }
-        cur = byId[cur.firstEdge];
-        continue;
-      }
-      if (c) return;                       // catch-only: consumed
+  // Enter `cur` carrying wire name `w`: draw the arrival, then relay onward
+  // through a pass declaration.
+  function visit(cur, w, f, guard) {
+    const key = cur.id + '|' + w;
+    if (guard.has(key)) return;          // cycle guard
+    guard.add(key);
+    const c = (cur.catchSigs || []).find(s => s.source === w);
+    const p = (cur.passSigs || []).find(s => s.source === w);
+    if (!c && !p) {                      // undeclared: dropped here
       segs.push({ from: f, to: { nodeId: cur.id, kind: null, source: w }, warn: true });
-      return;                              // undeclared: dropped here
+      return;
     }
-    // edge leads to the exit (-1) while passing: leaves to the client
+    if (c) segs.push({ from: f, to: { nodeId: cur.id, kind: 'catch', source: w }, warn: false });
+    if (p) {
+      if (!c) {
+        segs.push({ from: f, to: { nodeId: cur.id, kind: 'pass', source: w }, warn: false });
+      } else {
+        // consume-then-relay: in-node hop from the catch row to the pass row
+        segs.push({ from: { nodeId: cur.id, kind: 'catch', source: w },
+                    to: { nodeId: cur.id, kind: 'pass', source: w },
+                    warn: false, internal: true });
+      }
+      const nf = { nodeId: cur.id, kind: 'pass', source: w };
+      const nw = p.target || p.source;
+      if (cur.fn === 'call_dispatcher') {
+        // Dispatcher pass is a DIRECTED envelope to its receiver — the last
+        // next_nodes entry — not an edge-by-edge relay.
+        const nn = cur.nextNodes || [];
+        const recv = byId[nn[nn.length - 1]];
+        if (recv) visit(recv, nw, nf, guard);
+        return;
+      }
+      deliver(cur, nw, nf, guard);
+    }
+    // catch-only: consumed
+  }
+
+  // Hand wire `w` leaving `fromNode` to its next edges: every next node
+  // that declares it receives a line; none declaring it = dropped at the
+  // first edge (red); no real next nodes = leaves to the client.
+  function deliver(fromNode, w, f, guard) {
+    const nexts = (fromNode.nextNodes || []).map(id => byId[id]).filter(Boolean);
+    if (!nexts.length) return;           // exit (-1): to the client
+    const declaring = nexts.filter(m =>
+      (m.catchSigs || []).some(s => s.source === w) ||
+      (m.passSigs || []).some(s => s.source === w));
+    if (!declaring.length) {
+      segs.push({ from: f, to: { nodeId: nexts[0].id, kind: null, source: w }, warn: true });
+      return;
+    }
+    declaring.forEach(m => visit(m, w, f, guard));
   }
 
   nodeList.forEach(n => {
@@ -421,14 +438,14 @@ function computeSignalFlows(nodeList) {
           }
         });
       } else {
-        walk(n, wire, from);
+        deliver(n, wire, from, new Set());
       }
     });
   });
 
   // dispatch_signals: directed per-branch copies of caught signals — drawn
-  // from the dispatcher's catch row (by its target name) to every branch
-  // node catching that name.
+  // from the dispatcher's catch row (by its target name) to every BRANCH
+  // node (its next_nodes) catching that name.
   nodeList.forEach(n => {
     if (n.fn !== 'call_dispatcher') return;
     const ds = (n.extraConfig && n.extraConfig.dispatch_signals) || [];
@@ -437,8 +454,8 @@ function computeSignalFlows(nodeList) {
       const catchEntry = (n.catchSigs || []).find(s => (s.target || s.source) === t);
       if (!catchEntry) return;  // validator reports this misconfig
       const from = { nodeId: n.id, kind: 'catch', source: catchEntry.source };
-      nodeList.forEach(m => {
-        if (m !== n && (m.catchSigs || []).some(s => s.source === t)) {
+      (n.nextNodes || []).map(id => byId[id]).filter(Boolean).forEach(m => {
+        if ((m.catchSigs || []).some(s => s.source === t)) {
           segs.push({ from, to: { nodeId: m.id, kind: 'catch', source: t }, warn: false });
         }
       });
@@ -456,7 +473,8 @@ function computeSignalFlows(nodeList) {
       const p = (n0.passSigs || []).find(s => s.source === sg.source);
       segs.push({ from: null, external: true,
                   to: { nodeId: n0.id, kind: c ? 'catch' : 'pass', source: sg.source }, warn: false });
-      if (p) walk(n0, p.target || p.source, { nodeId: n0.id, kind: 'pass', source: sg.source });
+      if (p) deliver(n0, p.target || p.source,
+                     { nodeId: n0.id, kind: 'pass', source: sg.source }, new Set());
     });
   }
   return segs;
@@ -482,10 +500,6 @@ function getSigRowPos(nodeId, kind, source, side) {
 
 function renderSignalFlows(svg) {
   Array.from(svg.querySelectorAll('path.sig-flow')).forEach(p => p.remove());
-  // First edge = next_nodes[0], exactly the server's relay addressing
-  nodes.forEach(n => {
-    n.firstEdge = (n.nextNodes && n.nextNodes.length) ? n.nextNodes[0] : -1;
-  });
   const segs = computeSignalFlows(nodes);
   segs.forEach(seg => {
     const toPos = getSigRowPos(seg.to.nodeId, seg.to.kind, seg.to.source, 'left');
@@ -748,8 +762,6 @@ function loadPipeline(data) {
   document.querySelectorAll('.col-bg').forEach(el => el.remove());
 
   const pipeline = data.pipeline || [];
-  const nodeDataMap = {};
-  pipeline.forEach(item => { nodeDataMap[item.node_id] = item; });
 
   // Column position = node_id (missing IDs are empty columns)
   pipeline.forEach((item) => {
@@ -782,40 +794,36 @@ function loadPipeline(data) {
                  nextNodes: (cfg.next_nodes || []).slice(), x, y });
   });
 
-  // Data wires, matched by variable name: producer (output target, or pass
-  // target for relays) → consumer (input/pass source). Output targets take
-  // priority on a name shared with a pass relay; terminal nodes' outputs go
-  // to the client and are not producers for other nodes.
-  const targetLookup = {};
-  nodes.forEach(nodeObj => {
-    const cfg = (nodeDataMap[nodeObj.id] || {}).config || {};
-    if ((cfg.next_nodes || []).filter(nid => nodeDataMap.hasOwnProperty(nid)).length === 0) return;
-    nodeObj.outputs.forEach((out, idx) => {
-      if (out.target) targetLookup[out.target] = { nodeId: nodeObj.id, portType: 'output', portIdx: idx };
-    });
-  });
-  nodes.forEach(nodeObj => {
-    nodeObj.passes.forEach((pv, idx) => {
-      if (pv.target && !targetLookup.hasOwnProperty(pv.target)) {
-        targetLookup[pv.target] = { nodeId: nodeObj.id, portType: 'pass-out', portIdx: idx };
-      }
-    });
-  });
-
-  nodes.forEach(toNode => {
-    toNode.inputs.forEach((inp, toIdx) => {
-      if (inp.source && targetLookup[inp.source]) {
-        const { nodeId, portType, portIdx } = targetLookup[inp.source];
-        connections.push({ fromNodeId: nodeId, fromPortType: portType, fromPortIdx: portIdx,
-                           toNodeId: toNode.id, toPortType: 'input', toPortIdx: toIdx });
-      }
-    });
-    toNode.passes.forEach((pv, toIdx) => {
-      if (pv.source && targetLookup[pv.source]) {
-        const { nodeId, portType, portIdx } = targetLookup[pv.source];
-        connections.push({ fromNodeId: nodeId, fromPortType: portType, fromPortIdx: portIdx,
-                           toNodeId: toNode.id, toPortType: 'pass-in', toPortIdx: toIdx });
-      }
+  // Data wires STRICTLY along the declared next_nodes edges: a consumer row
+  // (input/pass source) connects to the producing port (output target, or
+  // pass target for relays) of an IMMEDIATE predecessor — a node listing
+  // this one in next_nodes. On the server a message only travels along
+  // edges (normal nodes address next_nodes[0], their single real edge; the
+  // dispatcher routes every branch plus its receiver), so for a runnable
+  // config this IS the physical flow — a name coincidence between
+  // non-adjacent nodes can no longer draw a line. Within one producer,
+  // output targets take priority over a same-named pass target.
+  const byId = {};
+  nodes.forEach(n => { byId[n.id] = n; });
+  const producerPort = (A, name) => {
+    let idx = A.outputs.findIndex(o => o.target === name);
+    if (idx >= 0) return { fromNodeId: A.id, fromPortType: 'output', fromPortIdx: idx };
+    idx = A.passes.findIndex(pv => pv.target === name);
+    if (idx >= 0) return { fromNodeId: A.id, fromPortType: 'pass-out', fromPortIdx: idx };
+    return null;
+  };
+  nodes.forEach(A => {
+    (A.nextNodes || []).map(id => byId[id]).filter(Boolean).forEach(B => {
+      B.inputs.forEach((inp, toIdx) => {
+        if (!inp.source) return;
+        const from = producerPort(A, inp.source);
+        if (from) connections.push({ ...from, toNodeId: B.id, toPortType: 'input', toPortIdx: toIdx });
+      });
+      B.passes.forEach((pv, toIdx) => {
+        if (!pv.source) return;
+        const from = producerPort(A, pv.source);
+        if (from) connections.push({ ...from, toNodeId: B.id, toPortType: 'pass-in', toPortIdx: toIdx });
+      });
     });
   });
 
