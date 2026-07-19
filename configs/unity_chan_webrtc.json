@@ -3,7 +3,6 @@
         "audio_fps": 50,
         "video_fps": 30,
         "data_fps": 20,
-        "startup_buffer": 2,
         "dc_offset_ms": 100
     },
     "pipeline": [

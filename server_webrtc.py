@@ -37,8 +37,8 @@ Standard frame format:
   Any message carrying "direct": true (the flag is consumed at the
   gateway; signals included — the flag is the ONLY lane selector) rides
   the DIRECT lane: standalone WebSocket messages (not grouped) entering
-  the pipeline as ordinary pipeline messages, held assembler_offset +
-  dc_offset after arrival, due ones flushing at the next group boundary
+  the pipeline as ordinary pipeline messages, held dc_direct_offset
+  (default 0) after arrival, due ones flushing at the next group boundary
   (FIFO).
   Data items are stamped with arrival time and window-matched into the
   group carrying media of the same client-side moment (window lags the
@@ -57,8 +57,8 @@ Session params:
   "webrtc" section of the client's pipeline config, fetched from the main
   server at offer time — they must agree with the FrameSplitter's group
   packing, so the config file is the single source. Gateway-only tunables
-  (startup_buffer / assembler_offset_ms and the trims audio_offset_ms /
-  video_offset_ms / dc_offset_ms / cancel_offset_ms, all defaulting to 0)
+  (send_offset_ms / assembler_offset_ms and the trims audio_offset_ms /
+  video_offset_ms / dc_offset_ms / dc_direct_offset_ms / cancel_offset_ms)
   live in the same section but have no splitter counterpart. The audio
   sample rate is not configurable: WebRTC/Opus fixes it at 48kHz.
   Resolution (video_width / video_height) is the client's own choice,
@@ -109,12 +109,13 @@ DEFAULT_VIDEO_FPS = 30
 DEFAULT_VIDEO_WIDTH = 320
 DEFAULT_VIDEO_HEIGHT = 240
 DEFAULT_DATA_FPS = 20
-DEFAULT_STARTUP_BUFFER = 2
+DEFAULT_SEND_OFFSET = 0.05        # output jitter buffer: hold this long after the first group is queued before unpacking begins (50ms of slack)
 DEFAULT_CONSUMER_OFFSET = 0.005   # consumer fills buffers 5ms before tracks consume
 DEFAULT_ASSEMBLER_OFFSET = 0.1    # assembler waits this long past each group end
 DEFAULT_AUDIO_OFFSET = 0.0        # per-lane window trim beyond the tick grid
 DEFAULT_VIDEO_OFFSET = 0.0
-DEFAULT_DC_OFFSET = 0.0           # data window lag; direct-lane hold adds assembler_offset
+DEFAULT_DC_OFFSET = 0.0           # data-lane window lag only
+DEFAULT_DC_DIRECT_OFFSET = 0.0    # direct-lane hold from arrival; independent of assembler_offset, so the default 0 flushes at the next group boundary (signals act immediately)
 DEFAULT_CANCEL_OFFSET = 0         # added to cancel's stamp; 0: FIFO flush order protects the paired start
 MAX_LANE_BUFFER = 1000            # frames; a lane past this means the assembler stalled (e.g. another lane never opened) -> abort
 
@@ -388,12 +389,13 @@ class WebRTCSession:
                  video_width=DEFAULT_VIDEO_WIDTH,
                  video_height=DEFAULT_VIDEO_HEIGHT,
                  data_fps=DEFAULT_DATA_FPS,
-                 startup_buffer=DEFAULT_STARTUP_BUFFER,
+                 send_offset=DEFAULT_SEND_OFFSET,
                  consumer_offset=DEFAULT_CONSUMER_OFFSET,
                  assembler_offset=DEFAULT_ASSEMBLER_OFFSET,
                  audio_offset=DEFAULT_AUDIO_OFFSET,
                  video_offset=DEFAULT_VIDEO_OFFSET,
                  dc_offset=DEFAULT_DC_OFFSET,
+                 dc_direct_offset=DEFAULT_DC_DIRECT_OFFSET,
                  cancel_offset=DEFAULT_CANCEL_OFFSET,
                  expect_data=False,
                  on_session_end=None):
@@ -424,18 +426,19 @@ class WebRTCSession:
         self.data_per_group = data_fps // group_fps
         self.group_period = 1.0 / group_fps
 
-        # Startup buffer and timing offsets. Per-lane offsets are trims
-        # beyond the tick grid: audio/video shift their PTS windows, dc
-        # shifts the data window and adds to the direct-lane hold (total =
-        # assembler_offset + dc_offset). The hold must exceed the
-        # media path's total lag (arrival lead ~80ms + assembler_offset +
-        # one group period) for e.g. recording_end to land after the tail.
-        self.startup_buffer = startup_buffer
+        # Timing offsets. Per-lane offsets are trims beyond the tick grid:
+        # audio/video shift their PTS windows, dc shifts the data window.
+        # dc_direct_offset is the direct-lane hold from arrival (default 0:
+        # flush at the next group boundary, so signals act immediately);
+        # raise it to delay signals past the media path's lag when a signal
+        # must land after the tail.
+        self.send_offset = send_offset
         self.consumer_offset = consumer_offset
         self.assembler_offset = assembler_offset
         self.audio_offset = audio_offset
         self.video_offset = video_offset
         self.dc_offset = dc_offset
+        self.dc_direct_offset = dc_direct_offset
         self.cancel_offset = cancel_offset
 
         logger.info(
@@ -463,8 +466,8 @@ class WebRTCSession:
         self._input_data_buffer = deque()    # (arrival_ts, data dict) from DataChannel
         self._last_data_item = None          # Last received data item (for gap fill)
         # Direct lane: signals and direct-flagged data messages waiting for
-        # the next group boundary: (due_time, json_str), due
-        # assembler_offset + dc_offset after arrival.
+        # the next group boundary: (arrival_ts, json_str), held
+        # dc_direct_offset (default 0) after arrival before flushing.
         self._input_direct_buffer = deque()
         self._audio_pts_origin = None        # First audio PTS (for gap detection)
 
@@ -486,7 +489,8 @@ class WebRTCSession:
     async def _group_consumer(self, dispatcher):
         """Fill dispatcher buffers at group rate.
         This is the sole driver of group unpacking — consumers never trigger it.
-        Startup: waits until group_queue has enough groups (jitter buffer).
+        Startup jitter buffer: waits until group_queue holds at least one
+        group, then holds send_offset more before unpacking begins.
         consumer_offset: fills slightly before track consumes to avoid race."""
         # The clock origin is established by the first track recv() — which
         # aiortc only calls once the connection is up. Setting it here (the
@@ -499,7 +503,11 @@ class WebRTCSession:
 
         group_index = 0
         buffering = True
-        buffering_deadline = dispatcher.start_time + self.startup_buffer * self.group_period * 5
+        # Once the queue first holds a group, hold a further send_offset
+        # before flipping to unpacking; prime_at marks that instant. Until
+        # then only silence/idle is emitted, so no deadline is needed — a
+        # pipeline that never produces a group simply stays silent.
+        prime_at = None
 
         # Stats
         _si = 100  # log every 100 groups (~10s)
@@ -521,12 +529,14 @@ class WebRTCSession:
                 _max_qsize = qs
 
             if buffering:
-                if (qs >= self.startup_buffer
-                        or time.time() > buffering_deadline):
+                now = time.time()
+                if prime_at is None and qs >= 1:
+                    prime_at = now + self.send_offset
+                if prime_at is not None and now >= prime_at:
                     buffering = False
                     logger.info(
                         f"[{self.client_id}] Jitter buffer primed "
-                        f"({qs} groups)"
+                        f"({qs} groups, send_offset hold elapsed)"
                     )
                 else:
                     _empty += 1
@@ -643,21 +653,19 @@ class WebRTCSession:
         """Handle DataChannel message from client.
         The "direct": true flag (consumed here) is the ONLY lane
         selector: flagged messages — signals included — take the direct
-        lane (held assembler_offset + dc_offset, flushed at group
+        lane (held dc_direct_offset, default 0, then flushed at group
         boundaries FIFO, entering the pipeline as standalone messages);
-        everything else is a data-lane item, stamped with arrival time and
-        window-matched into the group carrying media of the same
-        client-side moment. The gateway never inspects message content to
-        route."""
+        everything else is a data-lane item, window-matched into the group
+        carrying media of the same client-side moment. Both lanes stamp
+        arrival time; the direct lane's only hold is dc_direct_offset. The
+        gateway never inspects message content to route."""
         try:
             msg = json.loads(raw_msg)
         except json.JSONDecodeError:
             return
 
         if msg.pop("direct", False):
-            self._input_direct_buffer.append(
-                (time.time() + self.assembler_offset + self.dc_offset,
-                 json.dumps(msg)))
+            self._input_direct_buffer.append((time.time(), json.dumps(msg)))
         else:
             self._input_data_buffer.append((time.time(), msg))
         await self._abort_if_lane_overflow()
@@ -914,8 +922,7 @@ class WebRTCSession:
             # dropped, overflow dropped, gaps filled with the last item).
             # The window lags the tick grid by dc_offset, so a data item
             # rides the group carrying media captured at the same
-            # client-side moment and stays level with same-moment signals
-            # (held assembler_offset + dc_offset). ===
+            # client-side moment. ===
             data_win_end = wall_origin + group_index * self.group_period \
                 - self.dc_offset
             data_win_start = data_win_end - self.group_period
@@ -943,9 +950,11 @@ class WebRTCSession:
 
             # === Flush the direct lane at group boundary ===
             # Timestamp set at send time, same basis as group timestamp.
-            # Head not yet due (dc_offset hold) blocks the queue: FIFO order.
+            # Head still inside its dc_direct_offset hold (default 0) blocks
+            # the queue: FIFO order.
             while self._input_direct_buffer:
-                if self._input_direct_buffer[0][0] > time.time():
+                if self._input_direct_buffer[0][0] + self.dc_direct_offset \
+                        > time.time():
                     break
                 m = json.loads(self._input_direct_buffer.popleft()[1])
                 m["timestamp"] = time.time()
@@ -1296,8 +1305,16 @@ class WebRTCServer:
             "video_fps": rates["video_fps"],
             "data_fps": rates["data_fps"],
         }
-        if "startup_buffer" in sec:
-            session_kwargs["startup_buffer"] = sec["startup_buffer"]
+        # send_offset: extra hold past the one-group floor before the output
+        # jitter buffer starts unpacking (default 50ms).
+        send_offset_ms = sec.get("send_offset_ms", DEFAULT_SEND_OFFSET * 1000)
+        if isinstance(send_offset_ms, bool) or \
+                not isinstance(send_offset_ms, (int, float)) or \
+                not isfinite(send_offset_ms) or send_offset_ms < 0:
+            return web.json_response(
+                {"error": f"webrtc.send_offset_ms must be a finite number "
+                          f">= 0, got {send_offset_ms!r}"}, status=400)
+        session_kwargs["send_offset"] = send_offset_ms / 1000
         # Floor: the margin band (0, 2x offset) must tolerate one frame
         # interval of arrival quantization per lane, else the assembler
         # corrects (and shifts the PTS origin) on nearly every tick. The
@@ -1314,8 +1331,7 @@ class WebRTCServer:
                           f" got {assembler_ms!r}"}, status=400)
         session_kwargs["assembler_offset"] = assembler_ms / 1000
         # Per-lane trims beyond the tick grid (default 0): audio/video
-        # shift their PTS windows, dc shifts the data window and adds to
-        # the direct-lane hold (total = assembler_offset + dc_offset).
+        # shift their PTS windows, dc shifts the data window (signed).
         for cfg_key, kwarg, frame_ms in (
                 ("audio_offset_ms", "audio_offset", 1000 / audio_fps),
                 ("video_offset_ms", "video_offset",
@@ -1328,14 +1344,7 @@ class WebRTCServer:
                 return web.json_response(
                     {"error": f"webrtc.{cfg_key} must be a finite number, "
                               f"got {lane_ms!r}"}, status=400)
-            if frame_ms is None:
-                # dc: direct-lane hold (assembler + dc) must stay non-negative
-                if assembler_ms + lane_ms < 0:
-                    return web.json_response(
-                        {"error": f"webrtc.{cfg_key} {lane_ms!r} makes the "
-                                  f"direct-lane hold negative (assembler_offset "
-                                  f"{assembler_ms}ms + dc)"}, status=400)
-            else:
+            if frame_ms is not None:
                 # audio/video: margin target (assembler + trim − half a
                 # frame) must stay inside the correction band
                 target_ms = assembler_ms + lane_ms - frame_ms / 2
@@ -1346,6 +1355,17 @@ class WebRTCServer:
                                   f"(0, {2 * assembler_ms:.0f}ms)"},
                         status=400)
             session_kwargs[kwarg] = lane_ms / 1000
+        # Direct-lane hold from arrival (default 0): a hold cannot be
+        # negative, and there is no assembler baseline to offset it.
+        dc_direct_ms = sec.get("dc_direct_offset_ms",
+                               DEFAULT_DC_DIRECT_OFFSET * 1000)
+        if isinstance(dc_direct_ms, bool) or \
+                not isinstance(dc_direct_ms, (int, float)) or \
+                not isfinite(dc_direct_ms) or dc_direct_ms < 0:
+            return web.json_response(
+                {"error": f"webrtc.dc_direct_offset_ms must be a finite "
+                          f"number >= 0, got {dc_direct_ms!r}"}, status=400)
+        session_kwargs["dc_direct_offset"] = dc_direct_ms / 1000
         # Signed trim added to cancel's flush stamp (no semantic guard:
         # backdating widens the kill range, 0 relies on FIFO order)
         cancel_ms = sec.get("cancel_offset_ms", DEFAULT_CANCEL_OFFSET * 1000)
