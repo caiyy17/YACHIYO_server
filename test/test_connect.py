@@ -12,13 +12,19 @@ Select a mode with --mode:
                 running server.
   backpressure  Standalone max_queue_size backpressure test; builds pipelines
                 directly (imports from Modules). Does NOT need a running server.
+  vad           Deterministic in-process signed VAD offset tests. Does NOT
+                need a running server or VAD service.
 
 Mode-specific helpers/constants are namespaced to avoid collisions.
 """
 
 import argparse
+import array
+import io
 import sys
 import os
+import wave
+from unittest.mock import patch
 
 # Needed for backpressure mode, which builds pipelines directly from Modules.
 # Kept at module level to mirror the original test_backpressure.py behavior.
@@ -1019,6 +1025,412 @@ def run_backpressure():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# MODE: vad  (deterministic signed-offset segmentation tests)
+# ═══════════════════════════════════════════════════════════════════════
+
+VAD_SAMPLE_RATE = 1000
+VAD_BLOCK_SAMPLES = 100
+VAD_START_TIMESTAMP = 100.0
+
+
+def vad_require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def vad_config(**overrides):
+    config = {
+        "input_vars": [{"source": "audio_data", "target": "audio_data"}],
+        "pass_vars": [],
+        "output_vars": [{"source": "audio_file", "target": "audio_file"}],
+        "catch_signals": [
+            {"source": "recording_start", "target": "recording_start"},
+            {"source": "recording_end", "target": "recording_end"},
+        ],
+        "pass_signals": [],
+        "emit_signals": [
+            {"source": "vad_start", "target": "vad_start"},
+            {"source": "vad_end", "target": "vad_end"},
+        ],
+        "next_nodes": [-1],
+        "sample_rate": VAD_SAMPLE_RATE,
+        "ring_seconds": 2,
+        "manual_start_offset_ms": 0,
+        "manual_end_offset_ms": 0,
+        "stream": False,
+        "stream_chunk_ms": 100,
+    }
+    config.update(overrides)
+    return config
+
+
+def vad_new_step(**overrides):
+    from Modules.vad_base.VADStep import VADStep
+
+    output_queue = Queue()
+    step = VADStep(
+        1, "vad_test", setup_logger("vad_test"), Queue(), Queue(),
+        output_queue, Queue(), vad_config(**overrides),
+    )
+    vad_require(step.init_error is None, f"VAD init failed: {step.init_error}")
+    return step, output_queue
+
+
+def vad_wav_block(value, samples=VAD_BLOCK_SAMPLES):
+    pcm = array.array("h", [value]) * samples
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(VAD_SAMPLE_RATE)
+        wav_file.writeframes(pcm.tobytes())
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def vad_feed(step, value, timestamp=None):
+    step.span_process({
+        "audio_data": vad_wav_block(value),
+        "timestamp": timestamp if timestamp is not None else 200.0 + value,
+    })
+
+
+def vad_start(step):
+    step.span_process({
+        "signal": "recording_start",
+        "timestamp": VAD_START_TIMESTAMP,
+    })
+
+
+def vad_end(step):
+    step.span_process({
+        "signal": "recording_end",
+        "timestamp": VAD_START_TIMESTAMP + 1,
+    })
+
+
+def vad_drain(output_queue):
+    messages = []
+    while True:
+        try:
+            messages.append(json.loads(output_queue.get_nowait()))
+        except Empty:
+            return messages
+
+
+def vad_kinds(messages):
+    return [message.get("signal") or (
+        "audio_file" if "audio_file" in message else "unknown"
+    ) for message in messages]
+
+
+def vad_decode(message):
+    vad_require("audio_file" in message, f"not an audio message: {message}")
+    try:
+        raw = base64.b64decode(message["audio_file"], validate=True)
+        with wave.open(io.BytesIO(raw), "rb") as wav_file:
+            params = (
+                wav_file.getnchannels(), wav_file.getsampwidth(),
+                wav_file.getframerate(), wav_file.getcomptype(),
+            )
+            frames = wav_file.getnframes()
+            pcm = array.array("h")
+            pcm.frombytes(wav_file.readframes(frames))
+    except Exception as error:
+        raise AssertionError(f"invalid WAV output: {error}") from error
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    vad_require(
+        params == (1, 2, VAD_SAMPLE_RATE, "NONE"),
+        f"unexpected WAV parameters: {params}",
+    )
+    return list(pcm)
+
+
+def vad_check_stamps(messages):
+    for message in messages:
+        vad_require(
+            message.get("timestamp") == VAD_START_TIMESTAMP,
+            f"offset changed the turn timestamp: {message}",
+        )
+
+
+def vad_check_audio(message, expected):
+    actual = vad_decode(message)
+    vad_require(
+        actual == expected,
+        f"PCM mismatch: got {len(actual)} samples, expected {len(expected)}",
+    )
+
+
+def vad_test_validator():
+    from Modules.vad_server.ServerVADStep import ServerVADStep
+
+    baseline = vad_config(
+        auto_detect=False,
+        start_offset_ms=0,
+        end_offset_ms=0,
+    )
+    keys = (
+        "manual_start_offset_ms", "manual_end_offset_ms",
+        "start_offset_ms", "end_offset_ms",
+    )
+    for key in keys:
+        for value in (-150, 0, 150):
+            config = dict(baseline)
+            config[key] = value
+            errors = ServerVADStep.validate_config(config)
+            vad_require(not errors, f"{key}={value} rejected: {errors}")
+        for value in (True, "150"):
+            config = dict(baseline)
+            config[key] = value
+            errors = ServerVADStep.validate_config(config)
+            vad_require(
+                any(key in error for error in errors),
+                f"{key}={value!r} was not rejected: {errors}",
+            )
+
+
+def vad_test_negative_start():
+    step, output = vad_new_step(manual_start_offset_ms=-200)
+    for value in (1, 2, 3):
+        vad_feed(step, value)
+    vad_require(not vad_drain(output), "audio before start produced output")
+    vad_start(step)
+    start_messages = vad_drain(output)
+    vad_require(vad_kinds(start_messages) == ["vad_start"],
+                f"negative start was not immediate: {vad_kinds(start_messages)}")
+    vad_feed(step, 4)
+    vad_end(step)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"unexpected end output: {vad_kinds(end_messages)}")
+    vad_check_audio(end_messages[1], [2] * 100 + [3] * 100 + [4] * 100)
+    vad_check_stamps(start_messages + end_messages)
+
+
+def vad_test_positive_start():
+    step, output = vad_new_step(manual_start_offset_ms=150)
+    vad_start(step)
+    vad_require(not vad_drain(output), "positive start was forwarded immediately")
+    vad_feed(step, 1)
+    vad_require(not vad_drain(output), "positive start fired before 150 ms")
+    vad_feed(step, 2)
+    start_messages = vad_drain(output)
+    vad_require(vad_kinds(start_messages) == ["vad_start"],
+                f"positive start did not fire once: {vad_kinds(start_messages)}")
+    vad_feed(step, 3)
+    vad_end(step)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"unexpected end output: {vad_kinds(end_messages)}")
+    vad_check_audio(end_messages[1], [2] * 50 + [3] * 100)
+    vad_check_stamps(start_messages + end_messages)
+
+
+def vad_test_positive_end():
+    step, output = vad_new_step(manual_end_offset_ms=150)
+    vad_start(step)
+    start_messages = vad_drain(output)
+    for value in (1, 2):
+        vad_feed(step, value)
+    vad_end(step)
+    vad_require(not vad_drain(output), "positive end finalized immediately")
+    vad_feed(step, 3)
+    vad_require(not vad_drain(output), "positive end fired before 150 ms")
+    vad_feed(step, 4)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"unexpected delayed end output: {vad_kinds(end_messages)}")
+    expected = [1] * 100 + [2] * 100 + [3] * 100 + [4] * 50
+    vad_check_audio(end_messages[1], expected)
+    vad_check_stamps(start_messages + end_messages)
+
+
+def vad_test_negative_end():
+    step, output = vad_new_step(manual_end_offset_ms=-150)
+    vad_start(step)
+    start_messages = vad_drain(output)
+    for value in (1, 2, 3):
+        vad_feed(step, value)
+    vad_require(not vad_drain(output), "non-stream VAD emitted audio before end")
+    vad_end(step)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"negative end was not immediate: {vad_kinds(end_messages)}")
+    vad_check_audio(end_messages[1], [1] * 100 + [2] * 50)
+    vad_check_stamps(start_messages + end_messages)
+
+
+def vad_test_collapsed_nonstream():
+    for name, end_offset in (("negative", -200), ("zero", 200)):
+        step, output = vad_new_step(
+            manual_start_offset_ms=300,
+            manual_end_offset_ms=end_offset,
+        )
+        vad_start(step)
+        vad_feed(step, 1)
+        vad_require(not vad_drain(output),
+                    f"{name} collapsed case emitted before end")
+        vad_end(step)
+        messages = vad_drain(output)
+        vad_require(
+            vad_kinds(messages) == ["vad_start", "vad_end", "audio_file"],
+            f"{name} collapsed order: {vad_kinds(messages)}",
+        )
+        vad_check_audio(messages[2], [])
+        vad_check_stamps(messages)
+
+
+def vad_test_stream_holdback_and_collapse():
+    step, output = vad_new_step(
+        manual_end_offset_ms=-150, stream=True, stream_chunk_ms=100,
+    )
+    vad_start(step)
+    messages = vad_drain(output)
+    vad_require(vad_kinds(messages) == ["vad_start"],
+                f"unexpected stream start: {vad_kinds(messages)}")
+    vad_feed(step, 1)
+    vad_feed(step, 2)
+    vad_require(not vad_drain(output),
+                "stream emitted samples still inside the -150 ms holdback")
+    vad_feed(step, 3)
+    safe = vad_drain(output)
+    vad_require(vad_kinds(safe) == ["audio_file"],
+                f"stream did not release its safe prefix: {vad_kinds(safe)}")
+    vad_check_audio(safe[0], [1] * 100)
+    vad_end(step)
+    final = vad_drain(output)
+    vad_require(vad_kinds(final) == ["audio_file", "vad_end"],
+                f"unexpected stream final order: {vad_kinds(final)}")
+    vad_check_audio(final[0], [2] * 50 + [0] * 50)
+    vad_check_stamps(messages + safe + final)
+
+    collapsed, collapsed_output = vad_new_step(
+        manual_start_offset_ms=300,
+        manual_end_offset_ms=-200,
+        stream=True,
+        stream_chunk_ms=100,
+    )
+    vad_start(collapsed)
+    vad_feed(collapsed, 1)
+    vad_require(not vad_drain(collapsed_output),
+                "collapsed stream emitted before end")
+    vad_end(collapsed)
+    collapsed_messages = vad_drain(collapsed_output)
+    vad_require(
+        vad_kinds(collapsed_messages) == ["vad_start", "vad_end"],
+        f"collapsed stream emitted WAV or wrong order: "
+        f"{vad_kinds(collapsed_messages)}",
+    )
+    vad_check_stamps(collapsed_messages)
+
+
+class VadFakeDetector:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.closed = False
+
+    def feed(self, _pcm):
+        return self.responses.pop(0)
+
+    def reset(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class VadFakeEvents:
+    def __init__(self):
+        self.messages = []
+
+    def submit(self, message):
+        self.messages.append(message)
+
+
+def vad_test_auto_offsets():
+    from Modules.vad_server.ServerVADStep import ServerVADStep
+
+    detector = VadFakeDetector([
+        [{"type": "speech_started"}], [], [], [],
+        [{"type": "speech_stopped"}],
+    ])
+    events = VadFakeEvents()
+    output = Queue()
+    config = vad_config(
+        auto_detect=True,
+        start_offset_ms=150,
+        end_offset_ms=-150,
+        __events=events,
+    )
+    with patch(
+        "Modules.vad_server.ServerVADStep.ServerVADCaller",
+        return_value=detector,
+    ):
+        step = ServerVADStep(
+            1, "vad_auto_test", setup_logger("vad_auto_test"), Queue(),
+            Queue(), output, Queue(), config,
+        )
+    vad_require(step.init_error is None,
+                f"auto VAD init failed: {step.init_error}")
+
+    for value in (1, 2):
+        vad_feed(step, value, timestamp=VAD_START_TIMESTAMP + value - 1)
+        vad_require(not vad_drain(output),
+                    f"auto positive start fired on block {value}")
+    vad_feed(step, 3, timestamp=VAD_START_TIMESTAMP + 2)
+    start_messages = vad_drain(output)
+    vad_require(vad_kinds(start_messages) == ["vad_start"],
+                f"auto start output: {vad_kinds(start_messages)}")
+    vad_feed(step, 4, timestamp=VAD_START_TIMESTAMP + 3)
+    vad_require(not vad_drain(output), "auto non-stream emitted before stop")
+    vad_feed(step, 5, timestamp=VAD_START_TIMESTAMP + 4)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"auto end output: {vad_kinds(end_messages)}")
+    vad_check_audio(end_messages[1], [3] * 50 + [4] * 50)
+    vad_check_stamps(start_messages + end_messages)
+    vad_require(
+        events.messages == [{
+            "signal": "cancel", "timestamp": VAD_START_TIMESTAMP,
+            "source": 1,
+        }],
+        f"auto activation cancel mismatch: {events.messages}",
+    )
+    step.custom_dispose()
+    vad_require(detector.closed, "fake detector was not closed")
+
+
+def run_vad():
+    tests = [
+        ("Signed offset validation", vad_test_validator),
+        ("Negative start lookback", vad_test_negative_start),
+        ("Positive start delay", vad_test_positive_start),
+        ("Positive end delay", vad_test_positive_end),
+        ("Negative end crop", vad_test_negative_end),
+        ("Collapsed non-stream WAV", vad_test_collapsed_nonstream),
+        ("Stream negative-end holdback", vad_test_stream_holdback_and_collapse),
+        ("Automatic VAD offsets", vad_test_auto_offsets),
+    ]
+    results = []
+    for name, test in tests:
+        try:
+            test()
+        except Exception as error:
+            print(f"  FAIL: {name}: {error}")
+            results.append((name, False))
+        else:
+            print(f"  PASS: {name}")
+            results.append((name, True))
+
+    passed = sum(ok for _, ok in results)
+    print(f"\n  VAD summary: {passed}/{len(results)} passed")
+    return passed == len(results)
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # MODE: services  (connectivity check for all dependencies)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1177,11 +1589,12 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["services", "concurrent", "latency", "backpressure"],
+        choices=["services", "concurrent", "latency", "backpressure", "vad"],
         default="concurrent",
         help="Test mode: services (connectivity check for all dependencies), "
              "concurrent (server API + websocket), "
-             "latency (latency benchmark), backpressure (standalone pipeline test).",
+             "latency (latency benchmark), backpressure (standalone pipeline test), "
+             "vad (standalone signed-offset test).",
     )
     args = parser.parse_args()
 
@@ -1192,6 +1605,8 @@ def main():
             return run_concurrent()
         if args.mode == "latency":
             return run_latency()
+        if args.mode == "vad":
+            return run_vad()
         return run_backpressure()
     except Exception as exc:
         print(f"{args.mode} test failed: {exc}")

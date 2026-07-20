@@ -83,10 +83,10 @@ class ServerVADStep(VADStep):
     session, no auto events, no barge-in cancels; turns come only from the
     caught recording signals below.
 
-    Margins are per source: `start_offset_ms` / `end_offset_ms` shape
-    DETECTOR turns (signed lead <= 0 for the lookback; the end tail
-    defaults to 0 — the stop verdict already contains silence_duration_ms
-    of confirmed silence), while `manual_start_offset_ms` /
+    Margins are per source: signed `start_offset_ms` / `end_offset_ms` shape
+    DETECTOR turns (the end defaults to 0 — the stop verdict already
+    contains silence_duration_ms of confirmed silence), while
+    `manual_start_offset_ms` /
     `manual_end_offset_ms` shape SIGNAL turns (manual = the standalone
     client signals; the end tail covers e.g. the DC hold lag).
 
@@ -107,18 +107,19 @@ class ServerVADStep(VADStep):
             errors.append(f"auto_detect must be a bool, got {v!r}")
         ring_s = config.get("ring_seconds", 60)
         ms = config.get("start_offset_ms", 0)
-        if isinstance(ms, bool) or not isinstance(ms, (int, float)) \
-                or ms > 0:
-            errors.append(f"start_offset_ms (detector lookback) must be a "
-                          f"number <= 0, got {ms!r}")
-        elif isinstance(ring_s, (int, float)) and not isinstance(ring_s, bool) \
+        if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+            errors.append(
+                f"start_offset_ms must be a signed number, got {ms!r}")
+        elif ms < 0 \
+                and isinstance(ring_s, (int, float)) \
+                and not isinstance(ring_s, bool) \
                 and ms <= -ring_s * 1000:
             errors.append(f"start_offset_ms ({ms}) must be > "
                           f"-ring_seconds*1000")
         me = config.get("end_offset_ms", 0)
-        if isinstance(me, bool) or not isinstance(me, (int, float)) or me < 0:
-            errors.append(f"end_offset_ms (detector tail) must be a number "
-                          f">= 0, got {me!r}")
+        if isinstance(me, bool) or not isinstance(me, (int, float)):
+            errors.append(
+                f"end_offset_ms must be a signed number, got {me!r}")
         return errors
 
     def span_init(self):
@@ -160,6 +161,7 @@ class ServerVADStep(VADStep):
             self.logger.info("client recording_start - detection suspended")
             self._manual = True
             self.start_offset = self._manual_start
+            self.end_offset = self._manual_end
             super().span_process(data, pass_data)
             return
         if signal == "recording_end":
@@ -167,7 +169,6 @@ class ServerVADStep(VADStep):
                 self.logger.info(
                     "client recording_end without a manual turn - ignored")
                 return
-            self.end_offset = self._manual_end
             super().span_process(data, pass_data)
             if self._mark is None:   # no tail to wait for: turn done now
                 self._resume_detection()
@@ -197,9 +198,7 @@ class ServerVADStep(VADStep):
                 # silence_duration_ms of confirmed silence; the detector
                 # tail (end_offset_ms, default 0) is extra on top
                 if self._mark is not None:
-                    self._end_target = self._total + self._auto_end
-                    if self._total >= self._end_target:
-                        self._finalize()
+                    self._on_end()
 
     def _on_activation(self, chunk_ts):
         """Barge-in: cancel everything older than this turn everywhere but
@@ -218,6 +217,7 @@ class ServerVADStep(VADStep):
         # turn's own same-stamp messages)
         self.cancel_timestamp = max(self.cancel_timestamp, chunk_ts)
         self.start_offset = self._auto_start
+        self.end_offset = self._auto_end
         self._on_start({"timestamp": chunk_ts})
 
     def on_span_cancel(self, cancel_message):
@@ -248,4 +248,3 @@ class ServerVADStep(VADStep):
     def custom_dispose(self):
         if self._detector is not None:
             self._detector.close()
-

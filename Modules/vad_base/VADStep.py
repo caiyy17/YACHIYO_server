@@ -23,15 +23,15 @@ class VADStep(SpanProcessingStep):
 
     Segmentation is driven by caught signals (a real-VAD subclass swaps the
     signal source for model decisions; nothing else changes):
-      - recording_start: mark = now + manual_start_offset_ms (a signed
-        lead <= 0, negative reaches back for pre-roll; clamped to the ring
-        start; "manual" = the standalone client signals), emit
-        vad_start, and SNAPSHOT [mark, now) out of the ring into
-        the segment's own buffer. From then on the segment owns its audio:
-        every later chunk is appended to that buffer, decoupled from the ring.
+      - recording_start: mark = now + signed manual_start_offset_ms.
+        A negative value reaches back into the ring and emits vad_start now;
+        a positive value waits for the audio clock to reach the future mark,
+        then emits vad_start and starts capturing at that exact sample.
         A second start while active restarts the mark.
-      - recording_end: finalize once manual_end_offset_ms of tail has
-        accumulated.
+      - recording_end: end = now + signed manual_end_offset_ms. A positive
+        value waits for tail audio; a negative value trims back into audio
+        already captured. If end <= mark, the turn closes immediately with
+        an empty WAV (or no audio chunk in stream mode).
       - a segment left open (no recording_end) for ring_seconds is
         force-ended (warned) so the buffer stays bounded.
 
@@ -70,26 +70,25 @@ class VADStep(SpanProcessingStep):
         for key, default, minimum in (
                 ("sample_rate", SAMPLE_RATE, 1),
                 ("ring_seconds", RING_SECONDS, 1),
-                ("manual_end_offset_ms", 0, 0),
                 ("stream_chunk_ms", STREAM_CHUNK_MS, 100)):
             v = config.get(key, default)
             if isinstance(v, bool) or not isinstance(v, (int, float)) \
                     or v < minimum:
                 errors.append(f"{key} must be a number >= {minimum}, "
                               f"got {v!r}")
-        # manual_start_offset_ms is a signed lead <= 0:
-        # negative reaches back for pre-roll, 0 = none;
-        # positive would put the mark in the future. Its reach also cannot
-        # exceed the ring, or a segment starts at the force-end cap and
-        # dies on its first chunk.
+        for key in ("manual_start_offset_ms", "manual_end_offset_ms"):
+            value = config.get(key, 0)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                errors.append(
+                    f"{key} must be a signed number, got {value!r}")
+
+        # A negative start reads history and cannot reach beyond the ring.
         ring_s = config.get("ring_seconds", RING_SECONDS)
         start_ms = config.get("manual_start_offset_ms", 0)
-        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) \
-                or start_ms > 0:
-            errors.append(f"manual_start_offset_ms must be a number <= 0 "
-                          f"(negative reaches back for pre-roll), "
-                          f"got {start_ms!r}")
-        elif not isinstance(ring_s, bool) and isinstance(ring_s, (int, float)) \
+        if not isinstance(start_ms, bool) and isinstance(start_ms, (int, float)) \
+                and start_ms < 0 \
+                and not isinstance(ring_s, bool) \
+                and isinstance(ring_s, (int, float)) \
                 and start_ms <= -ring_s * 1000:
             errors.append(
                 f"manual_start_offset_ms ({start_ms}) must be > "
@@ -128,6 +127,7 @@ class VADStep(SpanProcessingStep):
         self._mark = None        # segment start (absolute sample position)
         self._turn_ctx = None    # the start signal's identity (stamp source)
         self._start_pass = {}
+        self._start_forwarded = False
         self._end_target = None  # finalize once _total reaches this
         self._seg = bytearray()  # segment audio from the mark (owned copy)
         self._emitted = 0        # stream: segment samples already emitted
@@ -165,14 +165,19 @@ class VADStep(SpanProcessingStep):
         audio_b64 = data.get("audio_data", "")
         if not audio_b64:
             return None
+        chunk_start = self._total
         pcm = self._ingest(audio_b64, data.get("timestamp"))
         if pcm is None:
             return None
         if self._mark is not None:
-            self._seg += pcm
+            capture_start = max(self._mark, chunk_start)
+            if self._total > capture_start:
+                self._seg += pcm[(capture_start - chunk_start) * 2:]
+            if not self._start_forwarded and self._total >= self._mark:
+                self._forward_start()
             # a segment left open past the cap (no recording_end) is
             # force-ended
-            if self._end_target is None \
+            if self._start_forwarded and self._end_target is None \
                     and (self._total - self._mark) >= self.seg_cap:
                 self.logger.warning(
                     f"segment exceeded "
@@ -180,10 +185,10 @@ class VADStep(SpanProcessingStep):
                     f"recording_end; force-ending"
                 )
                 self._end_target = self._mark + self.seg_cap
-            if self.stream:
+            if self.stream and self._start_forwarded:
                 self._drain_chunks()
             if self._end_target is not None \
-                    and self._total >= self._end_target:
+                    and self._total >= max(self._mark, self._end_target):
                 self._finalize()
         # the ingested (rate-normalized) PCM, for subclasses that consume
         # the same bytes the ring did (e.g. a detector feed)
@@ -203,12 +208,25 @@ class VADStep(SpanProcessingStep):
         self._turn_ctx = self.stamp({}, data)  # internal retention: data view
         self._start_pass = dict(data.get("pass_data") or {})
         self.start_span(ts)
-        # snapshot the lookback out of the ring; the segment owns it from now
-        self._seg = bytearray(self._slice(self._mark, self._total))
-        self.logger.info(
-            f"vad mark at sample {self._mark} "
-            f"(lookback {(self._total - self._mark) / self.sample_rate:.2f}s)"
-        )
+        if self._mark <= self._total:
+            # Snapshot the lookback out of the ring; the segment owns it.
+            self._seg = bytearray(self._slice(self._mark, self._total))
+            self.logger.info(
+                f"vad mark at sample {self._mark} "
+                f"(lookback "
+                f"{(self._total - self._mark) / self.sample_rate:.2f}s)"
+            )
+            self._forward_start()
+        else:
+            self.logger.info(
+                f"vad start pending until sample {self._mark} "
+                f"({(self._mark - self._total) / self.sample_rate:.2f}s)"
+            )
+
+    def _forward_start(self):
+        if self._start_forwarded:
+            return
+        self._start_forwarded = True
         start_msg = self.stamp({}, self._turn_ctx)
         if self.stream:
             self.envelope(start_msg, self._start_pass, wrap=True)
@@ -221,7 +239,9 @@ class VADStep(SpanProcessingStep):
             self.logger.info("recording_end without active mark - ignored")
             return
         self._end_target = self._total + self.end_offset
-        if self._total >= self._end_target:
+        if self._end_target <= self._mark:
+            self._finalize()
+        elif self._total >= self._end_target:
             self._finalize()
 
     # ── ring (history) ──
@@ -282,9 +302,16 @@ class VADStep(SpanProcessingStep):
     # ── output (from the segment buffer) ──
 
     def _drain_chunks(self):
+        if not self._start_forwarded:
+            return
         seg_samples = len(self._seg) // 2
-        limit = seg_samples if self._end_target is None \
-            else min(seg_samples, self._end_target - self._mark)
+        if self._end_target is None:
+            # A negative end offset trims already-received audio. Keep that
+            # much tail buffered so stream output never needs retraction.
+            limit = max(0, seg_samples - max(0, -self.end_offset))
+        else:
+            limit = min(
+                seg_samples, max(0, self._end_target - self._mark))
         while limit - self._emitted >= self.chunk_samples:
             lo = self._emitted * 2
             hi = (self._emitted + self.chunk_samples) * 2
@@ -292,7 +319,9 @@ class VADStep(SpanProcessingStep):
             self._emitted += self.chunk_samples
 
     def _finalize(self):
-        seg_len = self._end_target - self._mark   # samples to emit
+        if not self._start_forwarded:
+            self._forward_start()
+        seg_len = max(0, self._end_target - self._mark)
         if self.stream:
             # remaining un-emitted audio as one final chunk, zero-padded
             if self._emitted < seg_len:
