@@ -462,7 +462,7 @@ function computeSignalFlows(nodeList) {
     });
   });
 
-  // Client-injected signals: declarations on the head node with no upstream
+  // Client-originated signals: declarations on the head node with no upstream
   if (nodeList.length) {
     const n0 = nodeList[0];
     const seen = new Set();
@@ -755,20 +755,44 @@ function buildNodeCard(nodeObj) {
 //  Load & render a config document
 // ─────────────────────────────────────────────
 function loadPipeline(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Config document must be a JSON object');
+  }
+  if (!Array.isArray(data.pipeline) || data.pipeline.length === 0) {
+    throw new Error('Config requires a non-empty pipeline array');
+  }
+  data.pipeline.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Pipeline node ${index} must be an object`);
+    }
+    if (!Number.isInteger(item.node_id) || item.node_id < 0) {
+      throw new Error(`Pipeline node ${index} requires a non-negative integer node_id`);
+    }
+    if (typeof item.function !== 'string' || !item.function.trim()) {
+      throw new Error(`Pipeline node ${index} requires a function name`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(item, 'config') ||
+        !item.config || typeof item.config !== 'object' || Array.isArray(item.config)) {
+      throw new Error(`Pipeline node ${index} requires a config object`);
+    }
+  });
+
+  // Only replace the current canvas after the complete document passes the
+  // required structural checks above.
   nodes.forEach(n => n.el.remove());
   nodes = [];
   connections = [];
   document.getElementById('svg-overlay').innerHTML = '';
   document.querySelectorAll('.col-bg').forEach(el => el.remove());
 
-  const pipeline = data.pipeline || [];
+  const pipeline = data.pipeline;
 
   // Column position = node_id (missing IDs are empty columns)
   pipeline.forEach((item) => {
     const x = CANVAS_PAD + item.node_id * (NODE_W + NODE_GAP_X);
     const y = CANVAS_PAD;
 
-    const cfg = item.config || {};
+    const cfg = item.config;
     const inputs  = (cfg.input_vars  || []).map(iv => ({ name: iv.target, source: iv.source }));
     const outputs = (cfg.output_vars || []).map(ov => ({ name: ov.source, target: ov.target }));
     const passes  = (cfg.pass_vars   || []).map(pv => ({ source: pv.source, target: pv.target }));

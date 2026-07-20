@@ -45,7 +45,7 @@ echo "Starting pipeline server..."
 
 # 1. Main server - port 8910
 echo "[1/2] Starting YACHIYO server..."
-screen -dmS yachiyo zsh -c "source ~/.zshrc; conda activate yachiyo && uvicorn server_fastapi:app --reload --host 0.0.0.0 --port 8910; exec zsh"
+screen -dmS yachiyo zsh -c "source ~/.zshrc; conda activate yachiyo && uvicorn server_fastapi:app --host 0.0.0.0 --port 8910; exec zsh"
 wait_for_port 8910 "YACHIYO"
 
 # 2. WebRTC server - port 15168

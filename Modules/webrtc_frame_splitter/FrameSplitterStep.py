@@ -373,7 +373,16 @@ class FrameSplitterStep(BaseProcessingStep):
                 self._render_group_videos(entry)
                 group_to_send = json.dumps(entry)
 
-            # Wait for tick (absolute time, no drift)
+            # Step 3: Send the media group as soon as it is ready. Timing
+            # variation is absorbed by the gateway's output buffer.
+            if group_to_send is not None:
+                self.output_queue.put(group_to_send)
+
+            group_index += 1
+
+            # Wait for the start of the next group (absolute time, no drift).
+            # Processing therefore starts on the tick; it is never prefetched
+            # and held locally while waiting for its send time.
             next_tick = clock_start + group_index * self._group_period
             remaining = next_tick - time.time()
             if remaining > 0:
@@ -382,12 +391,6 @@ class FrameSplitterStep(BaseProcessingStep):
             jitter_ms = (time.time() - next_tick) * 1000
             if abs(jitter_ms) > abs(_max_jitter_ms):
                 _max_jitter_ms = jitter_ms
-
-            # Step 3: Send the media group
-            if group_to_send is not None:
-                self.output_queue.put(group_to_send)
-
-            group_index += 1
 
             if group_index % _si == 0:
                 elapsed = time.time() - clock_start

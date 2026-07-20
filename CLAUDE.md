@@ -24,7 +24,7 @@
 ## 环境与服务
 
 - conda 环境:`yachiyo`(不要用 `conda run`,会吞 stdout;用脚本文件 + `source ~/miniforge3/etc/profile.d/conda.sh && conda activate yachiyo`)
-- 主服务:8910(`uvicorn server_fastapi:app --reload`,代码改动自动重启);WebRTC 网关:15168;本地 QwenTTS:8011;VAD 服务:8012(screen `vadserver`,env `silerovad`;探测器 silero 为默认,energy 为轻量兜底)
+- 主服务:8910(`uvicorn server_fastapi:app --host 0.0.0.0 --port 8910`,不启用 reload,代码改动后手动重启);WebRTC 网关:15168(同样手动重启);本地 QwenTTS:8011;VAD 服务:8012(screen `vadserver`,env `silerovad`;探测器 silero 为默认,energy 为轻量兜底)
 - 远程 motion 服务(HYMotion 格式,如 47.84.79.234:18084)要求 `duration ∈ (0, 120]`,不接受 0
 
 ## 测试
