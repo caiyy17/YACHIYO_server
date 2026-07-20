@@ -98,7 +98,7 @@
                 "next_nodes": [3],
                 "start_offset_ms": -200,
                 "end_offset_ms": 0,
-                "manual_start_offset_ms": -200,
+                "manual_start_offset_ms": 200,
                 "manual_end_offset_ms": 200,
                 "auto_detect": false,
                 "model": "silero_vad"
