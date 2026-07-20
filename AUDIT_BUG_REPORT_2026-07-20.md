@@ -11,15 +11,10 @@
 
 ## 一、Pipeline、配置和节点
 
-- [ ] **S06 模块导入错误被吞**：模块加载会吞掉 `ModuleNotFoundError`，内部依赖或内部导入损坏也可能继续启动。
-- [ ] **S07 pipeline 结构检查不足**：缺少顶层类型、空 pipeline、node/config 类型、重复 node ID 和目标存在性检查。
-- [ ] **S08 self/back edge 风险**：自指或回指可能在运行期造成循环、阻塞或其他异常；此前决定是不增加拓扑限制，运行错误直接报告。
 - [ ] **S09 节点异常仅记录**：`BaseProcessingStep.run()`、`SpanProcessingStep.run()` 等路径会把内部异常只写日志后继续；部分自定义 `run()` 则会静默结束线程。
 - [ ] **S09a custom_update 异常静默死线程**：`custom_update()` 位于 `queue.Empty` 异常分支内，它再次抛错时不会被同级异常分支接住，也没有通知 pipeline。
 - [ ] **S09b cancel/dispose 异常未上报**：`check_cancel()`、`custom_cancel()`、`dispose()` 部分调用位于节点异常边界之外，失败可能只终止单个线程。
 - [ ] **S09c pipeline 无失败状态**：节点线程失败后，`ClientConnection` 仍可能保持 initialized，其他节点继续等待或处理。
-- [ ] **S10 未声明 output 被丢弃**：内部调用 `add_output()` 发送未声明 output 时直接 return。
-- [ ] **S10a 未声明 emit signal 被丢弃**：内部调用 `emit_signal()` 发送未声明 signal 时只记日志然后 drop。
 
 ## 二、DataQuery、历史和运行时 fallback
 
@@ -195,14 +190,3 @@
 - [ ] **D04 Danmaku 恢复协议**：播放确认丢失后，是关闭 pipeline、取消当前回合还是重新同步。
 - [ ] **D05 Queue 背压协议**：阻塞、拒绝、丢最新、丢最旧或独立控制通道需要明确选择。
 - [ ] **D08 timeout 数值与配置位置**：每项依赖的默认期限需结合真实延迟确定，不能用一个全局 timeout 覆盖全部服务。
-
-## 明确不应擅自增加的设计
-
-- 不在公共输出出口增加取消判断或输出 gate。
-- 不把 `output_to_queue()`、signal relay、VAD 或 Danmaku 状态机改成布尔返回链。
-- 不自行加入默认 dataset、默认 lorebook、默认 history mode 或默认服务结果。
-- 不自行修改角色 config、测试输入和历史 fixture 内容。
-- 不自行设置 client ID 长度或 UTF-8 字节限制。
-- 不在 Queue 满时自动淘汰消息。
-- 不在 cleanup timeout 后清空状态并宣称成功。
-- 不把依赖错误转换为空结果、旧状态、字符串 `"error"` 或成功 EoS。

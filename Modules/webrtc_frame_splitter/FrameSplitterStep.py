@@ -270,21 +270,34 @@ class FrameSplitterStep(BaseProcessingStep):
     # ── Clock-driven run loop (overrides BaseProcessingStep.run) ──
 
     def run(self):
-        while True:
-            # _killed is set by check_cancel (called here, in the paused
-            # wait, and every clock tick) when a kill verb arrives
-            self.check_cancel()
-            if self._killed:
-                self.dispose()
-                break
+        while not self._killed:
+            try:
+                # _killed is set by check_cancel (called here, in the paused
+                # wait, and every clock tick) when a kill verb arrives
+                self.check_cancel()
+                if self._killed:
+                    break
 
-            if not self._clock_running:
-                # Paused: wait for input like a normal module
-                self._wait_for_start()
-                continue
+                if not self._clock_running:
+                    # Paused: wait for input like a normal module
+                    self._wait_for_start()
+                    continue
 
-            # Active: run clock-driven output
-            self._run_clock()
+                # Active: run clock-driven output
+                self._run_clock()
+            except Exception as e:
+                self.logger.error(
+                    f"splitter run iteration failed; dropped current input: "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._group_buffer.clear()
+                self.current_timestamp = None
+        try:
+            self.dispose()
+        except Exception as e:
+            self.logger.error(
+                f"dispose failed: {type(e).__name__}: {e}"
+            )
 
     def _wait_for_start(self):
         """Block on input_queue waiting for connection_start signal.
@@ -345,65 +358,106 @@ class FrameSplitterStep(BaseProcessingStep):
         self._stats_content = 0
 
         while self._clock_running:
-            # Step 1: Control check (same as base)
-            # cancel: current_timestamp set and < cancel_timestamp →
-            #         custom_cancel clears buffer
-            # kill:   sets _killed → stop the clock; the outer run loop
-            #         disposes and exits
-            self.check_cancel()
-            if self._killed:
-                return
+            frame_counter_before = self._video_frame_counter
+            content_before = self._stats_content
+            silence_before = self._stats_silence
+            try:
+                # Step 1: Control check (same as base)
+                # cancel: current_timestamp set and < cancel_timestamp →
+                #         custom_cancel clears buffer
+                # kill:   sets _killed → stop the clock; the outer run loop
+                #         disposes and exits
+                self.check_cancel()
+                if self._killed:
+                    return
 
-            # Step 2+3: Fill buffer and extract one media group to send.
-            # Signals are forwarded inline; if buffer empties after a signal, refill.
-            group_to_send = None
-            while group_to_send is None:
-                if not self._group_buffer:
-                    self.current_timestamp = None  # previous input fully sent
-                    self._fill_buffer()
+                # Step 2+3: Fill buffer and extract one media group to send.
+                # Signals are forwarded inline; if buffer empties after a signal, refill.
+                group_to_send = None
+                while group_to_send is None:
+                    if not self._group_buffer:
+                        self.current_timestamp = None  # previous input fully sent
+                        self._fill_buffer()
 
-                if not self._group_buffer:
-                    break  # _fill_default should have filled, safety
+                    if not self._group_buffer:
+                        break  # _fill_default should have filled, safety
 
-                entry_type, entry = self._group_buffer.popleft()
-                if entry_type == "signal":
-                    self.output_queue.put(entry)  # forward signal immediately (json str)
-                    continue
-                # Media group: entry is a dict with "idle"/"active" markers; render now
-                self._render_group_videos(entry)
-                group_to_send = json.dumps(entry)
+                    entry_type, entry = self._group_buffer.popleft()
+                    if entry_type == "signal":
+                        self.output_queue.put(entry)  # forward signal immediately (json str)
+                        continue
+                    # Media group: entry is a dict with "idle"/"active" markers; render now
+                    self._render_group_videos(entry)
+                    group_to_send = json.dumps(entry)
 
-            # Step 3: Send the media group as soon as it is ready. Timing
-            # variation is absorbed by the gateway's output buffer.
-            if group_to_send is not None:
-                self.output_queue.put(group_to_send)
+                # Step 3: Send the media group as soon as it is ready. Timing
+                # variation is absorbed by the gateway's output buffer.
+                if group_to_send is not None:
+                    self.output_queue.put(group_to_send)
+            except Exception as e:
+                self.logger.error(
+                    f"splitter tick failed; sending default group: "
+                    f"{type(e).__name__}: {e}"
+                )
+                # The buffered entries belong to the current input. Discard
+                # them together, and restore numbering because no media group
+                # from this tick was sent.
+                self._group_buffer.clear()
+                self.current_timestamp = None
+                self._video_frame_counter = frame_counter_before
+                self._stats_content = content_before
+                self._stats_silence = silence_before
+                if self._killed:
+                    return
+                try:
+                    self._fill_default()
+                    _, fallback = self._group_buffer.popleft()
+                    self._render_group_videos(fallback)
+                    self.output_queue.put(json.dumps(fallback))
+                except Exception as fallback_error:
+                    self.logger.error(
+                        f"splitter default group failed: "
+                        f"{type(fallback_error).__name__}: {fallback_error}"
+                    )
+                    self._group_buffer.clear()
+                    self.current_timestamp = None
+                    self._video_frame_counter = frame_counter_before
+                    self._stats_content = content_before
+                    self._stats_silence = silence_before
 
             group_index += 1
 
             # Wait for the start of the next group (absolute time, no drift).
             # Processing therefore starts on the tick; it is never prefetched
             # and held locally while waiting for its send time.
-            next_tick = clock_start + group_index * self._group_period
-            remaining = next_tick - time.time()
-            if remaining > 0:
-                time.sleep(remaining)
+            try:
+                next_tick = clock_start + group_index * self._group_period
+                remaining = next_tick - time.time()
+                if remaining > 0:
+                    time.sleep(remaining)
 
-            jitter_ms = (time.time() - next_tick) * 1000
-            if abs(jitter_ms) > abs(_max_jitter_ms):
-                _max_jitter_ms = jitter_ms
+                jitter_ms = (time.time() - next_tick) * 1000
+                if abs(jitter_ms) > abs(_max_jitter_ms):
+                    _max_jitter_ms = jitter_ms
 
-            if group_index % _si == 0:
-                elapsed = time.time() - clock_start
-                self.logger.info(
-                    f"STATS:splitter t={elapsed:.1f}s idx={group_index} "
-                    f"gbuf={len(self._group_buffer)} "
-                    f"qout={self.output_queue.qsize()} "
-                    f"content={self._stats_content} silence={self._stats_silence} "
-                    f"jitter_max={_max_jitter_ms:.1f}ms"
+                if group_index % _si == 0:
+                    elapsed = time.time() - clock_start
+                    self.logger.info(
+                        f"STATS:splitter t={elapsed:.1f}s idx={group_index} "
+                        f"gbuf={len(self._group_buffer)} "
+                        f"qout={self.output_queue.qsize()} "
+                        f"content={self._stats_content} "
+                        f"silence={self._stats_silence} "
+                        f"jitter_max={_max_jitter_ms:.1f}ms"
+                    )
+                    _max_jitter_ms = 0.0
+                    self._stats_silence = 0
+                    self._stats_content = 0
+            except Exception as e:
+                self.logger.error(
+                    f"splitter clock update failed: "
+                    f"{type(e).__name__}: {e}"
                 )
-                _max_jitter_ms = 0.0
-                self._stats_silence = 0
-                self._stats_content = 0
 
     def _fill_buffer(self):
         """Fill buffer when empty. Standard input flow: read from input_queue,

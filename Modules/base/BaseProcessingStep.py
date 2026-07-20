@@ -417,15 +417,20 @@ class BaseProcessingStep:
         pass
 
     def run(self):
-        while True:
-            # Drain control verbs before every dequeue; a kill (set by
-            # check_cancel, possibly mid-process at a polling point) exits.
-            self.check_cancel()
-            if self._killed:
-                self.dispose()
-                break
+        while not self._killed:
             try:
-                data = self.input_queue.get(timeout=TIMEOUT)
+                # The whole iteration shares one error boundary. queue.Empty
+                # is the normal no-input branch; custom_update still runs
+                # inside the outer boundary so its failures cannot kill the
+                # node thread.
+                self.check_cancel()
+                if self._killed:
+                    break
+                try:
+                    data = self.input_queue.get(timeout=TIMEOUT)
+                except queue.Empty:
+                    self.custom_update()
+                    continue
                 data = json.loads(data)
 
                 # Destination check first: forward pass-through messages immediately
@@ -488,10 +493,18 @@ class BaseProcessingStep:
                                  level=self.CONTENT_LOG_LEVEL)
                 self.process(filtered_data, pass_data)
                 self.current_timestamp = None
-            except queue.Empty:
-                self.custom_update()
             except Exception as e:
-                self.logger.error(f"{e}")
+                self.logger.error(
+                    f"run iteration failed; dropped current message: "
+                    f"{type(e).__name__}: {e}"
+                )
+                self.current_timestamp = None
+        try:
+            self.dispose()
+        except Exception as e:
+            self.logger.error(
+                f"dispose failed: {type(e).__name__}: {e}"
+            )
 
     def _relay_caught(self, data, signal):
         """Relay an arriving signal along its pass declaration: one copy,

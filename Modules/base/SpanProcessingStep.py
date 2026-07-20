@@ -62,15 +62,20 @@ class SpanProcessingStep(BaseProcessingStep):
             self.end_span()
 
     def run(self):
-        while True:
-            # Drain control verbs before every dequeue; a kill (set by
-            # check_cancel, possibly mid-process at a polling point) exits.
-            self.check_cancel()
-            if self._killed:
-                self.dispose()
-                break
+        while not self._killed:
             try:
-                data = self.input_queue.get(timeout=TIMEOUT)
+                # The whole iteration shares one error boundary. queue.Empty
+                # is the normal timer/update branch; an update failure is
+                # handled like any other iteration failure instead of ending
+                # the thread.
+                self.check_cancel()
+                if self._killed:
+                    break
+                try:
+                    data = self.input_queue.get(timeout=TIMEOUT)
+                except queue.Empty:
+                    self.custom_update()
+                    continue
                 data = json.loads(data)
 
                 # Destination check first: forward pass-through messages immediately
@@ -127,7 +132,27 @@ class SpanProcessingStep(BaseProcessingStep):
                 # Don't reset current_timestamp — span_process manages it
                 # via start_span() / end_span()
 
-            except queue.Empty:
-                self.custom_update()
             except Exception as e:
-                self.logger.error(f"{e}")
+                self.logger.error(
+                    f"run iteration failed; dropped current message: "
+                    f"{type(e).__name__}: {e}"
+                )
+                failed_timestamp = self.current_timestamp
+                if not self._killed:
+                    try:
+                        self.on_span_cancel({
+                            "signal": "error",
+                            "timestamp": failed_timestamp,
+                        })
+                    except Exception as cleanup_error:
+                        self.logger.error(
+                            f"span cleanup failed: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
+                self.end_span()
+        try:
+            self.dispose()
+        except Exception as e:
+            self.logger.error(
+                f"dispose failed: {type(e).__name__}: {e}"
+            )
