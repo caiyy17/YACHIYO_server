@@ -23,6 +23,7 @@ import os
 # Needed for backpressure mode, which builds pipelines directly from Modules.
 # Kept at module level to mirror the original test_backpressure.py behavior.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import requests
 import asyncio
@@ -35,6 +36,7 @@ import statistics
 import threading
 import logging
 from queue import Queue, Empty
+from websockets.exceptions import InvalidStatus
 
 from Modules.base.BaseProcessingStep import BaseProcessingStep
 
@@ -43,268 +45,188 @@ from Modules.base.BaseProcessingStep import BaseProcessingStep
 # MODE: concurrent  (from test/test_concurrent.py)
 # ══════════════════════════════════════════════════════════════════════════
 
-# FastAPI server address
 server_url = "http://localhost:8910"
 websocket_url = "ws://localhost:8910/ws"
+REQUEST_TIMEOUT = 30
 
 
-# Test POST request for client registration
-def test_post_register(client_id):
-    url = f"{server_url}/register/"
-    data = {"client_id": client_id}
-    headers = {
-        "Content-Type": "application/json"
-    }  # Content-Type header must be set to application/json when sending JSON data
+def client_log_path(client_id):
+    return os.path.join(PROJECT_ROOT, "logs", f"client_{client_id}.log")
+
+
+def request_json(method, path, expected=200, timeout=REQUEST_TIMEOUT, **kwargs):
+    response = requests.request(
+        method, f"{server_url}{path}", timeout=timeout, **kwargs
+    )
+    if response.status_code != expected:
+        raise AssertionError(
+            f"{method} {path}: expected {expected}, got "
+            f"{response.status_code}: {response.text[:300]}"
+        )
     try:
-        response = requests.post(
-            url, json=data, headers=headers
-        )  # Use json parameter to send JSON data
-        if response.status_code == 200:
-            print(f"POST /register/: {response.json()}")
-        else:
-            print(f"POST /register/ failed: {response.status_code}, {response.text}")
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        return response.json()
+    except ValueError as exc:
+        raise AssertionError(f"{method} {path}: response is not JSON") from exc
 
 
-# Test client unregistration
-def test_post_unregister(client_id):
-    url = f"{server_url}/unregister/"
-    data = {"client_id": client_id}
-    headers = {"Content-Type": "application/json"}
+def cleanup_client(client_id):
+    result = request_json(
+        "POST", "/unregister/", json={"client_id": client_id}
+    )
+    if result.get("status") not in ("unregistered", "not registered"):
+        raise AssertionError(f"Unexpected unregister response: {result}")
+    clients = request_json("GET", "/clients/").get("clients")
+    if not isinstance(clients, list):
+        raise AssertionError("GET /clients/: missing clients list")
+    if client_id in clients:
+        raise AssertionError(f"Client {client_id} remained registered after cleanup")
+
+
+async def expect_websocket_rejected(client_id, status_code):
     try:
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200:
-            print(f"POST /unregister/: {response.json()}")
-        else:
-            print(f"POST /unregister/ failed: {response.status_code}, {response.text}")
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        websocket = await websockets.connect(f"{websocket_url}/{client_id}")
+    except InvalidStatus as exc:
+        actual = exc.response.status_code
+        if actual != status_code:
+            raise AssertionError(
+                f"WebSocket expected HTTP {status_code}, got {actual}"
+            ) from exc
+        return
+    await websocket.close()
+    raise AssertionError("WebSocket connection unexpectedly succeeded")
 
 
-# Test unregistering an unregistered client
-def test_post_unregister_unregistered(client_id):
-    url = f"{server_url}/unregister/"
-    data = {"client_id": client_id}
-    headers = {"Content-Type": "application/json"}
+async def send_text_and_wait_for_eos(websocket):
+    await websocket.send(json.dumps({
+        "text": "你好，请回复测试成功。",
+        "timestamp": time.time(),
+    }))
+    text_parts = []
+    deadline = asyncio.get_running_loop().time() + 90
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise AssertionError("WebSocket response did not reach EoS")
+        raw = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise AssertionError("WebSocket response must be a JSON object")
+        if data.get("text"):
+            text_parts.append(data["text"])
+        if data.get("signal") == "EoS":
+            break
+    if not "".join(text_parts).strip():
+        raise AssertionError("WebSocket reached EoS without response text")
+
+
+async def verify_timestamp_semantics(websocket, client_id):
+    await websocket.send(json.dumps({
+        "text": "nan timestamp probe",
+        "timestamp": float("nan"),
+    }))
+    await asyncio.sleep(0.5)
+    log = request_json("GET", f"/logs/{client_id}")["log_content"]
+    invalid_count = log.count("missing/invalid timestamp")
+    if invalid_count != 1 or "nan timestamp probe" not in log:
+        raise AssertionError("NaN timestamp was not rejected at the WS entry")
+
+    await websocket.send(json.dumps({
+        "signal": "cancel",
+        "timestamp": float("inf"),
+    }))
+    await asyncio.sleep(1.5)
+    log = request_json("GET", f"/logs/{client_id}")["log_content"]
+    if log.count("missing/invalid timestamp") != invalid_count:
+        raise AssertionError("+Inf timestamp was incorrectly rejected")
+    if "received cancel signal" not in log:
+        raise AssertionError("+Inf cancel did not enter the pipeline")
+
+
+async def concurrent_main():
+    client_id = f"connect_test_{time.time_ns()}"
+    log_path = client_log_path(client_id)
+    websocket = None
     try:
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 400:
-            print(f"POST /unregister/ unregistered client: {response.json()}")
-        else:
-            print(f"POST /unregister/ failed: {response.status_code}, {response.text}")
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        request_json("GET", f"/logs/{client_id}", expected=404)
+        register = request_json(
+            "POST", "/register/", json={"client_id": client_id}
+        )
+        if register.get("status") != "registered":
+            raise AssertionError(f"Unexpected register response: {register}")
 
+        clients = request_json("GET", "/clients/").get("clients", [])
+        if client_id not in clients:
+            raise AssertionError("Registered client is missing from /clients/")
+        request_json("GET", f"/clients/{client_id}")
 
-# Test getting all clients list
-def test_get_clients():
-    url = f"{server_url}/clients/"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            print(f"GET /clients/: {response.json()}")
-        else:
-            print(f"GET /clients/ failed: {response.status_code}, {response.text}")
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            for index in range(205):
+                log_file.write(f"tail-probe-{index:03d}\n")
+        log_lines = request_json("GET", f"/logs/{client_id}")[
+            "log_content"
+        ].splitlines()
+        expected_lines = [f"tail-probe-{index:03d}" for index in range(5, 205)]
+        if log_lines != expected_lines:
+            raise AssertionError("Log endpoint did not return the exact last 200 lines")
 
+        init = request_json(
+            "POST", f"/init_pipeline/{client_id}", timeout=300,
+            json={"config": "unity_chan_text"},
+        )
+        if init.get("status") != "initialized":
+            raise AssertionError(f"Unexpected init response: {init}")
 
-# Test getting single client info
-def test_get_client(client_id):
-    url = f"{server_url}/clients/{client_id}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            print(f"GET /clients/{client_id}: {response.json()}")
-        else:
-            print(
-                f"GET /clients/{client_id} failed: {response.status_code}, {response.text}"
-            )
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        websocket = await websockets.connect(
+            f"{websocket_url}/{client_id}", max_size=None
+        )
+        await expect_websocket_rejected(client_id, 409)
+        await send_text_and_wait_for_eos(websocket)
+        await websocket.close()
+        websocket = None
 
+        await expect_websocket_rejected(client_id, 409)
+        request_json(
+            "POST", f"/init_pipeline/{client_id}", timeout=300,
+            json={"config": "unity_chan_text"},
+        )
+        websocket = await websockets.connect(
+            f"{websocket_url}/{client_id}", max_size=None
+        )
 
-# Test pipeline initialization
-def test_init_pipeline(client_id, pipeline_config, force=False):
-    url = f"{server_url}/init_pipeline/{client_id}"
-    config_data = {"config": pipeline_config, "force": force}
-    headers = {"Content-Type": "application/json"}
-    try:
-        response = requests.post(url, json=config_data, headers=headers)
-        if response.status_code == 200:
-            print(f"POST /init_pipeline/: {response.json()}")
-        else:
-            print(
-                f"POST /init_pipeline/ failed: {response.status_code}, {response.text}"
-            )
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-
-
-# Test getting client logs
-def test_get_client_log(client_id):
-    url = f"{server_url}/logs/{client_id}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            print(f"GET /logs/{client_id}: {response.json()}")
-        else:
-            print(
-                f"GET /logs/{client_id} failed: {response.status_code}, {response.text}"
-            )
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-
-
-# Test WebSocket connection
-async def test_websocket(
-    client_id, process_func, messages=[], repeat=1, interval=0, timeout=10
-):
-    start = time.time()
-    try:
-        async with websockets.connect(
-            f"{websocket_url}/{client_id}", max_size=1024 * 1024 * 16
-        ) as websocket:
-            # Send messages to server
-            print(f"start time: {time.time() - start}")
-            for i in range(repeat):
-                for message in messages:
-                    await websocket.send(message)
-                    print(f"send time {i}: {time.time() - start}")
-                    # Truncate to first 100 characters if too long
-                    if len(message) > 100:
-                        message = message[:100] + "..."
-                    print(f"Sent: {message}")
-                    await asyncio.sleep(interval)
-
-            # Receive server responses
-            index = 0
-            while True:
-                response = await asyncio.wait_for(websocket.recv(), timeout=timeout)
-                print(f"Receive time {index} : {time.time() - start}")
-                index += 1
-                try:
-                    process_func(response)
-                except Exception as e:
-                    print(f"Error processing response: {e}")
-                # Truncate to first 100 characters if too long
-                if len(response) > 100:
-                    response = response[:100] + "..."
-                print(f"Received: {response}")
-    except asyncio.TimeoutError:
-        print("WebSocket receive timeout.")
-
-    except websockets.exceptions.ConnectionClosedError as e:
-        print(f"WebSocket connection closed unexpectedly: {e}")
-    except websockets.exceptions.InvalidStatusCode as e:
-        print(f"WebSocket server returned an invalid status code: {e}")
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+        request_json(
+            "POST", f"/init_pipeline/{client_id}", timeout=300,
+            json={"config": "unity_chan_text"},
+        )
+        await asyncio.wait_for(websocket.wait_closed(), timeout=30)
+        websocket = await websockets.connect(
+            f"{websocket_url}/{client_id}", max_size=None
+        )
+        await send_text_and_wait_for_eos(websocket)
+        await verify_timestamp_semantics(websocket, client_id)
+        print(
+            "Server API, log tail, WebSocket rejection, re-init and "
+            "timestamp semantics: PASS"
+        )
+        return True
+    except Exception as exc:
+        print(f"Server lifecycle test failed: {exc}")
+        return False
     finally:
-        print(f"WebSocket connection closed for client {client_id}.")
+        try:
+            if websocket is not None:
+                await websocket.close()
+        finally:
+            try:
+                cleanup_client(client_id)
+            finally:
+                try:
+                    os.unlink(log_path)
+                except FileNotFoundError:
+                    pass
 
 
 def run_concurrent():
-    # Remove test/tmp directory if it exists
-    if os.path.exists("test/tmp"):
-        os.system("rm -rf test/tmp")
-    os.mkdir("test/tmp")
-
-    pipeline_config = "unity_chan_default"
-    messages = []
-
-    # Add messages
-    audio_data = base64.b64encode(open("test/test_voice.wav", "rb").read()).decode(
-        "utf-8"
-    )
-    messages.append(json.dumps({"text": "你好，世界！", "audio_file": audio_data, "timestamp": time.time()}))
-
-    # messages.append(json.dumps({"signal": "cancel", "timestamp": time.time()}))
-    # messages.append(json.dumps({"audio_file": audio_data, "timestamp": time.time()}))
-
-    client_id = "test-id-0"
-    force = True
-
-    # Test POST register endpoint
-    test_post_register(client_id)
-
-    # Test getting clients list
-    test_get_clients()
-
-    # Test getting single client
-    test_get_client(client_id)
-
-    # Test pipeline initialization
-    start = time.time()
-    test_init_pipeline(client_id, pipeline_config, force=force)
-    print(f"init time: {time.time() - start}")
-
-    # Test getting client logs
-    # test_get_client_log(client_id)
-
-    # Test WebSocket connection
-    def process_func(response):
-        response = json.loads(response)
-        timestamp = time.time()
-        # Keep 4 decimal places
-
-        # Save audio data to file
-        try:
-            audio_data = response["audio_data"]
-            audio_data = base64.b64decode(audio_data)
-            with open(f"test/tmp/output_{timestamp:.4f}.wav", "wb") as file:
-                file.write(audio_data)
-        except Exception as e:
-            print(f"Error saving audio file: {e}")
-
-        # Save response to file
-        try:
-            with open(f"test/tmp/response_{timestamp:.4f}.json", "w") as file:
-                json.dump(response, file, ensure_ascii=False, indent=4)
-        except Exception as e:
-            print(f"Error saving response file: {e}")
-
-    asyncio.run(
-        test_websocket(
-            client_id, process_func, messages, repeat=1, interval=0, timeout=10
-        )
-    )
-
-    # # Test client unregistration
-    # test_post_unregister(client_id)
-
-    # # Test unregistering an unregistered client
-    # test_post_unregister_unregistered("unregistered-client")
-
-    # num_clients = 10
-    # client_ids = []
-    # for i in range(num_clients):
-    #     client_ids.append(f"test-id-{i + 1}")
-
-    # # Test POST register for multiple clients
-    # for i in range(num_clients):
-    #     client_id = client_ids[i]
-    #     test_post_register(client_id)
-    #     test_get_clients()
-    #     start = time.time()
-    #     test_init_pipeline(client_id, pipeline_config, force=True)
-    #     print(f"init time: {time.time() - start}")
-
-    # async def main():
-    #     tasks = []
-    #     for client_id in client_ids:
-    #         print(f"Start testing WebSocket for client {client_id}.")
-    #         task = asyncio.create_task(
-    #             test_websocket(
-    #                 client_id, process_func, messages, repeat=1, interval=0, timeout=5
-    #             )
-    #         )
-    #         await asyncio.sleep(0.1)
-    #         tasks.append(task)
-    #     await asyncio.gather(*tasks)
-
-    # asyncio.run(main())
+    return asyncio.run(concurrent_main())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -317,24 +239,21 @@ ROUNDS = 3
 
 
 def load_audio():
-    with open("test/test_voice.wav", "rb") as f:
+    with open(os.path.join(PROJECT_ROOT, "test", "test_voice.wav"), "rb") as f:
         return base64.b64encode(f.read()).decode()
 
 
 async def run_ws_pipeline(client_id, config_name, audio_b64, timeout=20):
     """Run a WebSocket pipeline and return timing data."""
-    requests.post(f"{SERVER}/register/", json={"client_id": client_id})
-    requests.post(
-        f"{SERVER}/init_pipeline/{client_id}",
-        json={"config": config_name, "force": True},
-    )
-    await asyncio.sleep(2)  # wait for init (including TTS model loading)
-
-    msg = json.dumps({"audio_file": audio_b64, "timestamp": time.time()})
-    start = time.time()
-    results = []
-
     try:
+        request_json("POST", "/register/", json={"client_id": client_id})
+        request_json(
+            "POST", f"/init_pipeline/{client_id}", timeout=300,
+            json={"config": config_name},
+        )
+        msg = json.dumps({"audio_file": audio_b64, "timestamp": time.time()})
+        start = time.time()
+        results = []
         async with websockets.connect(
             f"{WS_URL}/{client_id}", max_size=16 * 1024 * 1024
         ) as ws:
@@ -350,14 +269,18 @@ async def run_ws_pipeline(client_id, config_name, audio_b64, timeout=20):
                 )
                 if sig == "EoS":
                     break
-    except asyncio.TimeoutError:
-        pass
-
-    # Parse log for per-stage timing
-    log = requests.get(f"{SERVER}/logs/{client_id}").json().get("log_content", "")
-    requests.post(f"{SERVER}/unregister/", json={"client_id": client_id})
-
-    return results, log
+        if not any(result["has_audio"] for result in results):
+            raise AssertionError(f"{config_name}: no audio output")
+        log = request_json("GET", f"/logs/{client_id}").get("log_content", "")
+        return results, log
+    finally:
+        try:
+            cleanup_client(client_id)
+        finally:
+            try:
+                os.unlink(client_log_path(client_id))
+            except FileNotFoundError:
+                pass
 
 
 def parse_log_timing(log):
@@ -419,7 +342,7 @@ def compute_latencies(timing):
 async def benchmark_ws(config_name, label):
     audio_b64 = load_audio()
     all_latencies = []
-    all_e2e = []
+    run_id = time.time_ns()
 
     print(f"\n{'='*60}")
     print(f"  {label}")
@@ -427,7 +350,7 @@ async def benchmark_ws(config_name, label):
     print(f"{'='*60}")
 
     for i in range(ROUNDS):
-        client_id = f"bench_{config_name}_{i}"
+        client_id = f"bench_{config_name}_{run_id}_{i}"
         results, log = await run_ws_pipeline(client_id, config_name, audio_b64)
 
         # E2E from client perspective
@@ -438,6 +361,10 @@ async def benchmark_ws(config_name, label):
                 first_audio_time = r["time"]
             if r["signal"] == "EoS":
                 eos_time = r["time"]
+        if first_audio_time is None or eos_time is None:
+            raise AssertionError(
+                f"{config_name} round {i + 1}: missing audio or EoS"
+            )
 
         # Per-stage from log
         timing = parse_log_timing(log)
@@ -473,122 +400,32 @@ async def benchmark_ws(config_name, label):
     return avg
 
 
-async def benchmark_webrtc():
-    """Test WebRTC pipeline by initializing and sending via WebSocket (measures server-side latency)."""
-    audio_b64 = load_audio()
-    print(f"\n{'='*60}")
-    print(f"  WebRTC Pipeline (unity_chan_webrtc)")
-    print(f"  Config: unity_chan_webrtc, Rounds: {ROUNDS}")
-    print(f"  Note: WebRTC-specific framing overhead measured via log")
-    print(f"{'='*60}")
-
-    # For WebRTC, we use the same WebSocket test but with the webrtc config
-    # This tests the server-side pipeline including AudioCollector and FrameSplitter
-    # The actual WebRTC transport latency would need a real WebRTC client
-    all_latencies = []
-
-    for i in range(ROUNDS):
-        client_id = f"bench_webrtc_{i}"
-        results, log = await run_ws_pipeline(
-            client_id, "unity_chan_webrtc", audio_b64, timeout=25
-        )
-
-        timing = parse_log_timing(log)
-        lat = compute_latencies(timing)
-
-        # Check for FrameSplitter timing
-        for line in log.split("\n"):
-            ts_match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})", line)
-            if not ts_match:
-                continue
-            ts_str = ts_match.group(1)
-            from datetime import datetime
-            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S,%f").timestamp()
-            if "FrameSplitterStep: processing data" in line:
-                if "frame_split_start" not in timing:
-                    timing["frame_split_start"] = ts
-            elif "FrameSplitterStep" in line and "output data" in line:
-                if "frame_split_first_end" not in timing:
-                    timing["frame_split_first_end"] = ts
-
-        if "frame_split_start" in timing and "frame_split_first_end" in timing:
-            lat["frame_split"] = timing["frame_split_first_end"] - timing["frame_split_start"]
-
-        first_output = None
-        for r in results:
-            if r["has_audio"] or (r["signal"] and r["signal"] not in ("SoS", "")):
-                if first_output is None and r["has_audio"]:
-                    first_output = r["time"]
-            if r["signal"] == "EoS":
-                lat["e2e_total"] = r["time"]
-        lat["e2e_first_audio"] = first_output
-
-        all_latencies.append(lat)
-
-        print(f"\n  Round {i+1}:")
-        print(f"    ASR:              {lat.get('asr', 0)*1000:7.0f} ms")
-        print(f"    LLM first token:  {lat.get('llm_first_token', 0)*1000:7.0f} ms")
-        print(f"    TTS 1st sentence: {lat.get('tts_first_sentence', 0)*1000:7.0f} ms")
-        print(f"    FrameSplitter:    {lat.get('frame_split', 0)*1000:7.0f} ms")
-        print(f"    Server 1st audio: {lat.get('first_audio_server', 0)*1000:7.0f} ms")
-
-    # Averages
-    print(f"\n  --- Average ({ROUNDS} rounds) ---")
-    keys = ["asr", "llm_first_token", "llm_total", "tts_first_sentence",
-            "frame_split", "first_audio_server", "e2e_first_audio", "e2e_total"]
-    for k in keys:
-        vals = [l.get(k, 0) for l in all_latencies if l.get(k)]
-        if vals:
-            avg = statistics.mean(vals)
-            std = statistics.stdev(vals) if len(vals) > 1 else 0
-            print(f"    {k:22s}: {avg*1000:7.0f} ms (±{std*1000:.0f})")
-
-
 async def benchmark_multi_user():
     """Test concurrent users sharing services."""
     audio_b64 = load_audio()
-    N = 3
+    user_count = 3
+    run_id = time.time_ns()
     print(f"\n{'='*60}")
-    print(f"  Multi-User Concurrency Test ({N} users)")
+    print(f"  Multi-User Concurrency Test ({user_count} users)")
     print(f"{'='*60}")
 
-    # Register all clients
-    for i in range(N):
-        requests.post(f"{SERVER}/register/", json={"client_id": f"multi_{i}"})
-        requests.post(
-            f"{SERVER}/init_pipeline/multi_{i}",
-            json={"config": "unity_chan_default", "force": True},
-        )
-    await asyncio.sleep(2)
-
     async def single_user(idx):
-        client_id = f"multi_{idx}"
-        msg = json.dumps({"audio_file": audio_b64, "timestamp": time.time()})
-        start = time.time()
-        first_audio = None
-        eos = None
-        try:
-            async with websockets.connect(
-                f"{WS_URL}/{client_id}", max_size=16 * 1024 * 1024
-            ) as ws:
-                await ws.send(msg)
-                while True:
-                    r = await asyncio.wait_for(ws.recv(), timeout=30)
-                    elapsed = time.time() - start
-                    d = json.loads(r)
-                    if "audio_data" in d and len(d.get("audio_data", "")) > 100:
-                        if first_audio is None:
-                            first_audio = elapsed
-                    if d.get("signal") == "EoS":
-                        eos = elapsed
-                        break
-        except asyncio.TimeoutError:
-            pass
-        return {"user": idx, "first_audio": first_audio, "total": eos}
+        client_id = f"multi_{run_id}_{idx}"
+        results, _ = await run_ws_pipeline(
+            client_id, "unity_chan_default", audio_b64, timeout=60
+        )
+        first_audio = next(
+            result["time"] for result in results if result["has_audio"]
+        )
+        total = next(
+            result["time"] for result in results
+            if result["signal"] == "EoS"
+        )
+        return {"user": idx, "first_audio": first_audio, "total": total}
 
-    # Run all users concurrently
-    tasks = [single_user(i) for i in range(N)]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(
+        *(single_user(index) for index in range(user_count))
+    )
 
     for r in results:
         fa = r["first_audio"]
@@ -599,9 +436,7 @@ async def benchmark_multi_user():
     avg_tot = statistics.mean([r["total"] for r in results if r["total"]])
     print(f"  Average: first_audio={avg_fa*1000:.0f}ms, total={avg_tot*1000:.0f}ms")
 
-    # Cleanup
-    for i in range(N):
-        requests.post(f"{SERVER}/unregister/", json={"client_id": f"multi_{i}"})
+    return True
 
 
 async def latency_main():
@@ -620,10 +455,7 @@ async def latency_main():
         "demo", "Test 2: demo (full OpenAI: Whisper + GPT + TTS-1)"
     )
 
-    # 3. WebRTC pipeline
-    await benchmark_webrtc()
-
-    # 4. Multi-user concurrency
+    # WebRTC transport has its own end-to-end test script.
     await benchmark_multi_user()
 
     # Summary table
@@ -637,10 +469,11 @@ async def latency_main():
         local_v = avg_local.get(k, 0) * 1000
         openai_v = avg_openai.get(k, 0) * 1000
         print(f"  {k:<22} {local_v:>10.0f} {openai_v:>10.0f}")
+    return True
 
 
 def run_latency():
-    asyncio.run(latency_main())
+    return asyncio.run(latency_main())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -707,6 +540,7 @@ class QueueMonitor:
     def stop(self):
         self._stop.set()
         self._thread.join(timeout=2)
+        return not self._thread.is_alive()
 
     def _run(self):
         while not self._stop.is_set():
@@ -838,7 +672,7 @@ def test_basic_backpressure():
     send_input(p, "hello")
     results = collect_outputs(p["send_queue"])
     elapsed = time.time() - t0
-    monitor.stop()
+    monitor_stopped = monitor.stop()
 
     signals = [r for r in results if r.get("signal")]
     data_msgs = [r for r in results if not r.get("signal")]
@@ -859,6 +693,9 @@ def test_basic_backpressure():
         ok = False
     if sos != 1 or eos != 1:
         print(f"  FAIL: expected 1 SoS + 1 EoS")
+        ok = False
+    if not monitor_stopped:
+        print("  FAIL: queue monitor thread is still alive")
         ok = False
 
     alive = stop_pipeline(p)
@@ -903,7 +740,7 @@ def test_no_backpressure_baseline():
 
     send_input(p, "hello")
     results = collect_outputs(p["send_queue"])
-    monitor.stop()
+    monitor_stopped = monitor.stop()
 
     data_msgs = [r for r in results if not r.get("signal")]
 
@@ -915,7 +752,11 @@ def test_no_backpressure_baseline():
         print(f"  FAIL: expected {NUM_CHUNKS} data msgs, got {len(data_msgs)}")
         ok = False
     if monitor.max_size <= 3:
-        print(f"  NOTE: queue peak only {monitor.max_size}, expected > 3 without backpressure")
+        print(f"  FAIL: queue peak only {monitor.max_size}, expected > 3 without backpressure")
+        ok = False
+    if not monitor_stopped:
+        print("  FAIL: queue monitor thread is still alive")
+        ok = False
 
     alive = stop_pipeline(p)
     if alive:
@@ -957,16 +798,51 @@ def test_cancel_during_backpressure():
 
     # Let it run, then cancel
     time.sleep(1.5)
+    backpressured = p["queues"][1].full()
+    before_cancel = []
+    while True:
+        try:
+            before_cancel.append(json.loads(p["send_queue"].get_nowait()))
+        except Empty:
+            break
     send_cancel(p, ts + 0.001)
 
-    results = collect_outputs(p["send_queue"], timeout=8)
-    data_msgs = [r for r in results if not r.get("signal")]
+    # Allow the one item already inside SlowConsumer.process() to finish,
+    # then require a full quiet window.  Merely checking "fewer than all 50"
+    # can pass even when cancel is ignored because this consumer is slow.
+    settle_deadline = time.monotonic() + 1.2
+    settled = []
+    while time.monotonic() < settle_deadline:
+        try:
+            settled.append(json.loads(p["send_queue"].get(timeout=0.1)))
+        except Empty:
+            pass
 
-    print(f"  Data messages:     {len(data_msgs)} (expected << 50)")
+    quiet_deadline = time.monotonic() + 1.2
+    late = []
+    while time.monotonic() < quiet_deadline:
+        try:
+            late.append(json.loads(p["send_queue"].get(timeout=0.1)))
+        except Empty:
+            pass
+
+    print(f"  Settle outputs:    {len(settled)}")
+    print(f"  Late outputs:      {len(late)} (expected 0)")
 
     ok = True
-    if len(data_msgs) >= 50:
-        print(f"  FAIL: cancel didn't reduce output")
+    if not backpressured:
+        print("  FAIL: bounded queue was not full before cancel")
+        ok = False
+    if not any(not item.get("signal") for item in before_cancel):
+        print("  FAIL: no data was processed before cancel")
+        ok = False
+    if late:
+        print("  FAIL: output continued after cancel settled")
+        ok = False
+
+    stopped_by_cancel = [t.name for t in p["threads"] if not t.is_alive()]
+    if stopped_by_cancel:
+        print(f"  FAIL: cancel stopped worker threads: {stopped_by_cancel}")
         ok = False
 
     alive = stop_pipeline(p)
@@ -1016,7 +892,7 @@ def test_multiple_inputs():
         time.sleep(0.05)
 
     results = collect_outputs(p["send_queue"], eos_count=NUM_INPUTS)
-    monitor.stop()
+    monitor_stopped = monitor.stop()
 
     data_msgs = [r for r in results if not r.get("signal")]
     eos_count = sum(1 for r in results if r.get("signal") == "EoS")
@@ -1034,6 +910,9 @@ def test_multiple_inputs():
         ok = False
     if monitor.max_size > MAX_Q:
         print(f"  FAIL: queue peak {monitor.max_size} > {MAX_Q}")
+        ok = False
+    if not monitor_stopped:
+        print("  FAIL: queue monitor thread is still alive")
         ok = False
 
     alive = stop_pipeline(p)
@@ -1088,7 +967,7 @@ def test_three_stage_pipeline():
 
     send_input(p, "hello")
     results = collect_outputs(p["send_queue"])
-    monitor.stop()
+    monitor_stopped = monitor.stop()
 
     data_msgs = [r for r in results if not r.get("signal")]
 
@@ -1101,6 +980,9 @@ def test_three_stage_pipeline():
         ok = False
     if monitor.max_size > MAX_Q:
         print(f"  FAIL: final queue peak {monitor.max_size} > {MAX_Q}")
+        ok = False
+    if not monitor_stopped:
+        print("  FAIL: queue monitor thread is still alive")
         ok = False
 
     alive = stop_pipeline(p)
@@ -1133,7 +1015,7 @@ def run_backpressure():
 
     all_pass = all(ok for _, ok in results)
     print(f"\n  {'All tests passed!' if all_pass else 'Some tests FAILED.'}")
-    sys.exit(0 if all_pass else 1)
+    return all_pass
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1142,26 +1024,43 @@ def run_backpressure():
 
 # Settings file holding the external service addresses (asr/llm/tts/...).
 SERVICES_SETTINGS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "configs", "settings", "settings.json",
+    PROJECT_ROOT, "configs", "settings", "settings.json",
 )
 SERVICES_TIMEOUT = 5  # seconds per probe
 
 
-def _probe_service(name, base_url, path):
-    """
-    Probe a single service. "UP" = any HTTP response was received (even 4xx/5xx).
-    "DOWN" = connection refused / timeout / DNS error / other request failure.
-
-    Returns a dict with keys: name, url, up, status, error, ms.
-    """
+def _probe_service(
+    name, base_url, path, *, method="GET", expected_status=200,
+    json_body=None, response_kind=None,
+):
+    """Probe one documented endpoint and validate its expected response."""
     url = base_url.rstrip("/") + path
     start = time.time()
     try:
-        resp = requests.get(url, timeout=SERVICES_TIMEOUT)
+        resp = requests.request(
+            method, url, json=json_body, timeout=SERVICES_TIMEOUT
+        )
         ms = (time.time() - start) * 1000
-        return {"name": name, "url": url, "up": True,
-                "status": resp.status_code, "error": None, "ms": ms}
+        error = None
+        if resp.status_code != expected_status:
+            error = f"expected HTTP {expected_status}"
+        elif response_kind:
+            try:
+                payload = resp.json()
+            except ValueError:
+                error = "response is not JSON"
+            else:
+                valid = {
+                    "models": isinstance(payload.get("data"), list),
+                    "data_query": payload.get("error") == "Dataset not loaded",
+                    "vad": payload.get("status") == "ok",
+                    "clients": isinstance(payload.get("clients"), list),
+                    "gateway": payload.get("status") == "running",
+                }[response_kind] if isinstance(payload, dict) else False
+                if not valid:
+                    error = f"invalid {response_kind} response"
+        return {"name": name, "url": url, "up": error is None,
+                "status": resp.status_code, "error": error, "ms": ms}
     except requests.exceptions.RequestException as e:
         ms = (time.time() - start) * 1000
         return {"name": name, "url": url, "up": False,
@@ -1179,7 +1078,7 @@ def run_services():
     print("  YACHIYO Service Connectivity Check")
     print("=" * 70)
 
-    # (name, base_url, probe_path) for every dependency to check.
+    # Keyword arguments describe the documented response for each dependency.
     probes = []
 
     # ── External services from settings.json ──────────────────────────
@@ -1188,7 +1087,25 @@ def run_services():
             settings = json.load(f)
     except Exception as e:
         print(f"  Failed to read settings: {SERVICES_SETTINGS_PATH}: {e}")
-        settings = {}
+        return False
+    if not isinstance(settings, dict):
+        print("  Failed to read settings: top-level value must be an object")
+        return False
+
+    required_urls = {
+        "asr": "qwen_asr_api",
+        "llm": "custom_api",
+        "tts": "qwen_tts_api",
+        "data_query": "data_api",
+        "motion_generation": "motion_api",
+        "vad": "vad_api",
+    }
+    for section, key in required_urls.items():
+        entries = settings.get(section)
+        value = entries.get(key) if isinstance(entries, dict) else None
+        if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+            print(f"  Missing service URL: {section}.{key}")
+            return False
 
     for section, entries in settings.items():
         if not isinstance(entries, dict):
@@ -1198,24 +1115,46 @@ def run_services():
             if not isinstance(value, str) or not value.startswith("http"):
                 continue
             url = value.rstrip("/")
-            # OpenAI-compatible services already end in /v1 -> probe /models.
-            # Others (data_query, motion) -> probe / (any HTTP response = UP).
-            path = "/models" if url.endswith("/v1") else "/"
-            probes.append((f"{section}.{key}", url, path))
+            options = {}
+            if url.endswith("/v1"):
+                path = "/models"
+                options["response_kind"] = "models"
+            elif section == "vad":
+                path = "/health"
+                options["response_kind"] = "vad"
+            elif section == "data_query":
+                path = "/query"
+                options.update({
+                    "method": "POST",
+                    "expected_status": 400,
+                    "json_body": {
+                        "dataset": "__health_probe__", "queries": ["health"]
+                    },
+                    "response_kind": "data_query",
+                })
+            else:
+                path = "/"
+            probes.append((f"{section}.{key}", url, path, options))
 
     # ── First-party servers (not in settings.json) ───────────────────
-    probes.append(("main_server", "http://localhost:8910", "/clients/"))
-    probes.append(("webrtc_server", "http://localhost:15168", "/status"))
+    probes.append((
+        "main_server", "http://localhost:8910", "/clients/",
+        {"response_kind": "clients"},
+    ))
+    probes.append((
+        "webrtc_server", "http://localhost:15168", "/status",
+        {"response_kind": "gateway"},
+    ))
 
     # ── Probe & report ───────────────────────────────────────────────
     results = []
     name_w = max((len(p[0]) for p in probes), default=12)
-    for name, base_url, path in probes:
-        r = _probe_service(name, base_url, path)
+    for name, base_url, path, options in probes:
+        r = _probe_service(name, base_url, path, **options)
         results.append(r)
         state = "UP  " if r["up"] else "DOWN"
         detail = (f"status={r['status']}" if r["up"]
-                  else f"error={r['error']}")
+                  else f"status={r['status']} error={r['error']}")
         print(f"  [{state}] {r['name']:<{name_w}}  {r['url']:<45} "
               f"{detail:<22} {r['ms']:6.0f} ms")
 
@@ -1232,7 +1171,7 @@ def run_services():
 # Dispatch
 # ══════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Consolidated connection/stress test harness."
     )
@@ -1246,12 +1185,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.mode == "services":
-        ok = run_services()
-        sys.exit(0 if ok else 1)
-    elif args.mode == "concurrent":
-        run_concurrent()
-    elif args.mode == "latency":
-        run_latency()
-    elif args.mode == "backpressure":
-        run_backpressure()
+    try:
+        if args.mode == "services":
+            return run_services()
+        if args.mode == "concurrent":
+            return run_concurrent()
+        if args.mode == "latency":
+            return run_latency()
+        return run_backpressure()
+    except Exception as exc:
+        print(f"{args.mode} test failed: {exc}")
+        return False
+
+
+if __name__ == "__main__":
+    raise SystemExit(0 if main() else 1)

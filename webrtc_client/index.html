@@ -99,6 +99,11 @@ let cameraStream = null;
 let canvasStream = null;
 let resampleRAF = null;
 let connected = false;
+let disconnecting = false;
+let shouldUnregister = false;
+let visibilityHandler = null;
+let ownedClientId = null;
+let ownedMainServer = null;
 
 const logEl = document.getElementById('log');
 function log(msg) {
@@ -116,6 +121,33 @@ function generateClientId() {
   // NOT crypto.randomUUID(): that requires a secure context (https/localhost)
   // and throws when the page is opened over plain http on a LAN IP.
   return 'web-' + Math.random().toString(36).slice(2, 10);
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 120000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {...options, signal: controller.signal});
+    const text = await response.text();
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch(e) {
+      throw new Error(`Invalid JSON response (HTTP ${response.status})`);
+    }
+    if (!response.ok) {
+      const detail = result?.detail ?? result?.error;
+      throw new Error(detail
+        ? (typeof detail === 'string' ? detail : JSON.stringify(detail))
+        : `HTTP ${response.status}`);
+    }
+    return result;
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error(`Request timed out after ${timeoutMs} ms`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Resample a video source to target fps via canvas
@@ -139,7 +171,7 @@ function startResample(source, w, h, fps) {
     resampleRAF = requestAnimationFrame(rafLoop);
   }
 
-  function onVisibility() {
+  visibilityHandler = function() {
     if (document.hidden) {
       // Tab hidden: stop rAF, start interval (throttled to ~1fps by browser, but
       // captureStream still outputs at target fps with repeated frames)
@@ -150,8 +182,8 @@ function startResample(source, w, h, fps) {
       if (resampleTimer) { clearInterval(resampleTimer); resampleTimer = null; }
       if (!resampleRAF) rafLoop();
     }
-  }
-  document.addEventListener('visibilitychange', onVisibility);
+  };
+  document.addEventListener('visibilitychange', visibilityHandler);
 
   rafLoop();
   canvasStream = canvas.captureStream(fps);
@@ -181,6 +213,9 @@ async function getVideoTrack(w, h, fps) {
 }
 
 async function connect() {
+  const connectBtn = document.getElementById('connectBtn');
+  if (connectBtn.disabled) return;
+  connectBtn.disabled = true;
   const mainServer = document.getElementById('mainServer').value;
   const webrtcServer = document.getElementById('webrtcServer').value;
   let clientId = document.getElementById('clientId').value;
@@ -192,45 +227,68 @@ async function connect() {
   }
 
   log(`Registering ${clientId}...`);
+  shouldUnregister = false;
+  ownedClientId = clientId;
+  ownedMainServer = mainServer;
   try {
-    let r = await fetch(`${mainServer}/register/`, {
+    const registration = await fetchJson(`${mainServer}/register/`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({client_id: clientId})
     });
-    log(`Register: ${(await r.json()).status}`);
+    if (!['registered', 'already registered'].includes(registration.status)) {
+      throw new Error(`Unexpected register status: ${registration.status}`);
+    }
+    shouldUnregister = registration.status === 'registered';
+    log(`Register: ${registration.status}`);
 
-    r = await fetch(`${mainServer}/init_pipeline/${clientId}`, {
+    const initialized = await fetchJson(
+      `${mainServer}/init_pipeline/${encodeURIComponent(clientId)}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({config: pipeline, force: true})
-    });
-    if (!r.ok) { log(`Init pipeline failed: ${r.status}`); return; }
-    log(`Pipeline: ${(await r.json()).status}`);
-  } catch(e) { log(`Error: ${e.message}`); return; }
+      body: JSON.stringify({config: pipeline})
+    }, 310000);
+    shouldUnregister = true;
+    log(`Pipeline: ${initialized.status}`);
+  } catch(e) {
+    log(`Setup error: ${e.message}`);
+    await disconnect();
+    return;
+  }
 
   // Fetch the WebRTC session settings from the server (same single source the
   // gateway uses: the config's top-level "webrtc" section). Timing params
   // (video_fps here, for local capture) come from the config; resolution is
   // the client's own choice, so it stays at a default.
   const VIDEO_W = 1280, VIDEO_H = 720;   // default resolution
-  let videoFps = 30;
+  let videoFps;
   try {
-    const info = await (await fetch(`${mainServer}/clients/${clientId}`)).json();
-    const wr = (info.pipeline_config && info.pipeline_config.webrtc) || {};
-    if (wr.video_fps) videoFps = wr.video_fps;
+    const info = await fetchJson(
+      `${mainServer}/clients/${encodeURIComponent(clientId)}`
+    );
+    videoFps = info.pipeline_config?.webrtc?.video_fps;
+    if (videoFps == null) throw new Error('video_fps is missing from pipeline config');
     log(`WebRTC settings: video_fps=${videoFps} (from server), ` +
         `${VIDEO_W}x${VIDEO_H} (default)`);
-  } catch(e) { log(`WebRTC settings fetch failed, using defaults: ${e.message}`); }
+  } catch(e) {
+    log(`WebRTC settings fetch failed: ${e.message}`);
+    await disconnect();
+    return;
+  }
 
   // Get microphone
   try {
     localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
     log('Microphone acquired');
-  } catch(e) { log(`Mic error: ${e.message}`); return; }
+  } catch(e) {
+    log(`Mic error: ${e.message}`);
+    await disconnect();
+    return;
+  }
 
-  // Create PeerConnection
-  pc = new RTCPeerConnection();
-  pc.addTrack(localStream.getAudioTracks()[0], localStream);
-  pc.addTrack(await getVideoTrack(VIDEO_W, VIDEO_H, videoFps));
+  try {
+    // Create PeerConnection
+    pc = new RTCPeerConnection();
+    pc.addTrack(localStream.getAudioTracks()[0], localStream);
+    pc.addTrack(await getVideoTrack(VIDEO_W, VIDEO_H, videoFps));
 
   // DataChannel
   dc = pc.createDataChannel('client-signals', {ordered: true});
@@ -274,14 +332,17 @@ async function connect() {
     };
   };
 
-  pc.onconnectionstatechange = () => {
-    log(`Connection: ${pc.connectionState}`);
-    if (pc.connectionState === 'connected') {
+  const currentPc = pc;
+  currentPc.onconnectionstatechange = () => {
+    const state = currentPc.connectionState;
+    log(`Connection: ${state}`);
+    if (state === 'connected') {
       connected = true;
       setStatus('connected', true);
-    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+    } else if (state === 'failed' || state === 'closed') {
       connected = false;
       setStatus('disconnected', false);
+      if (!disconnecting) disconnect();
     }
   };
 
@@ -290,8 +351,8 @@ async function connect() {
   await pc.setLocalDescription(offer);
 
   log('Sending offer...');
-  try {
-    const r = await fetch(`${webrtcServer}/offer/${clientId}`, {
+    const answer = await fetchJson(
+      `${webrtcServer}/offer/${encodeURIComponent(clientId)}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         sdp: pc.localDescription.sdp, type: pc.localDescription.type,
@@ -300,40 +361,67 @@ async function connect() {
         video_width: VIDEO_W, video_height: VIDEO_H
       })
     });
-    const answer = await r.json();
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
     log('Answer received');
-  } catch(e) { log(`Offer error: ${e.message}`); return; }
+  } catch(e) {
+    log(`Connection setup failed: ${e.message}`);
+    await disconnect();
+    return;
+  }
 
-  document.getElementById('connectBtn').disabled = true;
+  connectBtn.disabled = true;
   document.getElementById('disconnectBtn').disabled = false;
 }
 
 async function disconnect() {
+  if (disconnecting) return;
+  disconnecting = true;
   connected = false;
-  if (pc) { pc.close(); pc = null; }
+  if (pc) {
+    const closingPc = pc;
+    pc = null;
+    closingPc.onconnectionstatechange = null;
+    closingPc.close();
+  }
   if (resampleRAF) { cancelAnimationFrame(resampleRAF); resampleRAF = null; }
   if (resampleTimer) { clearInterval(resampleTimer); resampleTimer = null; }
+  if (visibilityHandler) {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
+  }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   if (canvasStream) { canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
 
-  const mainServer = document.getElementById('mainServer').value;
-  const clientId = document.getElementById('clientId').value;
-  try {
-    await fetch(`${mainServer}/unregister/`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({client_id: clientId})
-    });
-  } catch(e) {}
+  const mainServer = ownedMainServer;
+  const clientId = ownedClientId;
+  let unregisterError = null;
+  if (shouldUnregister) {
+    try {
+      const result = await fetchJson(`${mainServer}/unregister/`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({client_id: clientId})
+      }, 30000);
+      shouldUnregister = false;
+      log(`Unregister: ${result.status}`);
+    } catch(e) {
+      unregisterError = e;
+      log(`Unregister failed: ${e.message}`);
+    }
+  }
 
+  if (!unregisterError) {
+    ownedClientId = null;
+    ownedMainServer = null;
+  }
   dc = null;
-  setStatus('disconnected', false);
-  document.getElementById('connectBtn').disabled = false;
-  document.getElementById('disconnectBtn').disabled = true;
+  setStatus(unregisterError ? 'disconnected (unregister failed)' : 'disconnected', false);
+  document.getElementById('connectBtn').disabled = Boolean(unregisterError);
+  document.getElementById('disconnectBtn').disabled = !unregisterError;
   document.getElementById('talkBtn').disabled = true;
   document.getElementById('cancelBtn').disabled = true;
-  log('Disconnected');
+  log(unregisterError ? 'Disconnected locally; server cleanup failed' : 'Disconnected');
+  disconnecting = false;
 }
 
 function sendSignal(signal) {

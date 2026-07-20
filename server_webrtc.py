@@ -375,6 +375,12 @@ class OutputVideoTrack(MediaStreamTrack):
 # ============================================================
 # WebRTC Client Session
 # ============================================================
+class PipelineConnectionError(RuntimeError):
+    def __init__(self, status_code, detail):
+        super().__init__(detail)
+        self.status_code = status_code
+
+
 class WebRTCSession:
     """Manages one WebRTC client's bidirectional connection to the pipeline."""
 
@@ -443,9 +449,11 @@ class WebRTCSession:
         self.group_queue = Queue()  # Groups from pipeline
         self.ws = None
         self.ws_ready = asyncio.Event()
+        self.pipeline_error = None
         self._pipeline_send_lock = asyncio.Lock()
         self._direct_send_lock = asyncio.Lock()
         self._closed = asyncio.Event()  # Signaled on cleanup to unblock waiters
+        self._cleanup_done = asyncio.Event()
         self.dc_server = None
         self.connected = False
         self._on_session_end = on_session_end  # Callback to remove from server's sessions
@@ -617,6 +625,17 @@ class WebRTCSession:
         await self.pc.setLocalDescription(answer)
 
         asyncio.ensure_future(self._pipeline_session())
+        if not await self._wait_for_pipeline_ready():
+            error = self.pipeline_error
+            status_code = getattr(
+                getattr(error, "response", None), "status_code", None
+            )
+            if not isinstance(status_code, int) or not 400 <= status_code < 500:
+                status_code = 502
+            raise PipelineConnectionError(
+                status_code,
+                str(error) if error else "pipeline connection closed",
+            )
 
         return self.pc.localDescription.sdp, self.pc.localDescription.type
 
@@ -1056,6 +1075,7 @@ class WebRTCSession:
                 await self._relay_pipeline_output(ws)
 
         except Exception as e:
+            self.pipeline_error = e
             logger.error(f"[{self.client_id}] Pipeline session error: {e}")
             self._notify_client("error", f"Pipeline connection failed: {e}")
         finally:
@@ -1085,37 +1105,40 @@ class WebRTCSession:
 
     async def cleanup(self):
         if self._closed.is_set():
+            await self._cleanup_done.wait()
             return
         self._closed.set()
         self.connected = False
         logger.info(f"[{self.client_id}] Cleaning up session")
+        try:
+            # Cancel async tasks
+            for task in (getattr(self, '_group_task', None),
+                         getattr(self, '_data_task', None),
+                         getattr(self, '_assembler_task', None)):
+                if task and not task.done():
+                    task.cancel()
 
-        # Cancel async tasks
-        for task in (getattr(self, '_group_task', None),
-                     getattr(self, '_data_task', None),
-                     getattr(self, '_assembler_task', None)):
-            if task and not task.done():
-                task.cancel()
+            # Close pipeline WebSocket
+            if self.ws:
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
+            self.ws_ready.clear()
 
-        # Close pipeline WebSocket
-        if self.ws:
+            # Close WebRTC connection
+            if self.pc:
+                try:
+                    await self.pc.close()
+                except Exception:
+                    pass
+        finally:
             try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        self.ws_ready.clear()
-
-        # Close WebRTC connection
-        if self.pc:
-            try:
-                await self.pc.close()
-            except Exception:
-                pass
-
-        # Remove from server's session list
-        if self._on_session_end:
-            self._on_session_end(self.client_id)
+                if self._on_session_end:
+                    self._on_session_end(self.client_id, self)
+            finally:
+                self._cleanup_done.set()
 
 
 # ============================================================
@@ -1215,11 +1238,21 @@ class WebRTCServer:
     def __init__(self, main_server_url):
         self.main_server_url = main_server_url
         self.sessions = {}
+        self.session_locks = {}
+
+    def session_lock(self, client_id):
+        lock = self.session_locks.get(client_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.session_locks[client_id] = lock
+        return lock
+
+    def _remove_session(self, client_id, session):
+        if self.sessions.get(client_id) is session:
+            self.sessions.pop(client_id)
 
     async def _fetch_pipeline_config(self, client_id):
-        """The client's full pipeline config from the main server. Empty
-        dict if the client or its pipeline doesn't exist; None when the
-        fetch itself failed (main server unreachable)."""
+        """Return the initialized pipeline config or its WS-equivalent error."""
         url = f"{self.main_server_url}/clients/{client_id}"
         try:
             async with aiohttp.ClientSession() as http:
@@ -1227,12 +1260,26 @@ class WebRTCServer:
                     url, timeout=aiohttp.ClientTimeout(total=5)
                 ) as r:
                     info = await r.json()
-            return info.get("pipeline_config") or {}
         except Exception as e:
-            logger.warning(
-                f"[{client_id}] failed to fetch pipeline config: {e}"
+            raise PipelineConnectionError(
+                502, f"failed to fetch pipeline config: {e}"
+            ) from e
+        if r.status != 200:
+            raise PipelineConnectionError(
+                502, f"pipeline config request returned HTTP {r.status}"
             )
-            return None
+        if not isinstance(info, dict):
+            raise PipelineConnectionError(
+                502, "pipeline config request returned invalid JSON"
+            )
+        if info.get("status") != "connected":
+            raise PipelineConnectionError(403, "Client not registered")
+        config = info.get("pipeline_config")
+        if not isinstance(config, dict):
+            raise PipelineConnectionError(
+                409, "Pipeline must be initialized before WebRTC connect"
+            )
+        return config
 
     async def handle_offer(self, request):
         """POST /offer/{client_id} - WebRTC signaling endpoint.
@@ -1244,27 +1291,38 @@ class WebRTCServer:
         client_id = request.match_info["client_id"]
         body = await request.json()
 
-        if client_id in self.sessions:
-            await self.sessions[client_id].cleanup()
-
-        conf = await self._fetch_pipeline_config(client_id)
-        if conf is None:
-            # main server unreachable: proceed without the compatibility
-            # check (the session cannot work anyway if it stays down)
-            logger.warning(f"[{client_id}] pipeline config unavailable; "
-                           f"skipping offer compatibility check")
-            sec = {}
-        else:
-            sec = conf.get("webrtc") or {}
-            # the offered connection must satisfy what the pipeline needs —
-            # reject with the concrete gaps instead of hanging silently
-            mismatches = check_offer_compatibility(body.get("sdp", ""), conf)
-            if mismatches:
-                logger.warning(
-                    f"[{client_id}] offer rejected: {mismatches}")
+        async with self.session_lock(client_id):
+            if client_id in self.sessions:
                 return web.json_response(
-                    {"error": "offer does not match the pipeline config",
-                     "mismatches": mismatches}, status=400)
+                    {
+                        "error": "WebRTC session already exists",
+                        "detail": "reinitialize the pipeline before reconnecting",
+                    },
+                    status=409,
+                )
+            return await self._create_session(client_id, body)
+
+    async def _create_session(self, client_id, body):
+        try:
+            conf = await self._fetch_pipeline_config(client_id)
+        except PipelineConnectionError as error:
+            return web.json_response(
+                {
+                    "error": "pipeline WebSocket connection failed",
+                    "detail": str(error),
+                },
+                status=error.status_code,
+            )
+        sec = conf.get("webrtc") or {}
+        # the offered connection must satisfy what the pipeline needs —
+        # reject with the concrete gaps instead of hanging silently
+        mismatches = check_offer_compatibility(body.get("sdp", ""), conf)
+        if mismatches:
+            logger.warning(
+                f"[{client_id}] offer rejected: {mismatches}")
+            return web.json_response(
+                {"error": "offer does not match the pipeline config",
+                 "mismatches": mismatches}, status=400)
         audio_fps = sec.get("audio_fps", DEFAULT_AUDIO_FPS)
         rates = {"audio_fps": audio_fps,
                  "video_fps": sec.get("video_fps", DEFAULT_VIDEO_FPS),
@@ -1375,12 +1433,25 @@ class WebRTCServer:
 
         session = WebRTCSession(
             client_id, self.main_server_url,
-            on_session_end=lambda cid: self.sessions.pop(cid, None),
+            on_session_end=self._remove_session,
             **session_kwargs,
         )
         self.sessions[client_id] = session
 
-        sdp, type_ = await session.handle_offer(body["sdp"], body["type"])
+        try:
+            sdp, type_ = await session.handle_offer(body["sdp"], body["type"])
+        except PipelineConnectionError as error:
+            await session.cleanup()
+            return web.json_response(
+                {
+                    "error": "pipeline WebSocket connection failed",
+                    "detail": str(error),
+                },
+                status=error.status_code,
+            )
+        except Exception:
+            await session.cleanup()
+            raise
 
         logger.info(f"[{client_id}] WebRTC session created")
         return web.json_response({"sdp": sdp, "type": type_})
@@ -1397,7 +1468,7 @@ class WebRTCServer:
         })
 
     async def cleanup(self):
-        for session in self.sessions.values():
+        for session in list(self.sessions.values()):
             await session.cleanup()
         self.sessions.clear()
 

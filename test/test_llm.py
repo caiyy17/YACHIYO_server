@@ -25,6 +25,7 @@ import random
 import re
 import argparse
 import time
+import uuid
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,11 +38,14 @@ import websockets
 from utils.settings import get_setting, get_secret
 from Modules.llm_utils.Tools import resolve_variables
 
+LLM_TIMEOUT = 120
+HTTP_TIMEOUT = 30
+
 
 # ============================================================================
 # Mode: single  (from test_llm_preset.py)
 # Standalone LLM test for character presets. Loads lorebook, assembles
-# messages, calls the LLM directly. No external services needed.
+# messages, and calls the configured LLM endpoint directly.
 # ============================================================================
 
 def load_lorebook(name):
@@ -55,7 +59,7 @@ def create_client(model_config_name="gemma"):
         model_config = json.load(f)[model_config_name]
     api_base = get_setting("llm", model_config["api_base"])
     api_key = get_secret(model_config["api_key"])
-    client = OpenAI(base_url=api_base, api_key=api_key)
+    client = OpenAI(base_url=api_base, api_key=api_key, timeout=LLM_TIMEOUT)
     return client, model_config
 
 
@@ -121,7 +125,10 @@ def call_llm(client, model_config, messages):
         stream=False,
         **extra,
     )
-    return response.choices[0].message.content
+    text = response.choices[0].message.content
+    if not text or not text.strip():
+        raise RuntimeError("LLM returned empty output")
+    return text
 
 
 # ------------ single mode: test scenarios ------------
@@ -225,7 +232,7 @@ def get_scenarios(lorebook_name):
 
 
 def run_single(args):
-    """Run all single-turn test scenarios for a preset. Returns results list."""
+    """Run all single-turn test scenarios for a preset. Returns success."""
     lorebook_name = args.lorebook
     model_config_name = args.model
     client, model_config = create_client(model_config_name)
@@ -241,6 +248,7 @@ def run_single(args):
     print(f"{'='*70}")
 
     results = []
+    success = True
 
     for scenario in scenarios:
         name = scenario["name"]
@@ -250,10 +258,13 @@ def run_single(args):
         for msg in scenario["messages"]:
             assembled = assemble_messages_single(lorebook_data, history, msg)
 
+            request_ok = True
             try:
                 response = call_llm(client, model_config, assembled)
             except Exception as e:
                 response = f"[ERROR] {e}"
+                request_ok = False
+                success = False
 
             # Print (truncate long danmaku input for display)
             display_input = msg.replace("\n", " | ")
@@ -268,6 +279,8 @@ def run_single(args):
                 "output": response,
             })
 
+            if not request_ok:
+                break
             history.append({"role": "user", "content": msg})
             history.append({"role": "assistant", "content": response})
 
@@ -283,7 +296,7 @@ def run_single(args):
             json.dump(results, f, ensure_ascii=False, indent=2)
         print(f"\nResults saved to {out_path}")
 
-    return results
+    return success
 
 
 # ============================================================================
@@ -375,7 +388,7 @@ def check_format(history, lorebook_name):
     if lorebook_name == "unity_chan":
         # unity_chan uses free-form [action](expression)
         print("  (unity_chan uses free-form actions/expressions, skipping list check)")
-        return
+        return True
     violations = 0
     for entry in history:
         if entry["role"] == "assistant":
@@ -394,6 +407,7 @@ def check_format(history, lorebook_name):
         print("  All tags within allowed lists!")
     else:
         print(f"  {violations} violation(s) found")
+    return violations == 0
 
 
 def run_multi(args):
@@ -405,7 +419,7 @@ def run_multi(args):
         model_config = json.load(f)[model_name]
     api_base = get_setting("llm", model_config["api_base"])
     api_key = get_secret(model_config["api_key"])
-    client = OpenAI(base_url=api_base, api_key=api_key)
+    client = OpenAI(base_url=api_base, api_key=api_key, timeout=LLM_TIMEOUT)
 
     lorebook_data = load_lorebook(lorebook_name)
     static_vars = get_pipeline_vars(lorebook_name)
@@ -417,14 +431,11 @@ def run_multi(args):
     history = []
     for i, prompt in enumerate(prompts, 1):
         assembled = assemble_messages_multi(lorebook_data, history, prompt, static_vars)
-        extra = model_config.get("extra", {}).copy()
-        response = client.chat.completions.create(
-            model=model_config["model_name"],
-            messages=assembled,
-            stream=False,
-            **extra,
-        )
-        text = response.choices[0].message.content
+        try:
+            text = call_llm(client, model_config, assembled)
+        except Exception as e:
+            print(f"[{i}] FAIL: {type(e).__name__}: {e}")
+            return False
         print(f"[{i}] User: {prompt}")
         print(f"    Reply: {text}")
         print()
@@ -432,8 +443,9 @@ def run_multi(args):
         history.append({"role": "assistant", "content": text})
 
     print("=== Format Check ===")
-    check_format(history, lorebook_name)
+    format_ok = check_format(history, lorebook_name)
     print("=== Done ===")
+    return format_ok
 
 
 # ============================================================================
@@ -494,6 +506,8 @@ async def collect_response(ws, timeout=30):
                 started = True
                 full_text = ""
             elif signal == "EoS":
+                if not started:
+                    raise RuntimeError("received EoS before SoS")
                 # Collect remaining non-streaming messages
                 try:
                     while True:
@@ -522,8 +536,8 @@ async def collect_response(ws, timeout=30):
                 action_hints.append(data["action_hint"])
             if data.get("expression_hint"):
                 expression_hints.append(data["expression_hint"])
-    except asyncio.TimeoutError:
-        pass
+    except asyncio.TimeoutError as e:
+        raise TimeoutError("response did not complete with EoS") from e
 
     return full_text.strip(), action_hints, expression_hints, actions, expressions
 
@@ -587,72 +601,112 @@ def analyze_response(idx, prompt, text, action_hints, expression_hints):
 
 
 async def run_instruction_async(args):
-    client_id = f"prompt_test_{int(time.time())}"
-
-    async with httpx.AsyncClient(timeout=30) as http:
-        await http.post(f"{SERVER}/register/", json={"client_id": client_id})
-        r = await http.post(f"{SERVER}/init_pipeline/{client_id}",
-                           json={"config": PIPELINE, "force": True})
-        print(f"Init: {r.json()}")
-
-    print("Waiting 5s...")
-    await asyncio.sleep(5)
-
+    client_id = f"prompt_test_{uuid.uuid4().hex}"
+    registered = False
+    success = True
     total = 0
     compliant = 0
     all_issues = []
 
-    async with websockets.connect(f"{WS_URL}/{client_id}") as ws:
-        for i, prompt in enumerate(INSTRUCTION_PROMPTS):
-            print(f"\n[{i+1}/{len(INSTRUCTION_PROMPTS)}] User: {prompt}")
-            await ws.send(json.dumps({"text": prompt, "timestamp": time.time()}))
+    try:
+        async with httpx.AsyncClient(timeout=180) as http:
+            response = await http.post(
+                f"{SERVER}/register/", json={"client_id": client_id}
+            )
+            response.raise_for_status()
+            registered = True
+            print(f"Register: {response.json()}")
 
-            text, action_hints, expression_hints, actions, expressions = \
-                await collect_response(ws)
+            response = await http.post(
+                f"{SERVER}/init_pipeline/{client_id}",
+                json={"config": PIPELINE},
+            )
+            response.raise_for_status()
+            print(f"Init: {response.json()}")
 
-            print(f"  Response: {text[:150]}{'...' if len(text)>150 else ''}")
+        print("Waiting 5s...")
+        await asyncio.sleep(5)
 
-            # Show tags
-            tags = TAG_PATTERN.findall(text)
-            if tags:
-                for a, e in tags:
-                    a_ok = "✓" if a in ACTIONS else "✗"
-                    e_ok = "✓" if e in EXPRESSIONS else "✗"
-                    print(f"  Tag: [{a}]{a_ok} ({e}){e_ok}")
+        async with websockets.connect(
+            f"{WS_URL}/{client_id}", open_timeout=HTTP_TIMEOUT, close_timeout=10
+        ) as ws:
+            for i, prompt in enumerate(INSTRUCTION_PROMPTS):
+                print(f"\n[{i+1}/{len(INSTRUCTION_PROMPTS)}] User: {prompt}")
+                await ws.send(json.dumps({"text": prompt, "timestamp": time.time()}))
 
-            # Show RAG hints, mapped positionally to the matched RAG action/expression
-            for k, (ah, eh) in enumerate(zip(action_hints, expression_hints)):
-                ah_ok = "✓" if ah in ACTIONS else "✗"
-                eh_ok = "✓" if eh in EXPRESSIONS else "✗"
-                matched_a = actions[k] if k < len(actions) else "?"
-                matched_e = expressions[k] if k < len(expressions) else "?"
-                print(f"  Hint: [{ah}]{ah_ok} ({eh}){eh_ok} → {matched_a}/{matched_e}")
+                text, action_hints, expression_hints, actions, expressions = \
+                    await collect_response(ws)
+                if not text:
+                    raise RuntimeError(f"instruction {i + 1} returned empty text")
 
-            issues = analyze_response(i, prompt, text, action_hints, expression_hints)
-            total += 1
-            if not issues:
-                compliant += 1
-                print(f"  OK ✓")
-            else:
-                for issue in issues:
-                    print(f"  ISSUE: {issue}")
-                all_issues.extend([(prompt, issue) for issue in issues])
+                print(f"  Response: {text[:150]}{'...' if len(text)>150 else ''}")
 
-            await asyncio.sleep(1)
+                # Show tags
+                tags = TAG_PATTERN.findall(text)
+                if tags:
+                    for a, e in tags:
+                        a_ok = "✓" if a in ACTIONS else "✗"
+                        e_ok = "✓" if e in EXPRESSIONS else "✗"
+                        print(f"  Tag: [{a}]{a_ok} ({e}){e_ok}")
+
+                # Show RAG hints, mapped positionally to the matched RAG action/expression
+                for k, (ah, eh) in enumerate(zip(action_hints, expression_hints)):
+                    ah_ok = "✓" if ah in ACTIONS else "✗"
+                    eh_ok = "✓" if eh in EXPRESSIONS else "✗"
+                    matched_a = actions[k] if k < len(actions) else "?"
+                    matched_e = expressions[k] if k < len(expressions) else "?"
+                    print(f"  Hint: [{ah}]{ah_ok} ({eh}){eh_ok} → {matched_a}/{matched_e}")
+
+                # Compliance findings are diagnostic; only transport/protocol/output
+                # failures determine this test's objective pass/fail result.
+                issues = analyze_response(i, prompt, text, action_hints, expression_hints)
+                total += 1
+                if not issues:
+                    compliant += 1
+                    print("  OK ✓")
+                else:
+                    for issue in issues:
+                        print(f"  ISSUE: {issue}")
+                    all_issues.extend((prompt, issue) for issue in issues)
+
+                await asyncio.sleep(1)
+    except Exception as e:
+        success = False
+        print(f"[FAIL] Instruction mode failed: {type(e).__name__}: {e}")
+    finally:
+        if registered:
+            try:
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as http:
+                    response = await http.post(
+                        f"{SERVER}/unregister/", json={"client_id": client_id}
+                    )
+                    response.raise_for_status()
+                    print(f"Unregister: {response.json()}")
+            except Exception as e:
+                success = False
+                print(f"[FAIL] Unregister failed: {type(e).__name__}: {e}")
+        try:
+            os.unlink(f"logs/client_{client_id}.log")
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            success = False
+            print(f"[FAIL] Test log cleanup failed: {e}")
 
     print(f"\n{'='*60}")
-    print(f"COMPLIANCE: {compliant}/{total} ({100*compliant/total:.0f}%)")
+    rate = 100 * compliant / total if total else 0
+    print(f"COMPLIANCE: {compliant}/{total} ({rate:.0f}%)")
     if all_issues:
         print(f"\nAll issues ({len(all_issues)}):")
         for prompt, issue in all_issues:
             print(f"  [{prompt[:15]}] {issue}")
-
-    async with httpx.AsyncClient(timeout=10) as http:
-        await http.post(f"{SERVER}/unregister/", json={"client_id": client_id})
+    if total != len(INSTRUCTION_PROMPTS):
+        success = False
+    return success
 
 
 def run_instruction(args):
-    asyncio.run(run_instruction_async(args))
+    return asyncio.run(run_instruction_async(args))
 
 
 # ============================================================================
@@ -697,21 +751,26 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.mode == "single":
-        if not args.lorebook:
-            parser.error("single mode requires a lorebook name argument")
-        if args.model is None:
-            args.model = "gemma"
-        run_single(args)
-    elif args.mode == "multi":
-        if not args.lorebook:
-            parser.error("multi mode requires a lorebook name argument")
-        if args.model is None:
-            args.model = "gemma"
-        run_multi(args)
-    elif args.mode == "instruction":
-        run_instruction(args)
+    try:
+        if args.mode == "single":
+            if not args.lorebook:
+                parser.error("single mode requires a lorebook name argument")
+            if args.model is None:
+                args.model = "gemma"
+            success = run_single(args)
+        elif args.mode == "multi":
+            if not args.lorebook:
+                parser.error("multi mode requires a lorebook name argument")
+            if args.model is None:
+                args.model = "gemma"
+            success = run_multi(args)
+        else:
+            success = run_instruction(args)
+    except Exception as e:
+        print(f"[FAIL] {args.mode} mode crashed: {type(e).__name__}: {e}")
+        success = False
+    return 0 if success else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

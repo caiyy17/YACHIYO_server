@@ -352,8 +352,38 @@
 
     <script>
         let logRefreshInterval = null;
+        let logRequestInFlight = false;
+        const API_TIMEOUT_MS = 120000;
 
         // ── Helpers ──
+
+        async function apiFetch(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const response = await fetch(url, { ...options, signal: controller.signal });
+                let result;
+                try {
+                    result = JSON.parse(await response.text());
+                } catch (error) {
+                    throw new Error(`Invalid JSON response (HTTP ${response.status})`);
+                }
+                if (!response.ok) {
+                    const detail = result?.message ?? result?.detail;
+                    throw new Error(detail
+                        ? (typeof detail === 'string' ? detail : JSON.stringify(detail))
+                        : `HTTP ${response.status}`);
+                }
+                return result;
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    throw new Error(`Request timed out after ${timeoutMs} ms`);
+                }
+                throw error;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
 
         function showResult(elementId, success, message, data = null) {
             const element = document.getElementById(elementId);
@@ -374,12 +404,11 @@
             const clientId = getClientId();
             if (!clientId) { showResult('clientResult', false, 'Please enter a client ID'); return; }
             try {
-                const response = await fetch('/api/register', {
+                const result = await apiFetch('/api/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId })
                 });
-                const result = await response.json();
                 showResult('clientResult', result.success, result.message, result.data);
                 if (result.success) refreshClientList();
             } catch (error) {
@@ -391,12 +420,11 @@
             const clientId = getClientId();
             if (!clientId) { showResult('clientResult', false, 'Please enter a client ID'); return; }
             try {
-                const response = await fetch('/api/unregister', {
+                const result = await apiFetch('/api/unregister', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId })
                 });
-                const result = await response.json();
                 showResult('clientResult', result.success, result.message, result.data);
                 if (result.success) refreshClientList();
             } catch (error) {
@@ -408,8 +436,7 @@
             const clientId = getClientId();
             if (!clientId) { showResult('clientResult', false, 'Please enter a client ID'); return; }
             try {
-                const response = await fetch(`/api/client/${clientId}`);
-                const result = await response.json();
+                const result = await apiFetch(`/api/client/${encodeURIComponent(clientId)}`);
                 showResult('clientResult', result.success, result.message, result.data);
             } catch (error) {
                 showResult('clientResult', false, 'Request failed: ' + error.message);
@@ -418,8 +445,7 @@
 
         async function refreshClientList() {
             try {
-                const response = await fetch('/api/clients');
-                const result = await response.json();
+                const result = await apiFetch('/api/clients');
                 const listEl = document.getElementById('clientList');
 
                 if (result.success && result.data && result.data.clients) {
@@ -427,10 +453,16 @@
                     if (clients.length === 0) {
                         listEl.innerHTML = '<div style="color: #999; font-size: 13px; padding: 8px 0;">No registered clients</div>';
                     } else {
-                        listEl.innerHTML = clients.map(id =>
-                            `<div class="client-item" onclick="selectClient('${id}')">` +
-                            `<span class="dot"></span>${id}</div>`
-                        ).join('');
+                        listEl.replaceChildren();
+                        clients.forEach(id => {
+                            const item = document.createElement('div');
+                            const dot = document.createElement('span');
+                            item.className = 'client-item';
+                            dot.className = 'dot';
+                            item.addEventListener('click', () => selectClient(id));
+                            item.append(dot, String(id));
+                            listEl.appendChild(item);
+                        });
                     }
                 } else {
                     listEl.innerHTML = '<div style="color: #999; font-size: 13px; padding: 8px 0;">Failed to load client list</div>';
@@ -458,12 +490,11 @@
             const force = document.getElementById('forceInit').checked;
 
             try {
-                const response = await fetch(`/api/init_pipeline/${clientId}`, {
+                const result = await apiFetch(`/api/init_pipeline/${encodeURIComponent(clientId)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ config: configName, force: force })
-                });
-                const result = await response.json();
+                }, 310000);
                 showResult('clientResult', result.success, result.message, result.data);
             } catch (error) {
                 showResult('clientResult', false, 'Request failed: ' + error.message);
@@ -474,8 +505,7 @@
 
         async function loadConfigs() {
             try {
-                const response = await fetch('/api/configs');
-                const result = await response.json();
+                const result = await apiFetch('/api/configs');
 
                 if (result.success) {
                     const configs = result.data.configs;
@@ -521,8 +551,9 @@
             const [configType, configName] = configValue.split(':');
 
             try {
-                const response = await fetch(`/api/config/${configType}/${configName}`);
-                const result = await response.json();
+                const result = await apiFetch(
+                    `/api/config/${encodeURIComponent(configType)}/${encodeURIComponent(configName)}`
+                );
 
                 if (result.success) {
                     const blob = new Blob([result.data.content], { type: 'application/json' });
@@ -551,8 +582,9 @@
             const [configType, configName] = configValue.split(':');
 
             try {
-                const response = await fetch(`/api/config/${configType}/${configName}`);
-                const result = await response.json();
+                const result = await apiFetch(
+                    `/api/config/${encodeURIComponent(configType)}/${encodeURIComponent(configName)}`
+                );
 
                 if (result.success) {
                     const label = result.data.config_type === 'config' ? 'Config' : 'Lorebook';
@@ -625,11 +657,10 @@
                 const formData = new FormData();
                 formData.append('content', content);
 
-                const response = await fetch(`/api/config/${configType}/${configName}`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
+                const result = await apiFetch(
+                    `/api/config/${encodeURIComponent(configType)}/${encodeURIComponent(configName)}`,
+                    { method: 'POST', body: formData }
+                );
 
                 if (result.success) {
                     showConfigResult(true, 'Saved successfully');
@@ -657,10 +688,11 @@
                 document.getElementById('logContent').textContent = 'Please enter a client ID first.';
                 return;
             }
+            if (logRequestInFlight) return;
+            logRequestInFlight = true;
 
             try {
-                const response = await fetch(`/api/logs/${clientId}`);
-                const result = await response.json();
+                const result = await apiFetch(`/api/logs/${encodeURIComponent(clientId)}`);
                 const logEl = document.getElementById('logContent');
 
                 if (result.success && result.data && result.data.log_content) {
@@ -673,6 +705,8 @@
                 }
             } catch (error) {
                 document.getElementById('logContent').textContent = 'Request failed: ' + error.message;
+            } finally {
+                logRequestInFlight = false;
             }
         }
 

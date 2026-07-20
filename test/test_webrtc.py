@@ -3,7 +3,7 @@
 Consolidated WebRTC test script — six modes via --mode:
 
   single        Full single-client WebRTC test:
-                Sends test_voice.wav + video, records a 30s side-by-side MP4
+                Sends test_voice.wav + video, records a side-by-side MP4
                 of sent vs received audio/video/DataChannel subtitles.
                 Requires the full pipeline (ASR, LLM, TTS, VectorDB).
 
@@ -12,8 +12,8 @@ Consolidated WebRTC test script — six modes via --mode:
                 cancel while recording (vad segment voided, end ignored).
 
   compat        Offer <-> pipeline-config compatibility at the gateway:
-                mismatched offers (missing tracks/DataChannel, wrong fps,
-                missing webrtc section, non-webrtc pipeline) must get 400.
+                mismatched offers get 400; an active same-ID offer gets 409
+                without replacing the healthy session; re-init enables reuse.
 
   lifecycle     Connection start/stop lifecycle test:
                 Verifies FrameSplitter pause/clock-start, data flow, pipeline
@@ -46,12 +46,12 @@ import json
 import logging
 import multiprocessing
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from queue import Queue, Empty
 
@@ -62,6 +62,7 @@ from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
 )
+from aiortc.mediastreams import MediaStreamError
 from PIL import Image, ImageDraw, ImageFont
 
 # ============================================================
@@ -74,6 +75,7 @@ AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
 
 VIDEO_WIDTH, VIDEO_HEIGHT = 320, 240
 VIDEO_FPS = 30
+DATA_FPS = 20
 VIDEO_CLOCK_RATE = 90000
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 VIDEO_TIMESTAMP_INCREMENT = VIDEO_CLOCK_RATE // VIDEO_FPS
@@ -86,16 +88,79 @@ OUTPUT_MP4 = os.path.join(OUTPUT_DIR, "test_webrtc_output.mp4")
 
 MAIN_SERVER = "http://localhost:8910"
 WEBRTC_SERVER = "http://localhost:15168"
-CLIENT_ID = "test_webrtc_client"
+RUN_TOKEN = uuid.uuid4().hex[:10]
+CLIENT_ID = f"test_webrtc_client_{RUN_TOKEN}"
 PIPELINE_CONFIG = "unity_chan_webrtc"
 
 # --- lifecycle-mode-specific constants (from test_webrtc_lifecycle.py) ---
-LIFECYCLE_CLIENT_ID = "test_lifecycle"
+LIFECYCLE_CLIENT_ID = f"test_lifecycle_{RUN_TOKEN}"
 LIFECYCLE_PIPELINE_CONFIG = "test_frame_splitter"
 
 # --- multi-mode-specific constants (from test_webrtc_multi.py) ---
 NUM_CLIENTS = 3
 CLIENT_TEST_DURATION = 30
+
+
+async def cleanup_test_client(
+    client_id, wait_gateway=True, main_server_url=None, gateway_url=None,
+    keep_log=False,
+):
+    """Best-effort cleanup whose failure is part of the test result."""
+    import aiohttp
+
+    main_server_url = main_server_url or MAIN_SERVER
+    gateway_url = gateway_url or WEBRTC_SERVER
+    ok = True
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            async with http.post(
+                f"{main_server_url}/unregister/", json={"client_id": client_id}
+            ) as response:
+                body = await response.json()
+                if response.status != 200 or body.get("status") not in {
+                    "unregistered", "not registered",
+                }:
+                    print(f"[FAIL] cleanup unregister: {response.status} {body}")
+                    ok = False
+            async with http.get(f"{main_server_url}/clients/") as response:
+                body = await response.json()
+                if response.status != 200 or client_id in body.get("clients", []):
+                    print(f"[FAIL] client still registered: {client_id}")
+                    ok = False
+    except Exception as error:
+        print(f"[FAIL] main-server cleanup: {error}")
+        ok = False
+
+    if wait_gateway:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as http:
+                    async with http.get(f"{gateway_url}/status") as response:
+                        body = await response.json()
+                if response.status == 200 and client_id not in body.get("sessions", {}):
+                    break
+            except Exception as error:
+                print(f"[FAIL] gateway cleanup check: {error}")
+                ok = False
+                break
+            if time.monotonic() >= deadline:
+                print(f"[FAIL] WebRTC session still present: {client_id}")
+                ok = False
+                break
+            await asyncio.sleep(0.2)
+    if not keep_log:
+        try:
+            os.unlink(os.path.join(
+                SCRIPT_DIR, "..", "logs", f"client_{client_id}.log"
+            ))
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            print(f"[FAIL] test log cleanup: {error}")
+            ok = False
+    return ok
 
 
 # ============================================================
@@ -313,10 +378,11 @@ def record_mp4(
     recv_video, recv_audio,
     dc_timeline, output_path,
 ):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     n_frames = max(len(sent_video), len(recv_video))
     if n_frames == 0:
-        print("[Record] No video frames to record")
-        return
+        print("[FAIL] Record: no video frames")
+        return False
 
     font_label = _find_font(20)
     font_time = _find_font(16)
@@ -444,12 +510,30 @@ def record_mp4(
         "-shortest",
         output_path,
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        print(f"[FAIL] cannot run ffmpeg: {error}")
+        return False
+    finally:
+        for path in (tmp_video, tmp_audio):
+            if os.path.exists(path):
+                os.unlink(path)
 
-    # Cleanup temp files
-    for f in [tmp_video, tmp_audio]:
-        if os.path.exists(f):
-            os.unlink(f)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        print(f"[FAIL] ffmpeg exited {result.returncode}")
+        if detail:
+            print(f"  {detail[-1]}")
+        return False
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+        print(f"[FAIL] ffmpeg produced no output: {output_path}")
+        return False
 
     duration = n_frames / VIDEO_FPS
     print(f"\n[Record] {output_path}")
@@ -458,12 +542,13 @@ def record_mp4(
           f"{len(sent_video)} sent + {len(recv_video)} received")
     print(f"  Audio: stereo {SAMPLE_RATE}Hz, "
           f"{len(sent_audio)} sent + {len(recv_audio)} received")
+    return True
 
 
 # ============================================================
 # Mode: single  (from test_webrtc.py run_test)
 # ============================================================
-async def run_test():
+async def _run_test_once():
     # Load test audio
     if not os.path.exists(TEST_WAV):
         print(f"[FAIL] Test audio not found: {TEST_WAV}")
@@ -492,15 +577,18 @@ async def run_test():
             ) as resp:
                 result = await resp.json()
                 print(f"[Client] Register: {result}")
+                if resp.status != 200 or result.get("status") != "registered":
+                    print(f"[FAIL] Register failed: {resp.status} {result}")
+                    return False
 
             async with session.post(
                 f"{MAIN_SERVER}/init_pipeline/{CLIENT_ID}",
-                json={"config": PIPELINE_CONFIG, "force": True},
+                json={"config": PIPELINE_CONFIG},
             ) as resp:
-                if resp.status != 200:
-                    print(f"[FAIL] Init pipeline failed: {resp.status}")
-                    return False
                 result = await resp.json()
+                if resp.status != 200 or result.get("status") != "initialized":
+                    print(f"[FAIL] Init pipeline failed: {resp.status} {result}")
+                    return False
                 print(f"[Client] Init pipeline: {result}")
     except Exception as e:
         print(f"[FAIL] Cannot connect to main server: {e}")
@@ -518,13 +606,15 @@ async def run_test():
     recv_dc_messages = []
     recv_dc_timeline = []
     recv_start = [None]
+    receiver_errors = []
+    receiver_tasks = []
 
     @pc.on("track")
     def on_track(track):
         if track.kind == "audio":
-            asyncio.ensure_future(_recv_audio(track))
+            receiver_tasks.append(asyncio.create_task(_recv_audio(track)))
         elif track.kind == "video":
-            asyncio.ensure_future(_recv_video(track))
+            receiver_tasks.append(asyncio.create_task(_recv_video(track)))
 
     async def _recv_audio(track):
         try:
@@ -535,8 +625,13 @@ async def run_test():
                 if frame.layout.name == "stereo":
                     pcm = pcm[::2]
                 recv_audio_frames.append(pcm)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except MediaStreamError:
+            pass  # normal remote-track EOF during peer teardown
+        except Exception as error:
+            if pc.connectionState not in ("closed", "failed"):
+                receiver_errors.append(f"audio receiver: {error}")
 
     async def _recv_video(track):
         try:
@@ -546,8 +641,13 @@ async def run_test():
                     recv_start[0] = time.time()
                 rgb = frame.to_ndarray(format="rgb24").copy()
                 recv_video_frames.append((time.time() - recv_start[0], rgb))
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except MediaStreamError:
+            pass  # normal remote-track EOF during peer teardown
+        except Exception as error:
+            if pc.connectionState not in ("closed", "failed"):
+                receiver_errors.append(f"video receiver: {error}")
 
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -558,8 +658,8 @@ async def run_test():
                 recv_dc_messages.append(parsed)
                 if recv_start[0] is not None:
                     recv_dc_timeline.append((time.time() - recv_start[0], parsed))
-            except Exception:
-                pass
+            except Exception as error:
+                receiver_errors.append(f"DataChannel receiver: {error}")
 
     client_dc = pc.createDataChannel("client-signals", ordered=True)
 
@@ -624,17 +724,18 @@ async def run_test():
     # --- Data lane feed: one {"payload": n} per data period. Configs whose
     # collector consumes the data lane (e.g. loopback) need it flowing for
     # startup accumulation and echo; others group-and-ignore it. ---
-    data_fps = 20
-
     async def _send_data():
         n = 0
         try:
             while client_dc.readyState == "open":
                 client_dc.send(json.dumps({"payload": n}))
                 n += 1
-                await asyncio.sleep(1 / data_fps)
-        except Exception:
-            pass
+                await asyncio.sleep(1 / DATA_FPS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if client_dc.readyState == "open":
+                receiver_errors.append(f"DataChannel sender: {error}")
 
     data_task = asyncio.ensure_future(_send_data())
 
@@ -656,7 +757,7 @@ async def run_test():
     client_dc.send(json.dumps({"direct": True, "signal": "recording_end"}))
     print("[Client] recording_end → waiting for pipeline response...")
 
-    # --- Wait for test duration (30s total from connection) ---
+    # --- Wait for the configured test duration from speech start ---
     eos_seen = False
     while time.time() - test_start < TEST_DURATION:
         for msg in recv_dc_messages:
@@ -668,7 +769,7 @@ async def run_test():
         await asyncio.sleep(0.2)
 
     if not eos_seen:
-        print("[Client] Warning: EoS not received within test duration")
+        print("[FAIL] EoS not received within test duration")
 
     # --- Results ---
     print(f"\n{'='*60}")
@@ -693,13 +794,12 @@ async def run_test():
     echoed = sum(1 for m in recv_dc_messages
                  if isinstance(m, dict) and "payload" in m)
     print(f"  Data slots with echoed payload: {echoed}")
-    for msg in recv_dc_messages:
-        display = {k: (v[:80] + "..." if isinstance(v, str) and len(v) > 80 else v)
-                   for k, v in msg.items()}
-        print(f"    {display}")
+    signals = [m.get("signal") for m in recv_dc_messages
+               if isinstance(m, dict) and m.get("signal")]
+    print(f"  Signal sequence: {signals}")
 
     # --- Record MP4 ---
-    record_mp4(
+    recording_ok = record_mp4(
         sent_video=send_video.recorded_frames,
         sent_audio=send_audio.recorded_pcm,
         recv_video=recv_video_frames,
@@ -709,28 +809,40 @@ async def run_test():
     )
 
     data_task.cancel()
+    await asyncio.gather(data_task, return_exceptions=True)
     await pc.close()
+    if receiver_tasks:
+        await asyncio.gather(*receiver_tasks, return_exceptions=True)
 
-    # --- Unregister ---
+    checks = [
+        ("EoS received", eos_seen),
+        ("non-silent audio received", nonsilent > 0),
+        ("video received", bool(recv_video_frames)),
+        ("DataChannel messages received", bool(recv_dc_messages)),
+        ("MP4 recorded", recording_ok),
+        ("receivers completed without error", not receiver_errors),
+    ]
+    for name, passed in checks:
+        print(f"  {'PASS' if passed else 'FAIL'}: {name}")
+    for error in receiver_errors:
+        print(f"[FAIL] {error}")
+    return all(passed for _, passed in checks)
+
+
+async def run_test():
+    result = False
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{MAIN_SERVER}/unregister/",
-                json={"client_id": CLIENT_ID},
-            ) as resp:
-                result = await resp.json()
-                print(f"[Client] Unregister: {result}")
-    except Exception:
-        pass
-
-    return True
+        result = await _run_test_once()
+    finally:
+        cleanup_ok = await cleanup_test_client(CLIENT_ID)
+    return result and cleanup_ok
 
 
 def run_single(args):
     """Entry for --mode single. Mirrors original test_webrtc.py main()."""
     global WEBRTC_SERVER, PIPELINE_CONFIG, TEST_DURATION
     global SAMPLE_RATE, AUDIO_PTIME, AUDIO_SAMPLES, AUDIO_TIME_BASE
-    global VIDEO_FPS, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_TIMESTAMP_INCREMENT
+    global VIDEO_FPS, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_TIMESTAMP_INCREMENT, DATA_FPS
     global COMPOSITE_WIDTH, OUTPUT_HEIGHT
     global OUTPUT_MP4
 
@@ -747,8 +859,9 @@ def run_single(args):
     COMPOSITE_WIDTH = VIDEO_WIDTH * 2
     OUTPUT_HEIGHT = VIDEO_HEIGHT + SUBTITLE_HEIGHT
 
-    data_fps = args.data_fps or 20
+    DATA_FPS = args.data_fps or 20
 
+    custom_config_path = None
     # If custom params, generate matching pipeline config based on the base pipeline
     if any([args.audio_ptime, args.video_fps, args.video_width, args.video_height, args.data_fps]):
         # Load base pipeline config and patch FrameSplitter's params
@@ -763,36 +876,40 @@ def run_single(args):
                 node["config"]["video_width"] = VIDEO_WIDTH
                 node["config"]["video_height"] = VIDEO_HEIGHT
                 if args.data_fps:
-                    node["config"]["data_fps"] = data_fps
+                    node["config"]["data_fps"] = DATA_FPS
         # Timing params also go to the top-level webrtc section (the
         # gateway's source); resolution stays client-side (offer body)
         webrtc_sec = dict(pipeline_config.get("webrtc") or {})
         webrtc_sec["audio_fps"] = SAMPLE_RATE // AUDIO_SAMPLES
         webrtc_sec["video_fps"] = VIDEO_FPS
         if args.data_fps:
-            webrtc_sec["data_fps"] = data_fps
+            webrtc_sec["data_fps"] = DATA_FPS
         pipeline_config["webrtc"] = webrtc_sec
-        config_name = "test_webrtc_custom"
+        config_name = f"test_webrtc_custom_{RUN_TOKEN}"
         config_path = os.path.join(SCRIPT_DIR, "..", "configs", f"{config_name}.json")
         with open(config_path, "w") as f:
             json.dump(pipeline_config, f)
+        custom_config_path = config_path
         PIPELINE_CONFIG = config_name
         OUTPUT_MP4 = os.path.join(OUTPUT_DIR,
             f"test_webrtc_{SAMPLE_RATE}_{VIDEO_FPS}fps_{VIDEO_WIDTH}x{VIDEO_HEIGHT}.mp4")
     else:
         PIPELINE_CONFIG = args.pipeline
 
-    result = asyncio.run(run_test())
-    return result
+    try:
+        return asyncio.run(run_test())
+    finally:
+        if custom_config_path and os.path.exists(custom_config_path):
+            os.remove(custom_config_path)
 
 
 # ============================================================
 # Mode: cancel  (DC-path cancel semantics, cancel_offset_ms = 0)
 # ============================================================
-CANCEL_CLIENT_ID = "test_webrtc_cancel"
+CANCEL_CLIENT_ID = f"test_webrtc_cancel_{RUN_TOKEN}"
 
 
-async def run_cancel_test():
+async def _run_cancel_once():
     """Four cancel scenarios over one real session:
       1. idle cancel         — no active turn, must be a harmless no-op
       2. baseline turn       — speak/reply proves the pipeline works after 1
@@ -817,13 +934,18 @@ async def run_cancel_test():
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{MAIN_SERVER}/register/",
                                 json={"client_id": CANCEL_CLIENT_ID}) as resp:
-            print(f"[Client] Register: {await resp.json()}")
+            body = await resp.json()
+            print(f"[Client] Register: {body}")
+            if resp.status != 200 or body.get("status") != "registered":
+                print(f"[FAIL] Register failed: {resp.status} {body}")
+                return False
         async with session.post(
             f"{MAIN_SERVER}/init_pipeline/{CANCEL_CLIENT_ID}",
-            json={"config": PIPELINE_CONFIG, "force": True},
+            json={"config": PIPELINE_CONFIG},
         ) as resp:
-            if resp.status != 200:
-                print(f"[FAIL] Init pipeline failed: {resp.status}")
+            body = await resp.json()
+            if resp.status != 200 or body.get("status") != "initialized":
+                print(f"[FAIL] Init pipeline failed: {resp.status} {body}")
                 return False
 
     pc = RTCPeerConnection()
@@ -834,6 +956,8 @@ async def run_cancel_test():
 
     recv_audio = []      # (wall time, nonsilent) per received audio frame
     dc_timeline = []     # (wall time, parsed message)
+    receiver_errors = []
+    receiver_tasks = []
 
     async def _recv_audio(track):
         try:
@@ -843,22 +967,32 @@ async def run_cancel_test():
                 if frame.layout.name == "stereo":
                     pcm = pcm[::2]
                 recv_audio.append((time.time(), bool(np.any(pcm != 0))))
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except MediaStreamError:
+            pass  # normal remote-track EOF during peer teardown
+        except Exception as error:
+            if pc.connectionState not in ("closed", "failed"):
+                receiver_errors.append(f"audio receiver: {error}")
 
     async def _drain(track):
         try:
             while True:
                 await track.recv()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except MediaStreamError:
+            pass  # normal remote-track EOF during peer teardown
+        except Exception as error:
+            if pc.connectionState not in ("closed", "failed"):
+                receiver_errors.append(f"video receiver: {error}")
 
     @pc.on("track")
     def on_track(track):
         if track.kind == "audio":
-            asyncio.ensure_future(_recv_audio(track))
+            receiver_tasks.append(asyncio.create_task(_recv_audio(track)))
         else:
-            asyncio.ensure_future(_drain(track))
+            receiver_tasks.append(asyncio.create_task(_drain(track)))
 
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -866,8 +1000,8 @@ async def run_cancel_test():
         def on_message(msg):
             try:
                 dc_timeline.append((time.time(), json.loads(msg)))
-            except Exception:
-                pass
+            except Exception as error:
+                receiver_errors.append(f"DataChannel receiver: {error}")
 
     client_dc = pc.createDataChannel("client-signals", ordered=True)
 
@@ -985,8 +1119,12 @@ async def run_cancel_test():
         print(f"    reply A stopped {last:.2f}s after cancel")
 
     # let reply B drain fully before the last scenario
-    await wait_for(lambda: eos_after(t_end_b), 20)
-    await wait_for(lambda: not nonsilent_after(time.time() - 1.5), 15)
+    if not await wait_for(lambda: eos_after(t_end_b), 20):
+        failures.append("reply B EoS never arrived")
+    if not await wait_for(
+        lambda: not nonsilent_after(time.time() - 1.5), 15
+    ):
+        failures.append("reply B audio did not drain")
 
     # --- 4. cancel while recording: no reply may be produced ---
     print("[4] cancel while recording")
@@ -1005,14 +1143,22 @@ async def run_cancel_test():
         failures.append("cancelled recording still produced reply audio")
 
     await pc.close()
-    async with aiohttp.ClientSession() as session:
-        async with session.post(f"{MAIN_SERVER}/unregister/",
-                                json={"client_id": CANCEL_CLIENT_ID}) as resp:
-            print(f"[Client] Unregister: {await resp.json()}")
+    if receiver_tasks:
+        await asyncio.gather(*receiver_tasks, return_exceptions=True)
+    failures.extend(receiver_errors)
 
     for f in failures:
         print(f"[FAIL] {f}")
     return not failures
+
+
+async def run_cancel_test():
+    result = False
+    try:
+        result = await _run_cancel_once()
+    finally:
+        cleanup_ok = await cleanup_test_client(CANCEL_CLIENT_ID, keep_log=True)
+    return result and cleanup_ok
 
 
 def run_cancel(args):
@@ -1056,6 +1202,11 @@ def run_cancel(args):
     for name, passed in checks:
         print(f"  {'PASS' if passed else 'FAIL'}: {name}")
         ok = ok and passed
+    try:
+        os.unlink(log_path)
+    except OSError as error:
+        print(f"[FAIL] test log cleanup: {error}")
+        ok = False
     print(f"\n  {'Cancel test passed!' if ok else 'Cancel test FAILED.'}")
     return ok
 
@@ -1063,151 +1214,288 @@ def run_cancel(args):
 # ============================================================
 # Mode: compat  (offer <-> config compatibility, gateway-side)
 # ============================================================
-COMPAT_CLIENT_ID = "test_webrtc_compat"
+COMPAT_CLIENT_ID = f"test_webrtc_compat_{RUN_TOKEN}"
 
 
 async def run_compat_test():
-    """Gateway-side connection/config validation:
-      1-3. mismatched offers are rejected with 400 + concrete gaps
-           (audio-only, no DataChannel, non-webrtc pipeline)
-      4.   a matching offer is accepted (200)
-      5.   a config with audio_fps != 50 is rejected at offer time: the
-           wire is always 20ms/50fps (aiortc hardcodes it, browsers
-           default to it, and the SDP cannot negotiate framing)
-      6.   a config with video_fps or data_fps outside the supported
-           constant list (divisors of 90000 in 10..60) is rejected at
-           offer time."""
+    """Validate config matching and the same-ID 409/re-init lifecycle."""
     import aiohttp
     from aiortc.mediastreams import AudioStreamTrack, VideoStreamTrack
 
-    async def post(http, url, js):
-        async with http.post(url, json=js) as r:
+    pcs = []
+    drain_tasks = []
+    direct_ws = None
+    ok = True
+
+    def check(name, passed, detail=""):
+        nonlocal ok
+        print(
+            f"  {'PASS' if passed else 'FAIL'}: {name}"
+            + (f"  {detail}" if detail and not passed else "")
+        )
+        ok = ok and passed
+
+    async def post(http, url, payload):
+        async with http.post(url, json=payload) as response:
             try:
-                return r.status, await r.json()
+                body = await response.json()
             except Exception:
-                return r.status, {}
+                body = {"raw": await response.text()}
+            return response.status, body
+
+    async def init_config(http, name, force=False):
+        payload = {"config": name}
+        if force:
+            payload["force"] = True
+        status_code, body = await post(
+            http,
+            f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
+            payload,
+        )
+        if status_code != 200 or body.get("status") != "initialized":
+            raise RuntimeError(f"init {name} failed: {status_code} {body}")
+
+    async def drain(track):
+        try:
+            while True:
+                await track.recv()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def make_offer(tracks, with_dc):
         pc = RTCPeerConnection()
-        for t in tracks:
-            pc.addTrack(t)
-        if with_dc:
-            pc.createDataChannel("client-signals")
+        pcs.append(pc)
+
+        @pc.on("track")
+        def on_track(track):
+            drain_tasks.append(asyncio.create_task(drain(track)))
+
+        for track in tracks:
+            pc.addTrack(track)
+        dc = pc.createDataChannel("client-signals") if with_dc else None
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
-        return pc
+        return pc, dc
 
-    async def offer_status(http, tracks, with_dc):
-        pc = await make_offer(tracks, with_dc)
-        status, resp = await post(
-            http, f"{WEBRTC_SERVER}/offer/{COMPAT_CLIENT_ID}",
-            {"sdp": pc.localDescription.sdp,
-             "type": pc.localDescription.type})
-        await pc.close()
-        return status, resp
+    async def offer(http, pc):
+        return await post(
+            http,
+            f"{WEBRTC_SERVER}/offer/{COMPAT_CLIENT_ID}",
+            {
+                "sdp": pc.localDescription.sdp,
+                "type": pc.localDescription.type,
+            },
+        )
 
-    ok = True
+    async def connect_answer(pc, answer):
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        )
+        deadline = time.monotonic() + 8
+        while pc.connectionState != "connected" and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return pc.connectionState == "connected"
 
-    def check(name, good, detail=""):
-        nonlocal ok
-        print(f"  {'PASS' if good else 'FAIL'}: {name}"
-              + (f"  {detail}" if detail and not good else ""))
-        ok = ok and good
+    async def wait_dc_open(dc):
+        deadline = time.monotonic() + 5
+        while dc.readyState != "open" and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return dc.readyState == "open"
 
-    async with aiohttp.ClientSession() as http:
-        await post(http, f"{MAIN_SERVER}/register/",
-                   {"client_id": COMPAT_CLIENT_ID})
-        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
-                   {"config": "unity_chan_webrtc", "force": True})
+    async def session_state(http):
+        async with http.get(f"{WEBRTC_SERVER}/status") as response:
+            body = await response.json()
+        return response.status, body.get("sessions", {})
 
-        st, resp = await offer_status(http, [AudioStreamTrack()], True)
-        gaps = resp.get("mismatches", [])
-        check("audio-only offer rejected",
-              st == 400 and len(gaps) == 2
-              and all("video" in g for g in gaps), f"{st} {gaps}")
+    async def wait_session_absent(http):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            status_code, sessions = await session_state(http)
+            if status_code == 200 and COMPAT_CLIENT_ID not in sessions:
+                return True
+            await asyncio.sleep(0.2)
+        return False
 
-        st, resp = await offer_status(
-            http, [AudioStreamTrack(), VideoStreamTrack()], False)
-        gaps = resp.get("mismatches", [])
-        check("no-DataChannel offer rejected",
-              st == 400 and len(gaps) == 1 and "DataChannel" in gaps[0],
-              f"{st} {gaps}")
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            status_code, body = await post(
+                http,
+                f"{WEBRTC_SERVER}/offer/{COMPAT_CLIENT_ID}",
+                {},
+            )
+            check(
+                "unregistered WebRTC offer rejected with 403",
+                status_code == 403,
+                f"{status_code} {body}",
+            )
 
-        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
-                   {"config": "unity_chan_text", "force": True})
-        st, resp = await offer_status(
-            http, [AudioStreamTrack(), VideoStreamTrack()], True)
-        gaps = resp.get("mismatches", [])
-        check("non-webrtc pipeline offer rejected",
-              st == 400 and gaps and "not a webrtc pipeline" in gaps[0],
-              f"{st} {gaps}")
+            status_code, body = await post(
+                http,
+                f"{MAIN_SERVER}/register/",
+                {"client_id": COMPAT_CLIENT_ID},
+            )
+            if status_code != 200 or body.get("status") != "registered":
+                raise RuntimeError(f"register failed: {status_code} {body}")
 
-        await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
-                   {"config": "unity_chan_webrtc", "force": True})
-        st, resp = await offer_status(
-            http, [AudioStreamTrack(), VideoStreamTrack()], True)
-        check("matching offer accepted", st == 200 and "sdp" in resp,
-              f"{st}")
+            status_code, body = await post(
+                http,
+                f"{WEBRTC_SERVER}/offer/{COMPAT_CLIENT_ID}",
+                {},
+            )
+            check(
+                "uninitialized WebRTC offer rejected with 409",
+                status_code == 409,
+                f"{status_code} {body}",
+            )
 
-        # 5. a webrtc pipeline without a "webrtc" section -> rejected
-        with open(os.path.join(SCRIPT_DIR, "..", "configs",
-                               "unity_chan_webrtc.json")) as f:
-            cfg = json.load(f)
-        del cfg["webrtc"]
-        tmp_path = os.path.join(SCRIPT_DIR, "..", "configs",
-                                "test_webrtc_nosec.json")
-        with open(tmp_path, "w") as f:
-            json.dump(cfg, f)
-        try:
-            await post(http, f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
-                       {"config": "test_webrtc_nosec", "force": True})
-            st, resp = await offer_status(
-                http, [AudioStreamTrack(), VideoStreamTrack()], True)
-            gaps = resp.get("mismatches", [])
-            check("missing webrtc section rejected",
-                  st == 400 and gaps and "webrtc" in gaps[0], f"{st} {gaps}")
-        finally:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            # A fresh runtime initializes without force.
+            await init_config(http, "unity_chan_webrtc")
 
-        # 6./7. bad lane rates -> rejected at offer time. The bad rate goes
-        # ONLY into the webrtc section (the gateway's source): the splitter
-        # node keeps valid values so init_pipeline still passes and the
-        # gateway check is what fires.
-        base_path = os.path.join(SCRIPT_DIR, "..", "configs",
-                                 "unity_chan_webrtc.json")
-        for name, key, bad in (("audio_fps 25", "audio_fps", 25),
-                               ("video_fps 33", "video_fps", 33),
-                               ("data_fps 33", "data_fps", 33)):
-            with open(base_path) as f:
-                cfg = json.load(f)
-            cfg["webrtc"][key] = bad
-            tmp_path = os.path.join(SCRIPT_DIR, "..", "configs",
-                                    "test_webrtc_badrate.json")
-            with open(tmp_path, "w") as f:
-                json.dump(cfg, f)
-            try:
-                await post(http,
-                           f"{MAIN_SERVER}/init_pipeline/{COMPAT_CLIENT_ID}",
-                           {"config": "test_webrtc_badrate", "force": True})
-                st, resp = await offer_status(
-                    http, [AudioStreamTrack(), VideoStreamTrack()], True)
-                check(f"{name} config rejected at offer time",
-                      st == 400 and key in resp.get("error", ""),
-                      f"{st} {resp}")
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+            pc, _ = await make_offer([AudioStreamTrack()], True)
+            status_code, body = await offer(http, pc)
+            gaps = body.get("mismatches", [])
+            check(
+                "audio-only offer rejected",
+                status_code == 400 and any("video" in gap for gap in gaps),
+                f"{status_code} {body}",
+            )
+            await pc.close()
 
-        await post(http, f"{MAIN_SERVER}/unregister/",
-                   {"client_id": COMPAT_CLIENT_ID})
+            pc, _ = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], False
+            )
+            status_code, body = await offer(http, pc)
+            gaps = body.get("mismatches", [])
+            check(
+                "offer without DataChannel rejected",
+                status_code == 400
+                and any("DataChannel" in gap for gap in gaps),
+                f"{status_code} {body}",
+            )
+            await pc.close()
 
-    print(f"\n  {'Compat test passed!' if ok else 'Compat test FAILED.'}")
-    return ok
+            # This is the one deliberate force case: replace an initialized,
+            # not-yet-used runtime with a different config.
+            await init_config(http, "unity_chan_text", force=True)
+            pc, _ = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], True
+            )
+            status_code, body = await offer(http, pc)
+            gaps = body.get("mismatches", [])
+            check(
+                "non-WebRTC config rejected",
+                status_code == 400
+                and any("not a webrtc pipeline" in gap for gap in gaps),
+                f"{status_code} {body}",
+            )
+            await pc.close()
+
+            await init_config(http, "unity_chan_webrtc", force=True)
+
+            # The main server owns the client runtime. A direct WS that has
+            # already consumed it must make a same-ID WebRTC offer fail too.
+            direct_ws = await http.ws_connect(
+                f"{MAIN_SERVER.replace('http', 'ws', 1)}/ws/{COMPAT_CLIENT_ID}"
+            )
+            await direct_ws.send_json({
+                "signal": "connection_start",
+                "timestamp": time.time(),
+            })
+            blocked_pc, _ = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], True
+            )
+            status_code, body = await offer(http, blocked_pc)
+            check(
+                "direct WS blocks same-ID WebRTC offer with 409",
+                status_code == 409,
+                f"{status_code} {body}",
+            )
+            check(
+                "failed WebRTC offer leaves direct WS open",
+                not direct_ws.closed,
+            )
+            await blocked_pc.close()
+            await direct_ws.close()
+            direct_ws = None
+            await init_config(http, "unity_chan_webrtc")
+
+            first_pc, first_dc = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], True
+            )
+            status_code, answer = await offer(http, first_pc)
+            first_connected = (
+                status_code == 200
+                and "sdp" in answer
+                and await connect_answer(first_pc, answer)
+            )
+            first_connected = first_connected and await wait_dc_open(first_dc)
+            check("matching offer connected", first_connected, f"{status_code}")
+
+            duplicate_pc, _ = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], True
+            )
+            status_code, body = await offer(http, duplicate_pc)
+            check(
+                "active same-ID offer rejected with 409",
+                status_code == 409
+                and body.get("error") == "WebRTC session already exists",
+                f"{status_code} {body}",
+            )
+            await duplicate_pc.close()
+
+            status_code, sessions = await session_state(http)
+            old_healthy = (
+                status_code == 200
+                and sessions.get(COMPAT_CLIENT_ID, {}).get("connected") is True
+                and first_pc.connectionState == "connected"
+                and first_dc.readyState == "open"
+            )
+            check("409 leaves the old session healthy", old_healthy, str(sessions))
+
+            await first_pc.close()
+            removed = await wait_session_absent(http)
+            check("closed session removed from gateway", removed)
+
+            # A consumed connection must be initialized again, but force is not
+            # needed after its teardown.
+            await init_config(http, "unity_chan_webrtc")
+            replacement_pc, _ = await make_offer(
+                [AudioStreamTrack(), VideoStreamTrack()], True
+            )
+            status_code, answer = await offer(http, replacement_pc)
+            replacement_connected = (
+                status_code == 200
+                and "sdp" in answer
+                and await connect_answer(replacement_pc, answer)
+            )
+            check(
+                "re-init permits a new same-ID offer",
+                replacement_connected,
+                f"{status_code} {answer}",
+            )
+            await replacement_pc.close()
+            check(
+                "replacement session cleaned up",
+                await wait_session_absent(http),
+            )
+    except Exception as error:
+        print(f"[FAIL] compat test error: {error}")
+        ok = False
+    finally:
+        if direct_ws is not None and not direct_ws.closed:
+            await direct_ws.close()
+        for pc in pcs:
+            if pc.connectionState != "closed":
+                await pc.close()
+        if drain_tasks:
+            await asyncio.gather(*drain_tasks, return_exceptions=True)
+        cleanup_ok = await cleanup_test_client(COMPAT_CLIENT_ID)
+
+    print(f"\n  {'Compat test passed!' if ok and cleanup_ok else 'Compat test FAILED.'}")
+    return ok and cleanup_ok
 
 
 def run_compat(args):
@@ -1220,7 +1508,7 @@ def run_compat(args):
 # ============================================================
 # Mode: lifecycle  (from test_webrtc_lifecycle.py test_lifecycle)
 # ============================================================
-async def test_lifecycle():
+async def _test_lifecycle_once():
     """Test connection_start/stop flow through WebRTC server."""
     import requests
 
@@ -1230,22 +1518,33 @@ async def test_lifecycle():
 
     # 1. Register + init pipeline
     print("\n  [1] Register + init pipeline...")
-    r = requests.post(f"{MAIN_SERVER}/register/", json={"client_id": LIFECYCLE_CLIENT_ID})
-    assert r.json()["status"] in ("registered", "already registered"), r.json()
+    r = requests.post(
+        f"{MAIN_SERVER}/register/",
+        json={"client_id": LIFECYCLE_CLIENT_ID},
+        timeout=30,
+    )
+    if r.status_code != 200 or r.json().get("status") != "registered":
+        raise RuntimeError(f"register failed: {r.status_code} {r.text}")
     r = requests.post(
         f"{MAIN_SERVER}/init_pipeline/{LIFECYCLE_CLIENT_ID}",
-        json={"config": LIFECYCLE_PIPELINE_CONFIG, "force": True},
+        json={"config": LIFECYCLE_PIPELINE_CONFIG},
+        timeout=30,
     )
-    assert r.json()["status"] == "initialized", r.json()
+    if r.status_code != 200 or r.json().get("status") != "initialized":
+        raise RuntimeError(f"init failed: {r.status_code} {r.text}")
     print(f"    Pipeline initialized with {LIFECYCLE_PIPELINE_CONFIG}")
 
     # Wait for FrameSplitter to init
     await asyncio.sleep(1)
 
     # 2. Check pipeline log: FrameSplitter should be paused
-    log = requests.get(f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}").json().get("log_content", "")
-    assert "paused until connection_start" in log, "FrameSplitter not in paused state"
-    assert "clock started" not in log, "Clock started before WebRTC connection"
+    log = requests.get(
+        f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}", timeout=30
+    ).json().get("log_content", "")
+    if "paused until connection_start" not in log:
+        raise RuntimeError("FrameSplitter not in paused state")
+    if "clock started" in log:
+        raise RuntimeError("Clock started before WebRTC connection")
     print("    FrameSplitter initialized in paused state: OK")
 
     # 3. Connect WebRTC
@@ -1253,6 +1552,20 @@ async def test_lifecycle():
     pc = RTCPeerConnection()
     received_data = []
     dc_open = asyncio.Event()
+    receiver_errors = []
+    receiver_tasks = []
+
+    async def drain(track):
+        try:
+            while True:
+                await track.recv()
+        except asyncio.CancelledError:
+            raise
+        except MediaStreamError:
+            pass  # normal remote-track EOF during peer teardown
+        except Exception as error:
+            if pc.connectionState not in ("closed", "failed"):
+                receiver_errors.append(f"{track.kind} receiver: {error}")
 
     pc.addTrack(SilenceTrack())
     pc.addTrack(BlackVideoTrack())
@@ -1261,11 +1574,14 @@ async def test_lifecycle():
     def on_dc(channel):
         @channel.on("message")
         def on_msg(msg):
-            received_data.append(json.loads(msg))
+            try:
+                received_data.append(json.loads(msg))
+            except Exception as error:
+                receiver_errors.append(f"DataChannel receiver: {error}")
 
     @pc.on("track")
     def on_track(track):
-        pass  # We receive but don't process
+        receiver_tasks.append(asyncio.create_task(drain(track)))
 
     dc = pc.createDataChannel("client-data")
 
@@ -1279,7 +1595,10 @@ async def test_lifecycle():
     r = requests.post(
         f"{WEBRTC_SERVER}/offer/{LIFECYCLE_CLIENT_ID}",
         json={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
+        timeout=30,
     )
+    if r.status_code != 200:
+        raise RuntimeError(f"offer failed: {r.status_code} {r.text}")
     answer = r.json()
     await pc.setRemoteDescription(
         RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
@@ -1292,7 +1611,9 @@ async def test_lifecycle():
 
     await asyncio.sleep(2)  # let groups flow
 
-    log = requests.get(f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}").json().get("log_content", "")
+    log = requests.get(
+        f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}", timeout=30
+    ).json().get("log_content", "")
     clock_started = "clock started" in log
     print(f"    FrameSplitter clock started: {'OK' if clock_started else 'FAIL'}")
 
@@ -1307,9 +1628,13 @@ async def test_lifecycle():
     # 6. Disconnect WebRTC → pipeline auto-disposed
     print("\n  [3] Disconnect WebRTC...")
     await pc.close()
+    if receiver_tasks:
+        await asyncio.gather(*receiver_tasks, return_exceptions=True)
     await asyncio.sleep(3)  # wait for dispose to complete
 
-    log = requests.get(f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}").json().get("log_content", "")
+    log = requests.get(
+        f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}", timeout=30
+    ).json().get("log_content", "")
     pipeline_disposed = "disposed" in log.lower()
     print(f"    Pipeline disposed: {'OK' if pipeline_disposed else 'FAIL'}")
 
@@ -1317,45 +1642,63 @@ async def test_lifecycle():
     r = requests.post(
         f"{MAIN_SERVER}/init_pipeline/{LIFECYCLE_CLIENT_ID}",
         json={"config": LIFECYCLE_PIPELINE_CONFIG},
+        timeout=30,
     )
     can_reinit = r.json().get("status") == "initialized"
     print(f"    Re-init without force: {'OK' if can_reinit else 'FAIL'}")
 
-    # 8. Cleanup
-    print("\n  [4] Cleanup...")
-    requests.post(f"{MAIN_SERVER}/unregister/", json={"client_id": LIFECYCLE_CLIENT_ID})
-    print("    Unregistered")
-
     # Summary
     print("\n" + "=" * 60)
-    all_ok = clock_started and data_flowing and pipeline_disposed and can_reinit
+    all_ok = (
+        clock_started
+        and data_flowing
+        and pipeline_disposed
+        and can_reinit
+        and not receiver_errors
+    )
     results = [
         ("Clock started on connect", clock_started),
         ("Data flowing", data_flowing),
         ("Pipeline disposed on disconnect", pipeline_disposed),
         ("Re-init without force", can_reinit),
+        ("Receivers completed without error", not receiver_errors),
     ]
     for name, ok in results:
         print(f"  {'PASS' if ok else 'FAIL'}: {name}")
+    for error in receiver_errors:
+        print(f"  [FAIL] {error}")
     print(f"\n  {'All tests passed!' if all_ok else 'Some tests FAILED.'}")
     return all_ok
 
 
+async def test_lifecycle():
+    result = False
+    try:
+        result = await _test_lifecycle_once()
+    finally:
+        cleanup_ok = await cleanup_test_client(LIFECYCLE_CLIENT_ID)
+    return result and cleanup_ok
+
+
 def run_lifecycle(args):
     """Entry for --mode lifecycle. Mirrors original test_webrtc_lifecycle.py."""
+    global WEBRTC_SERVER
+    WEBRTC_SERVER = args.server
     return asyncio.run(test_lifecycle())
 
 
 # ============================================================
 # Mode: multi  (from test_webrtc_multi.py)
 # ============================================================
-def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
+def run_client_process(
+    client_id, output_mp4, result_dict, pipeline=None, webrtc_server=None
+):
+    """Entry point for each client process."""
     # child processes re-import this module (start-method dependent), so
     # the pipeline choice must arrive as an argument, not via the global
     global PIPELINE_CONFIG
     if pipeline:
         PIPELINE_CONFIG = pipeline
-    """Entry point for each client process."""
     import numpy as np
     import aiohttp
     from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -1366,12 +1709,14 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
     # NOTE: PIPELINE_CONFIG deliberately NOT imported — the fresh module's
     # default would clobber the per-child value set from the argument above
     from test_webrtc import (
-        MAIN_SERVER, WEBRTC_SERVER, TEST_WAV,
+        MAIN_SERVER, WEBRTC_SERVER as DEFAULT_WEBRTC_SERVER, TEST_WAV,
         SAMPLE_RATE, AUDIO_PTIME, AUDIO_SAMPLES, VIDEO_FPS,
         load_test_audio, TestAudioTrack, TestVideoTrack, record_mp4,
+        cleanup_test_client,
     )
+    gateway_url = webrtc_server or DEFAULT_WEBRTC_SERVER
 
-    async def run():
+    async def run_once():
         # Register + init pipeline
         try:
             async with aiohttp.ClientSession() as session:
@@ -1381,15 +1726,22 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
                 ) as resp:
                     reg = await resp.json()
                     print(f"[{client_id}] Register: {reg}")
+                    if resp.status != 200 or reg.get("status") != "registered":
+                        result_dict["error"] = (
+                            f"Register failed: {resp.status} {reg}"
+                        )
+                        return
 
                 async with session.post(
                     f"{MAIN_SERVER}/init_pipeline/{client_id}",
-                    json={"config": PIPELINE_CONFIG, "force": True},
+                    json={"config": PIPELINE_CONFIG},
                 ) as resp:
-                    if resp.status != 200:
-                        result_dict["error"] = f"Init pipeline failed: {resp.status}"
-                        return
                     init = await resp.json()
+                    if resp.status != 200 or init.get("status") != "initialized":
+                        result_dict["error"] = (
+                            f"Init pipeline failed: {resp.status} {init}"
+                        )
+                        return
                     print(f"[{client_id}] Init pipeline: {init}")
         except Exception as e:
             result_dict["error"] = f"Setup failed: {e}"
@@ -1410,13 +1762,15 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
         recv_dc_messages = []
         recv_dc_timeline = []
         recv_start = [None]
+        receiver_errors = []
+        receiver_tasks = []
 
         @pc.on("track")
         def on_track(track):
             if track.kind == "audio":
-                asyncio.ensure_future(_recv_audio(track))
+                receiver_tasks.append(asyncio.create_task(_recv_audio(track)))
             elif track.kind == "video":
-                asyncio.ensure_future(_recv_video(track))
+                receiver_tasks.append(asyncio.create_task(_recv_video(track)))
 
         async def _recv_audio(track):
             try:
@@ -1426,8 +1780,13 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
                     if frame.layout.name == "stereo":
                         pcm = pcm[::2]
                     recv_audio_frames.append(pcm)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except MediaStreamError:
+                pass  # normal remote-track EOF during peer teardown
+            except Exception as error:
+                if pc.connectionState not in ("closed", "failed"):
+                    receiver_errors.append(f"audio receiver: {error}")
 
         async def _recv_video(track):
             try:
@@ -1437,8 +1796,13 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
                         recv_start[0] = time.time()
                     rgb = frame.to_ndarray(format="rgb24").copy()
                     recv_video_frames.append((time.time() - recv_start[0], rgb))
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except MediaStreamError:
+                pass  # normal remote-track EOF during peer teardown
+            except Exception as error:
+                if pc.connectionState not in ("closed", "failed"):
+                    receiver_errors.append(f"video receiver: {error}")
 
         @pc.on("datachannel")
         def on_datachannel(channel):
@@ -1449,8 +1813,8 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
                     recv_dc_messages.append(parsed)
                     if recv_start[0] is not None:
                         recv_dc_timeline.append((time.time() - recv_start[0], parsed))
-                except Exception:
-                    pass
+                except Exception as error:
+                    receiver_errors.append(f"DataChannel receiver: {error}")
 
         client_dc = pc.createDataChannel("client-signals", ordered=True)
 
@@ -1461,7 +1825,7 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{WEBRTC_SERVER}/offer/{client_id}",
+                    f"{gateway_url}/offer/{client_id}",
                     json={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
                 ) as resp:
                     if resp.status != 200:
@@ -1523,7 +1887,7 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
             await asyncio.sleep(0.2)
 
         # Record MP4
-        record_mp4(
+        recording_ok = record_mp4(
             sent_video=send_video.recorded_frames,
             sent_audio=send_audio.recorded_pcm,
             recv_video=recv_video_frames,
@@ -1533,18 +1897,8 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
         )
 
         await pc.close()
-
-        # Unregister
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{MAIN_SERVER}/unregister/",
-                    json={"client_id": client_id},
-                ) as resp:
-                    unreg = await resp.json()
-                    print(f"[{client_id}] Unregister: {unreg}")
-        except Exception:
-            pass
+        if receiver_tasks:
+            await asyncio.gather(*receiver_tasks, return_exceptions=True)
 
         # Store results
         result_dict["dc_msgs"] = len(recv_dc_messages)
@@ -1559,6 +1913,20 @@ def run_client_process(client_id, output_mp4, result_dict, pipeline=None):
         result_dict["recv_video"] = len(recv_video_frames)
         result_dict["sent_audio"] = len(send_audio.recorded_pcm)
         result_dict["recv_audio"] = len(recv_audio_frames)
+        result_dict["recording"] = recording_ok
+        result_dict["receiver_errors"] = list(receiver_errors)
+
+    async def run():
+        try:
+            await run_once()
+        finally:
+            cleanup_ok = await cleanup_test_client(
+                client_id,
+                main_server_url=MAIN_SERVER,
+                gateway_url=gateway_url,
+            )
+            if not cleanup_ok and "error" not in result_dict:
+                result_dict["error"] = "client/session cleanup failed"
 
     asyncio.run(run())
 
@@ -1583,13 +1951,15 @@ def run_multi(args):
     results = []
 
     for i in range(num_clients):
-        cid = f"multi_test_{i+1}"
-        mp4 = os.path.join(OUTPUT_DIR, f"test_webrtc_multi_{i+1}.mp4")
+        cid = f"multi_test_{RUN_TOKEN}_{i+1}"
+        mp4 = os.path.join(
+            OUTPUT_DIR, f"test_webrtc_multi_{RUN_TOKEN}_{i+1}.mp4"
+        )
         result_dict = manager.dict()
         results.append((cid, result_dict))
         p = multiprocessing.Process(
             target=run_client_process,
-            args=(cid, mp4, result_dict, PIPELINE_CONFIG),
+            args=(cid, mp4, result_dict, PIPELINE_CONFIG, WEBRTC_SERVER),
         )
         processes.append(p)
 
@@ -1601,19 +1971,30 @@ def run_multi(args):
     # would also block interpreter exit), so terminate leftovers
     for p in processes:
         p.join(timeout=CLIENT_TEST_DURATION + 60)
+    timed_out = set()
     for p in processes:
         if p.is_alive():
-            print(f"  [WARN] client process {p.pid} timed out; terminating")
+            print(f"  [FAIL] client process {p.pid} timed out; terminating")
+            timed_out.add(p.pid)
             p.terminate()
             p.join(timeout=10)
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=5)
 
     print("\n" + "=" * 60)
     print("MULTI-USER RESULTS")
     print("=" * 60)
     all_ok = True
-    for cid, rd in results:
+    for (cid, rd), process in zip(results, processes):
         rd = dict(rd)
-        if "error" in rd:
+        if process.pid in timed_out:
+            print(f"  [{cid}] FAIL: process timeout")
+            all_ok = False
+        elif process.exitcode != 0:
+            print(f"  [{cid}] FAIL: child exit code {process.exitcode}")
+            all_ok = False
+        elif "error" in rd:
             print(f"  [{cid}] FAIL: {rd['error']}")
             all_ok = False
         else:
@@ -1624,25 +2005,67 @@ def run_multi(args):
             audio = rd.get("audio_frames", 0)
             sv = rd.get("sent_video", 0)
             rv = rd.get("recv_video", 0)
-            duration = sv / 30 if sv > 0 else 0
-            # Pass if: got text responses + got non-silent audio
-            # EoS may not arrive if response is long — normal disconnect scenario
-            ok = text > 0 and non_silent > 0
+            recording = rd.get("recording", False)
+            receiver_errors = rd.get("receiver_errors", [])
+            duration = sv / VIDEO_FPS if sv > 0 else 0
+            ok = (
+                eos
+                and text > 0
+                and non_silent > 0
+                and rv > 0
+                and recording
+                and not receiver_errors
+            )
             status = "OK" if ok else "FAIL"
             print(f"  [{cid}] {status}: {dc} DC msgs, {text} text, EoS={eos}, "
-                  f"audio={non_silent}/{audio}, video={sv}sent/{rv}recv, {duration:.1f}s")
+                  f"audio={non_silent}/{audio}, video={sv}sent/{rv}recv, "
+                  f"recording={recording}, {duration:.1f}s")
+            for error in receiver_errors:
+                print(f"    receiver error: {error}")
             if not ok:
                 all_ok = False
 
     # Check server cleanup
     try:
         import requests
-        clients = requests.get(f"{MAIN_SERVER}/clients/").json()
-        status = requests.get(f"{WEBRTC_SERVER}/status").json()
+        clients_response = requests.get(f"{MAIN_SERVER}/clients/", timeout=10)
+        status_response = requests.get(f"{WEBRTC_SERVER}/status", timeout=10)
+        clients_response.raise_for_status()
+        status_response.raise_for_status()
+        clients = clients_response.json()
+        status = status_response.json()
         print(f"\n  Main server clients after cleanup: {clients}")
         print(f"  WebRTC sessions after cleanup: {status.get('sessions', {})}")
+        ids = {cid for cid, _ in results}
+        leaked_clients = ids.intersection(clients.get("clients", []))
+        leaked_sessions = ids.intersection(status.get("sessions", {}))
+        if leaked_clients or leaked_sessions:
+            print(
+                f"  [FAIL] leaked clients={sorted(leaked_clients)}, "
+                f"sessions={sorted(leaked_sessions)}"
+            )
+            all_ok = False
+            for cid in sorted(leaked_clients | leaked_sessions):
+                if not asyncio.run(cleanup_test_client(
+                    cid,
+                    main_server_url=MAIN_SERVER,
+                    gateway_url=WEBRTC_SERVER,
+                )):
+                    print(f"  [FAIL] residual cleanup failed: {cid}")
     except Exception as e:
-        print(f"  Cleanup check failed: {e}")
+        print(f"  [FAIL] Cleanup check failed: {e}")
+        all_ok = False
+
+    for cid, _ in results:
+        try:
+            os.unlink(os.path.join(
+                SCRIPT_DIR, "..", "logs", f"client_{cid}.log"
+            ))
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            print(f"  [FAIL] test log cleanup for {cid}: {error}")
+            all_ok = False
 
     if all_ok:
         print("\nAll clients passed!")
@@ -1836,7 +2259,7 @@ def fs_test_steady_clock_rate():
     thread = fs_start_splitter(ctx)
     fs_send_connection_start(ctx)
     results = fs_collect(ctx["output_queue"], duration_s=1.5)
-    fs_stop_splitter(ctx, thread)
+    teardown_failed = fs_stop_splitter(ctx, thread)
 
     # Check timing intervals
     times = [r["_collect_time"] for r in results]
@@ -1852,7 +2275,9 @@ def fs_test_steady_clock_rate():
     # All should have audio field (silence)
     has_audio = all("audio" in r for r in results)
 
-    ok = True
+    ok = not teardown_failed
+    if teardown_failed:
+        print("  FAIL: FrameSplitter thread still alive")
     if len(results) < 12:  # 1.5s / 0.1s = 15, minus some startup
         print(f"  FAIL: too few groups ({len(results)})")
         ok = False
@@ -1887,7 +2312,7 @@ def fs_test_audio_groups():
 
     # Collect for 2 seconds (0.5s audio + some default groups)
     results = fs_collect(ctx["output_queue"], duration_s=2.0)
-    fs_stop_splitter(ctx, thread)
+    teardown_failed = fs_stop_splitter(ctx, thread)
 
     # Count groups with real audio vs silence
     # Real audio groups have non-zero PCM data
@@ -1910,7 +2335,9 @@ def fs_test_audio_groups():
     print(f"  Total groups:      {len(results)}")
     print(f"  Audio groups:      {real_count} (expected ~{expected})")
 
-    ok = True
+    ok = not teardown_failed
+    if teardown_failed:
+        print("  FAIL: FrameSplitter thread still alive")
     if abs(real_count - expected) > 1:
         print(f"  FAIL: expected ~{expected} audio groups, got {real_count}")
         ok = False
@@ -1970,7 +2397,7 @@ def fs_test_signal_ordering():
     fs_send_signal(ctx, "EoS", ts=ts)
 
     results = fs_collect(ctx["output_queue"], duration_s=2.5)
-    fs_stop_splitter(ctx, thread)
+    teardown_failed = fs_stop_splitter(ctx, thread)
 
     # Find SoS, EoS, and first/last audio group
     sos_idx = None
@@ -1999,7 +2426,9 @@ def fs_test_signal_ordering():
     print(f"  Last audio at:     {last_audio_idx}")
     print(f"  EoS at index:      {eos_idx}")
 
-    ok = True
+    ok = not teardown_failed
+    if teardown_failed:
+        print("  FAIL: FrameSplitter thread still alive")
     if sos_idx is None:
         print(f"  FAIL: SoS not found")
         ok = False
@@ -2042,7 +2471,7 @@ def fs_test_cancel_clears_buffer():
 
     # Collect and count real audio groups
     results = fs_collect(ctx["output_queue"], duration_s=3.0)
-    fs_stop_splitter(ctx, thread)
+    teardown_failed = fs_stop_splitter(ctx, thread)
 
     audio_count = 0
     for r in results:
@@ -2059,7 +2488,9 @@ def fs_test_cancel_clears_buffer():
     print(f"  Audio groups:      {audio_count} (expected << 20)")
     print(f"  Total groups:      {len(results)}")
 
-    ok = True
+    ok = not teardown_failed
+    if teardown_failed:
+        print("  FAIL: FrameSplitter thread still alive")
     if audio_count >= 15:
         print(f"  FAIL: cancel didn't reduce audio output")
         ok = False
@@ -2081,7 +2512,7 @@ def fs_test_no_drift():
 
     duration = 5.0
     results = fs_collect(ctx["output_queue"], duration_s=duration, max_items=100)
-    fs_stop_splitter(ctx, thread)
+    teardown_failed = fs_stop_splitter(ctx, thread)
 
     # Expected: duration / 0.1 = 50 groups
     expected = int(duration / 0.1)
@@ -2097,7 +2528,9 @@ def fs_test_no_drift():
     print(f"  Groups collected:  {len(results)} (expected ~{expected})")
     print(f"  Actual rate:       {actual_rate:.2f} groups/s (expected 10.0)")
 
-    ok = True
+    ok = not teardown_failed
+    if teardown_failed:
+        print("  FAIL: FrameSplitter thread still alive")
     # Allow ±5% tolerance
     if abs(len(results) - expected) > expected * 0.1:
         print(f"  FAIL: group count off by > 10%")
@@ -2158,7 +2591,9 @@ def fs_test_webrtc_startup_buffer():
     print(f"  Consumed empty:    {len(empty)}")
     print(f"  Remaining in queue:{group_queue.qsize()}")
 
-    ok = True
+    ok = not t.is_alive()
+    if t.is_alive():
+        print("  FAIL: startup-buffer producer thread still alive")
     if len(real) == 0:
         print(f"  FAIL: no real groups consumed")
         ok = False

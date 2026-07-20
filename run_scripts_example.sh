@@ -1,61 +1,80 @@
 #!/bin/zsh
 
-# Kill existing screen sessions with the given name
-kill_screen_if_exists() {
-    screen_name=$1
-    screen -ls | grep "$screen_name" > /dev/null
-    if [ $? -eq 0 ]; then
-        echo "Killing existing screen session: $screen_name"
+# Stop one exact screen session name.
+stop_screen_if_running() {
+    local screen_name=$1
+    if screen -S "$screen_name" -Q select . >/dev/null 2>&1; then
+        echo "Stopping existing screen session: $screen_name"
         screen -S "$screen_name" -X quit
     fi
 }
 
-# Wait for a service port to be ready
-wait_for_port() {
-    local port=$1
-    local name=$2
-    local timeout=${3:-120}
+# Wait until the service endpoint returns the expected response.
+wait_for_service() {
+    local url=$1
+    local expected=$2
+    local name=$3
+    local screen_name=$4
+    local timeout=${5:-120}
     local elapsed=0
-    echo "Waiting for $name (port $port) to be ready..."
-    while ! ss -tlnp 2>/dev/null | grep -q ":$port "; do
-        sleep 2
-        elapsed=$((elapsed + 2))
-        if [ $elapsed -ge $timeout ]; then
-            echo "WARNING: $name (port $port) not ready after ${timeout}s, continuing anyway"
+    local response=""
+
+    echo "Waiting for $name to be ready..."
+    while [ $elapsed -lt $timeout ]; do
+        if ! screen -S "$screen_name" -Q select . >/dev/null 2>&1; then
+            echo "ERROR: $name process exited during startup" >&2
             return 1
         fi
+        response=$(curl -fsS --max-time 2 "$url" 2>/dev/null)
+        if [ $? -eq 0 ] && [[ "$response" == *"$expected"* ]]; then
+            echo "$name is ready (${elapsed}s)"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
     done
-    echo "$name (port $port) is ready (${elapsed}s)"
-    return 0
+
+    echo "ERROR: $name was not ready after ${timeout}s" >&2
+    return 1
 }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ============================================================
-# This script starts only the pipeline server itself.
+# This script starts only the main WebSocket server and WebRTC gateway.
 # All model services (ASR, LLM, TTS, VectorDatabase) must be
 # started separately. See Modules_standalone/*/README.md.
 # ============================================================
 
-kill_screen_if_exists "yachiyo"
-kill_screen_if_exists "webrtc"
+stop_screen_if_running "yachiyo"
+stop_screen_if_running "webrtc"
 
 echo "Starting pipeline server..."
 
 # 1. Main server - port 8910
 echo "[1/2] Starting YACHIYO server..."
-screen -dmS yachiyo zsh -c "source ~/.zshrc; conda activate yachiyo && uvicorn server_fastapi:app --host 0.0.0.0 --port 8910; exec zsh"
-wait_for_port 8910 "YACHIYO"
+if ! screen -dmS yachiyo zsh -c "source ~/.zshrc; conda activate yachiyo && exec uvicorn server_fastapi:app --host 0.0.0.0 --port 8910"; then
+    echo "ERROR: failed to start YACHIYO screen session" >&2
+    exit 1
+fi
+if ! wait_for_service "http://127.0.0.1:8910/clients/" '"clients"' "YACHIYO" "yachiyo"; then
+    stop_screen_if_running "yachiyo"
+    exit 1
+fi
 
 # 2. WebRTC server - port 15168
 echo "[2/2] Starting WebRTC server..."
-screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachiyo && python server_webrtc.py --port 15168; exec zsh"
-wait_for_port 15168 "WebRTC"
+if ! screen -dmS webrtc zsh -c "source ~/.zshrc; conda activate yachiyo && exec python server_webrtc.py --port 15168"; then
+    echo "ERROR: failed to start WebRTC screen session" >&2
+    stop_screen_if_running "yachiyo"
+    exit 1
+fi
+if ! wait_for_service "http://127.0.0.1:15168/status" '"running"' "WebRTC" "webrtc"; then
+    stop_screen_if_running "webrtc"
+    stop_screen_if_running "yachiyo"
+    exit 1
+fi
 
 echo ""
-echo "Pipeline server started. Make sure model services are running:"
-echo "  - ASR:            see Modules_standalone/QwenASR/README.md"
-echo "  - LLM:            see Modules_standalone/VLLM/README.md"
-echo "  - TTS:            see Modules_standalone/QwenTTS/README.md"
-echo "  - VectorDatabase: see Modules_standalone/VectorDatabase/README.md"
+echo "YACHIYO and WebRTC servers started."

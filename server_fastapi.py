@@ -9,8 +9,10 @@ from starlette.middleware.cors import CORSMiddleware
 
 import asyncio
 import json
+import math
 import threading
 import queue
+from collections import deque
 from queue import Queue
 from Modules import get_function_class_by_name
 from utils.event_handler import EventHandler
@@ -67,6 +69,10 @@ class ClientConnection:
         self.logger = logger
         self.initialized = False
         self.connected = False
+        # This client's current init-built runtime may be attached once.  A
+        # different client ID may independently use the same pipeline config.
+        self.connection_used = False
+        self.pipeline_config = None
 
         self.send_queue = Queue()
         self.send_task = None
@@ -77,10 +83,6 @@ class ClientConnection:
         # torn down with it); all control-verb traffic goes through its
         # inbox via submit().
         self.events = None
-        # Serializes dispose: the endpoint's finally and /unregister (or a
-        # force re-init) can race; the loser waits, then returns on the
-        # initialized guard instead of tearing down a half-cleared state.
-        self._dispose_lock = asyncio.Lock()
         self.threads = []
         self.websocket = None
         self.last_timestamp = 0  # entry monotonicity floor (non-cancel)
@@ -101,16 +103,17 @@ class ClientConnection:
         self.logger.info(f"{message}")
 
     async def init_pipeline(self, pipeline_config, force=False):
-        if self.initialized:
+        if self.initialized and not self.connection_used and not force:
             self.log_info(f"Init: Client {self.client_id} already initialized")
-            if force:
-                self.log_info(f"Init: Force reinitializing client {self.client_id}")
-                await self.dispose()
-            else:
-                return
+            return
+
+        if self.initialized:
+            self.log_info(f"Init: Reinitializing client {self.client_id}")
+            await self.dispose()
 
         self.pipeline_config = pipeline_config
         self.debug_level = int(pipeline_config.get("__debug_level", 1) or 0)
+        self.last_timestamp = 0
         self.log_info(
             f"Init: Initializing client {self.client_id} with pipeline: {self.pipeline_config}",
             cut=False,
@@ -139,6 +142,7 @@ class ClientConnection:
             self.initialized = False
             raise
         self.initialized = True
+        self.connection_used = False
         self.log_info(f"Init: Client {self.client_id} initialized")
 
     def setup_processing_pipeline(self):
@@ -208,11 +212,14 @@ class ClientConnection:
 
     async def start_pipeline(self, websocket: WebSocket):
         if not self.initialized:
-            self.log_info(f"Start: No start: Client {self.client_id} not initialized")
-            return
-        await self.close()
+            raise RuntimeError(f"Client {self.client_id} is not initialized")
+        if self.connection_used:
+            raise RuntimeError(
+                f"Client {self.client_id} must reinitialize before reconnecting"
+            )
         self.websocket = websocket
         self.connected = True
+        self.connection_used = True
         while not self.send_queue.empty():
             self.send_queue.get()
         # Start task to listen on send_queue and send data to client
@@ -290,7 +297,11 @@ class ClientConnection:
             try:
                 data = json.loads(raw)
                 ts = data.get("timestamp")
-                if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                if (
+                    isinstance(ts, bool)
+                    or not isinstance(ts, (int, float))
+                    or (isinstance(ts, float) and math.isnan(ts))
+                ):
                     self.logger.error(
                         f"Received: missing/invalid timestamp, dropped: {data}")
                     continue
@@ -320,43 +331,34 @@ class ClientConnection:
                 self.logger.error(f"Received (message): {e}")
 
     async def dispose(self):
-        async with self._dispose_lock:
-            self.log_info(f"Dispose: Disposing client {self.client_id}")
-            if not self.initialized:
-                self.log_info(
-                    f"Dispose: No dispose: Client {self.client_id} not initialized"
-                )
-                return
-            if self.connected:
-                await self.close()
-            self.events.submit({"signal": "cancel", "timestamp": float("inf"),
-                            "source": 0})
-            self.events.submit({"signal": "kill"})
-            await self.wait_for_threads()
-            self.events.join()
-            if self.send_task:
-                self.send_task.cancel()
-                self.send_task = None
-            if self.receive_task:
-                self.receive_task.cancel()
-                self.receive_task = None
-            self.queues = [self.send_queue]
-            self.events = None
-            self.threads = []
-            self.initialized = False
-            self.log_info(f"Dispose: Client {self.client_id} disposed")
+        self.log_info(f"Dispose: Disposing client {self.client_id}")
+        if not self.initialized:
+            self.log_info(
+                f"Dispose: No dispose: Client {self.client_id} not initialized"
+            )
+            return
+        await self.close()
+        self.events.submit({"signal": "cancel", "timestamp": float("inf"),
+                        "source": 0})
+        self.events.submit({"signal": "kill"})
+        await self.wait_for_threads()
+        self.events.join()
+        if self.send_task:
+            self.send_task.cancel()
+            self.send_task = None
+        if self.receive_task:
+            self.receive_task.cancel()
+            self.receive_task = None
+        self.queues = [self.send_queue]
+        self.events = None
+        self.threads = []
+        self.initialized = False
+        self.log_info(f"Dispose: Client {self.client_id} disposed")
 
-    async def wait_for_threads(self, timeout=35):
-        """Wait for threads to exit. Timeout should exceed the longest HTTP timeout
-        in any module (e.g. MotionGeneration 30s) to allow graceful exit."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            if not any(t.is_alive() for t in self.threads):
-                return
+    async def wait_for_threads(self):
+        """Wait until every node from this pipeline has actually exited."""
+        while any(t.is_alive() for t in self.threads):
             await asyncio.sleep(TIME_INTERVAL)
-        alive = [t.name for t in self.threads if t.is_alive()]
-        if alive:
-            self.log_info(f"Dispose: threads still alive after {timeout}s: {alive}")
 
     async def close(self):
         if self.connected:
@@ -397,6 +399,18 @@ class ClientManager:
     def __init__(self):
         self.clients: Dict[str, ClientConnection] = {}
         self.registered_clients = set()  # Store registered client_ids
+        # Pipeline initialization is intentionally global and sequential.
+        self.pipeline_init_lock = asyncio.Lock()
+        # Locks outlive ClientConnection objects so waiters for the same ID
+        # can never split across two different locks during unregister.
+        self.lifecycle_locks: Dict[str, asyncio.Lock] = {}
+
+    def lifecycle_lock(self, client_id: str) -> asyncio.Lock:
+        lock = self.lifecycle_locks.get(client_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.lifecycle_locks[client_id] = lock
+        return lock
 
     # Register client
     def register_client(self, client_id: str):
@@ -417,9 +431,11 @@ class ClientManager:
     # Remove client connection
     async def remove_client(self, client_id: str):
         if client_id in self.clients:
-            await self.clients[client_id].dispose()
-            del self.clients[client_id]
-            self.registered_clients.remove(client_id)
+            client = self.clients[client_id]
+            await client.dispose()
+            if self.clients.get(client_id) is client:
+                del self.clients[client_id]
+            self.registered_clients.discard(client_id)
 
     def setup_logger(self, client_id: str) -> logging.Logger:
         # Create logger
@@ -461,6 +477,8 @@ class ClientData(BaseModel):
 
 class ConfigData(BaseModel):
     config: str
+    # A runtime that has already served a WebSocket is always rebuilt.
+    # force also rebuilds an initialized runtime that has not been used yet.
     force: bool = False
 
 
@@ -471,25 +489,26 @@ async def heartbeat(data: ClientData):
 
 @app.post("/register/")
 async def register_client(data: ClientData):
-    if manager.is_registered(data.client_id):
-        global_logger.warning(f"Client {data.client_id} already registered")
-        return {"status": "already registered", "client_id": data.client_id}
-    # Register client
-    manager.register_client(data.client_id)
-    manager.create_client(data.client_id)
-    global_logger.info(f"Client {data.client_id} registered")
-    return {"status": "registered", "client_id": data.client_id}
+    async with manager.lifecycle_lock(data.client_id):
+        if manager.is_registered(data.client_id):
+            global_logger.warning(f"Client {data.client_id} already registered")
+            return {"status": "already registered", "client_id": data.client_id}
+        # Registration only grants this ID permission to initialize.
+        manager.create_client(data.client_id)
+        manager.register_client(data.client_id)
+        global_logger.info(f"Client {data.client_id} registered")
+        return {"status": "registered", "client_id": data.client_id}
 
 
 @app.post("/unregister/")
 async def unregister_client(data: ClientData):
-    if not manager.is_registered(data.client_id):
-        global_logger.warning(f"Client {data.client_id} not registered")
-        return {"status": "not registered", "client_id": data.client_id}
-    # Remove client
-    await manager.remove_client(data.client_id)
-    global_logger.info(f"Client {data.client_id} unregistered")
-    return {"status": "unregistered", "client_id": data.client_id}
+    async with manager.lifecycle_lock(data.client_id):
+        if not manager.is_registered(data.client_id):
+            global_logger.warning(f"Client {data.client_id} not registered")
+            return {"status": "not registered", "client_id": data.client_id}
+        await manager.remove_client(data.client_id)
+        global_logger.info(f"Client {data.client_id} unregistered")
+        return {"status": "unregistered", "client_id": data.client_id}
 
 
 @app.get("/clients/")
@@ -513,73 +532,94 @@ async def get_client(client_id: str):
 async def get_client_log(client_id: str):
     log_filename = f"logs/client_{client_id}.log"
     if not os.path.exists(log_filename):
-        return {"log_content": ""}
-    with open(log_filename, "r") as f:
-        log_content = f.read()
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "client log not found", "client_id": client_id},
+        )
+    if not os.path.isfile(log_filename):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "client log path is not a file", "client_id": client_id},
+        )
+    try:
+        with open(log_filename, "r", encoding="utf-8") as f:
+            log_content = "".join(deque(f, maxlen=200))
+    except (OSError, UnicodeError) as e:
+        global_logger.error(f"Client {client_id} log read failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "client log read failed",
+                "client_id": client_id,
+                "detail": str(e),
+            },
+        ) from e
     return {"log_content": log_content}
 
 
 @app.post("/init_pipeline/{client_id}")
 async def init_pipeline(client_id: str, data: ConfigData):
-    if client_id not in manager.clients:
-        raise HTTPException(status_code=404, detail="Client not found")
+    async with manager.pipeline_init_lock, manager.lifecycle_lock(client_id):
+        if client_id not in manager.clients:
+            raise HTTPException(status_code=404, detail="Client not found")
 
-    client = manager.clients[client_id]
-    config_name = data.config
-    json_file = f"configs/{config_name}.json"
-    # Unknown config = client-side error: reject explicitly (no fallback —
-    # silently building a different pipeline than requested misleads debugging)
-    if not os.path.exists(json_file):
-        global_logger.warning(
-            f"Client {client_id} config file not found: {config_name}"
+        client = manager.clients[client_id]
+        config_name = data.config
+        json_file = f"configs/{config_name}.json"
+        # Unknown config = client-side error: reject explicitly (no fallback —
+        # silently building a different pipeline than requested misleads debugging)
+        if not os.path.exists(json_file):
+            global_logger.warning(
+                f"Client {client_id} config file not found: {config_name}"
+            )
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "config not found", "config": config_name},
+            )
+        global_logger.info(f"Client {client_id} config file: {config_name}")
+        with open(json_file, "r") as file:
+            pipeline_config = json.load(file)
+
+        # Static validation before building: strictly PER-NODE self-consistency
+        # (each node's config vs its own module contract — required catches,
+        # required inputs, emit/dispatch references). No cross-module flow
+        # modeling; broken links between nodes surface at runtime via the
+        # four-state signal rules. Reject on any finding, with the details in
+        # the response and the client log.
+        from utils.pipeline_validator import validate_pipeline
+        errors, warnings = validate_pipeline(
+            pipeline_config, get_function_class_by_name
         )
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "config not found", "config": config_name},
-        )
-    global_logger.info(f"Client {client_id} config file: {config_name}")
-    with open(json_file, "r") as file:
-        pipeline_config = json.load(file)
+        findings = errors + warnings
+        if findings:
+            for f in findings:
+                client.logger.error(f"pipeline validation [{config_name}]: {f}")
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "pipeline validation failed",
+                        "config": config_name, "findings": findings},
+            )
 
-    # Static validation before building: strictly PER-NODE self-consistency
-    # (each node's config vs its own module contract — required catches,
-    # required inputs, emit/dispatch references). No cross-module flow
-    # modeling; broken links between nodes surface at runtime via the
-    # four-state signal rules. Reject on any finding, with the details in
-    # the response and the client log.
-    from utils.pipeline_validator import validate_pipeline
-    errors, warnings = validate_pipeline(pipeline_config, get_function_class_by_name)
-    findings = errors + warnings
-    if findings:
-        for f in findings:
-            client.logger.error(f"pipeline validation [{config_name}]: {f}")
-        raise HTTPException(
-            status_code=400,
-            detail={"error": "pipeline validation failed",
-                    "config": config_name, "findings": findings},
-        )
-
-    try:
-        await client.init_pipeline(pipeline_config, force=data.force)
-    except PipelineInitError as e:
-        # Configuration is valid (validator passed) but a dependent service
-        # failed at node init — 503 so the client can retry once it is up.
-        raise HTTPException(
-            status_code=503,
-            detail={"error": "pipeline node init failed",
-                    "config": config_name, "detail": str(e)},
-        )
-    return {"status": "initialized", "client_id": client_id}
+        try:
+            await client.init_pipeline(pipeline_config, force=data.force)
+        except PipelineInitError as e:
+            # Configuration is valid (validator passed) but a dependent service
+            # failed at node init — 503 so the client can retry once it is up.
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "pipeline node init failed",
+                        "config": config_name, "detail": str(e)},
+            )
+        return {"status": "initialized", "client_id": client_id}
 
 
-async def reject_websocket_connection(websocket: WebSocket):
-    """
-    Reject WebSocket connection with HTTP 403 Forbidden response.
-    """
-    # Build HTTP 403 Forbidden response
-    response = PlainTextResponse(
-        "Client not registered", status_code=status.HTTP_403_FORBIDDEN
-    )
+async def reject_websocket_connection(
+    websocket: WebSocket,
+    message="Client not registered",
+    status_code=status.HTTP_403_FORBIDDEN,
+):
+    """Reject a WebSocket during the HTTP handshake."""
+    response = PlainTextResponse(message, status_code=status_code)
 
     # Convert response to ASGI format and send
     await response(
@@ -590,27 +630,51 @@ async def reject_websocket_connection(websocket: WebSocket):
 # WebSocket handler: create an independent instance for each connection
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    # First check if the client is registered
-    if not manager.is_registered(client_id):
-        global_logger.warning(f"Client {client_id} not registered")
-        await reject_websocket_connection(websocket)
-        return
+    lifecycle_lock = manager.lifecycle_lock(client_id)
+    async with lifecycle_lock:
+        if not manager.is_registered(client_id):
+            global_logger.warning(f"Client {client_id} not registered")
+            await reject_websocket_connection(websocket)
+            return
 
-    # Accept WebSocket connection
-    await websocket.accept()
-    global_logger.info(f"Client {client_id} connected")
+        client = manager.clients[client_id]
+        if not client.initialized:
+            global_logger.warning(
+                f"Client {client_id} must initialize before WebSocket connect"
+            )
+            await reject_websocket_connection(
+                websocket,
+                "Pipeline must be initialized before WebSocket connect",
+                status.HTTP_409_CONFLICT,
+            )
+            return
+        if client.connection_used:
+            global_logger.warning(
+                f"Client {client_id} must reinitialize before WebSocket reconnect"
+            )
+            await reject_websocket_connection(
+                websocket,
+                "Pipeline must be reinitialized before WebSocket reconnect",
+                status.HTTP_409_CONFLICT,
+            )
+            return
 
-    # Connect client
-    client = manager.clients[client_id]
-    await client.start_pipeline(websocket)
+        await websocket.accept()
+        await client.start_pipeline(websocket)
+        global_logger.info(f"Client {client_id} connected")
 
     try:
         # Handle the client's WebSocket connection
-        while 1:
-            if client.connected:
-                await asyncio.sleep(TIME_INTERVAL)
-            else:
-                break
+        while client.websocket is websocket and client.connected:
+            await asyncio.sleep(TIME_INTERVAL)
     finally:
-        global_logger.info(f"Client {client_id} disconnected, disposing pipeline")
-        await client.dispose()
+        async with lifecycle_lock:
+            current_client = manager.clients.get(client_id)
+            if (
+                current_client is client
+                and client.websocket is websocket
+            ):
+                global_logger.info(
+                    f"Client {client_id} disconnected, disposing pipeline"
+                )
+                await client.dispose()
