@@ -11,7 +11,8 @@ TIMESTAMP_EPSILON = 1e-3
 class DanmakuBufferStep(SpanProcessingStep):
     """
     Buffers incoming danmaku messages and releases batches to the LLM at intervals.
-    Paced by client playback_complete signal.
+    Paced by the client's playback_complete event (control plane, caught
+    via catch_events -> custom_event).
 
     Inherits SpanProcessingStep for proper cancel handling during collection spans.
 
@@ -33,7 +34,7 @@ class DanmakuBufferStep(SpanProcessingStep):
     entries, and an empty ring falls back to the cancel boundary.
     """
 
-    REQUIRED_CATCH_SIGNALS = ["playback_complete"]
+    REQUIRED_CATCH_EVENTS = ["playback_complete"]
     REQUIRED_INPUTS = ["text", "user", "msg_type", "price",
                        "guard_level", "num"]
     OUTPUTS = ["prompt"]
@@ -49,7 +50,7 @@ class DanmakuBufferStep(SpanProcessingStep):
         return errors
 
     def span_init(self):
-        # Requires config: catch_signals: ["playback_complete"]
+        # Requires config: catch_events: ["playback_complete"]
         self.buffer = []
         self.release_interval = self.get_config("release_interval", 12)
         self.max_batch_size = self.get_config("max_batch_size", 8)
@@ -82,6 +83,33 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.total_received = 0
         self.total_dropped = 0
 
+    def custom_event(self, event):
+        """playback_complete (control plane): the client's pacing ack.
+        Same bookkeeping as any handled message — reset the idle timer,
+        record the identity — then try to unlock."""
+        if event.get("signal") != "playback_complete":
+            return
+        self.idle_start_time = time.time()
+        self._evict_cancelled_ctx()
+        ctx = self.stamp({}, event)
+        if "timestamp" in ctx:
+            self._ctx_ring.append(ctx)
+        if self.waiting_for_playback:
+            client_ts = event.get("last_batch_timestamp", 0)
+            if client_ts >= self.last_release_pts - TIMESTAMP_EPSILON:
+                self.waiting_for_playback = False
+                self.logger.info(
+                    f"playback_complete matched, unlocked "
+                    f"(buf={len(self.buffer)})"
+                )
+            else:
+                self.logger.info(
+                    f"playback_complete for older batch: "
+                    f"client={client_ts}, latest={self.last_release_pts}, "
+                    f"staying locked"
+                )
+        self.custom_update()
+
     def span_process(self, data, pass_data={}):
         # Any message resets idle timer and records its identity. Internal
         # retention reads the message's own stamp (the data view); the pass
@@ -91,27 +119,6 @@ class DanmakuBufferStep(SpanProcessingStep):
         ctx = self.stamp({}, data)
         if "timestamp" in ctx:
             self._ctx_ring.append(ctx)
-
-        signal = data.get("signal", "")
-
-        # Handle playback_complete signal from client
-        if signal == "playback_complete":
-            if self.waiting_for_playback:
-                client_ts = data.get("last_batch_timestamp", 0)
-                if client_ts >= self.last_release_pts - TIMESTAMP_EPSILON:
-                    self.waiting_for_playback = False
-                    self.logger.info(
-                        f"playback_complete matched, unlocked "
-                        f"(buf={len(self.buffer)})"
-                    )
-                else:
-                    self.logger.info(
-                        f"playback_complete for older batch: "
-                        f"client={client_ts}, latest={self.last_release_pts}, "
-                        f"staying locked"
-                    )
-            self.custom_update()
-            return
 
         # Normal danmaku message — buffer it
         text = data.get("text", "")

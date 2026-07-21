@@ -34,6 +34,11 @@ class EventHandler:
                cancel is never echoed back.
       kill   — broadcast to every node's control queue, then the handler
                itself exits (it dies last, right after delivering the verb)
+      other  — a config-declared event verb (the entry admits only the
+               pipeline's top-level `events` list): plain broadcast, same
+               source exclusion as cancel, no stamp adjustment, no client
+               echo. Nodes that declare it in catch_events consume it;
+               the rest skip it.
 
     The thread is a daemon: its only exit is the kill event, and it must
     never block interpreter shutdown.
@@ -81,4 +86,10 @@ class EventHandler:
                     q.put(wire)
                 return
             else:
-                self._log(f"event: unknown event dropped: {event}")
+                # config-declared event verb: plain broadcast (the entry
+                # only admits verbs from the pipeline's events list)
+                source = event.get("source", 0)
+                self._log(f"event: {verb} from {source} dispatched: {event}")
+                for nid, q in self._node_queues.items():
+                    if nid != source:
+                        q.put(wire)

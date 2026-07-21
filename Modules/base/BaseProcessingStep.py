@@ -52,6 +52,13 @@ class BaseProcessingStep:
     # Validation is strictly per-node — no cross-module flow modeling; broken
     # links between nodes surface at runtime via the four-state signal rules.
     REQUIRED_CATCH_SIGNALS = []
+    # Control-plane events this module consumes (internal names, mirrors
+    # REQUIRED_CATCH_SIGNALS): the node's config must declare a catch_events
+    # entry whose TARGET covers each name. Events arrive on the control
+    # queue (broadcast by the EventHandler, out of band with data) and are
+    # delivered to custom_event(); cancel/kill are built-in verbs, never
+    # declared here.
+    REQUIRED_CATCH_EVENTS = []
     # The full input contract: every internal name the module reads.
     # Configs must declare each one; wiring "source": null explicitly
     # falls back to the module default for that input.
@@ -78,6 +85,12 @@ class BaseProcessingStep:
         validate_config enforces catch targets == this, exactly (a target
         the module does not handle would be silently swallowed)."""
         return list(cls.REQUIRED_CATCH_SIGNALS)
+
+    @classmethod
+    def required_catch_events(cls, config):
+        """Override for config-dependent event contracts. validate_config
+        enforces catch_events targets == this, exactly."""
+        return list(cls.REQUIRED_CATCH_EVENTS)
 
     @classmethod
     def emitted_signals(cls, config):
@@ -115,6 +128,34 @@ class BaseProcessingStep:
         # catch contract: targets == required, exactly (dispatcher overrides)
         cls._validate_catch_contract(
             config, {t for _, t in catch_pairs}, errors)
+
+        # events: same declaration format and null semantics as catch_signals
+        # (source null = declared but not wired), but delivery is the control
+        # plane (broadcast), so there is no pass/emit side. cancel/kill are
+        # built-in verbs — always delivered, never declared.
+        event_pairs = cls._check_decl_list(
+            "catch_events", config.get("catch_events"), errors,
+            null_side="source")
+        for src, tgt in event_pairs:
+            for side, name in (("source", src), ("target", tgt)):
+                if name in ("cancel", "kill"):
+                    errors.append(
+                        f"catch_events {side} '{name}' is a built-in control "
+                        f"verb — it is always delivered, never declared"
+                    )
+        required_events = set(cls.required_catch_events(config))
+        event_targets = {t for _, t in event_pairs}
+        for ev in sorted(required_events - event_targets):
+            errors.append(
+                f"module requires catching event '{ev}' (as a catch_events "
+                f"target) but it is not declared"
+            )
+        for t in sorted(event_targets - required_events):
+            errors.append(
+                f"catch_events target '{t}' is not an event this module "
+                f"handles ({sorted(required_events) or 'none'}) — "
+                f"custom_event() would silently swallow it"
+            )
 
         # input contract: input_vars targets == required_inputs(config),
         # exactly (FREE_INPUTS allows extra free-form targets, e.g. data
@@ -365,6 +406,11 @@ class BaseProcessingStep:
         # init that every EMIT_SIGNALS entry is declared.
         self.emit_signal_map = self._parse_signal_decls(
             self.config.get("emit_signals"))
+        # control-plane events this node consumes: wire verb -> internal
+        # name, delivered to custom_event() by check_cancel. Broadcast
+        # verbs not in this map are skipped (normal, not an error).
+        self.catch_event_map = self._parse_signal_decls(
+            self.config.get("catch_events"))
         self.prepare_output_dict()
         self._init_with_timeout()
         self.logger.info("initialized")
@@ -522,10 +568,15 @@ class BaseProcessingStep:
         self.output_queue.put(json.dumps(relay))
 
     def check_cancel(self):
-        """Drain the control queue. Two verbs share it:
+        """Drain the control queue. Three kinds of verb share it:
           cancel — void content older than its stamp (custom_cancel hook)
           kill   — the node must exit: sets the sticky _killed flag; the run
                    loop breaks on it and calls dispose()/custom_dispose().
+          other  — a broadcast control-plane event: delivered to
+                   custom_event() when declared in catch_events (renamed to
+                   its target), skipped otherwise (broadcast reaches every
+                   node, so not catching is normal). Events never touch
+                   cancel state.
         Returns True when in-flight work must be abandoned — kill always,
         cancel only when it actually voids the current turn (its stamp is
         newer than current_timestamp) — so in-processing polling points
@@ -535,10 +586,30 @@ class BaseProcessingStep:
             while not self.cancel_queue.empty():
                 cancel_message = self.cancel_queue.get()
                 cancel_message = json.loads(cancel_message)
-                if cancel_message.get("signal") == "kill":
+                verb = cancel_message.get("signal")
+                if verb == "kill":
                     self.logger.info("received kill signal")
                     self._killed = True
                     hasCancel = True
+                    continue
+                if verb != "cancel":
+                    if verb in self.catch_event_map:
+                        event = dict(cancel_message)
+                        event["signal"] = self.catch_event_map[verb]
+                        self.logger.info(f"received event: {event}")
+                        # an event handler failure must not abort the node's
+                        # in-flight work (check_cancel runs inside it)
+                        try:
+                            self.custom_event(event)
+                        except Exception as e:
+                            self.logger.error(
+                                f"custom_event('{event['signal']}') failed: "
+                                f"{type(e).__name__}: {e}"
+                            )
+                    else:
+                        self.logger.info(
+                            f"event '{verb}' not caught here; skipped",
+                            level=0)
                     continue
                 # cancel always carries a numeric stamp: the entry validates
                 # client cancels, and internal ones (teardown) are trusted
@@ -557,6 +628,12 @@ class BaseProcessingStep:
 
     def custom_cancel(self, cancel_message):
         """Subclasses can override this method for custom cancel handling."""
+        pass
+
+    def custom_event(self, event):
+        """Handle a caught control-plane event (signal field holds the
+        catch_events target name). Runs on the node thread from
+        check_cancel. Subclasses with catch_events declarations override."""
         pass
 
     def dispose(self):

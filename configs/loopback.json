@@ -5,6 +5,7 @@
         "data_fps": 20,
         "dc_offset_ms": 0
     },
+    "events": ["connection_start"],
     "pipeline": [
         {
             "node_id": 1,
@@ -37,12 +38,6 @@
                     {
                         "source": "payload",
                         "target": "1_payload"
-                    }
-                ],
-                "pass_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
                     }
                 ],
                 "next_nodes": [2]
@@ -81,13 +76,13 @@
                         "target": "data"
                     }
                 ],
-                "catch_signals": [
+                "pass_signals": [],
+                "catch_events": [
                     {
                         "source": "connection_start",
                         "target": "connection_start"
                     }
                 ],
-                "pass_signals": [],
                 "next_nodes": [-1]
             }
         }

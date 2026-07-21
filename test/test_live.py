@@ -1,17 +1,16 @@
 """
 Consolidated VTuber / live danmaku test script.
 
-Four modes (select with --mode):
+Three modes (select with --mode). Every pipeline test runs on the REAL
+server path (register + init_pipeline + WebSocket) — the input source is
+the only thing that varies:
 - blivedm : Minimal Bilibili connection smoke test. Finds an active VTuber room,
             connects via blivedm, prints/counts danmaku for ~60s. No pipeline, no
             main server. Run this FIRST to verify the Bilibili connection works
-            before the heavier real-config modes. (folds test_blivedm_minimal.py)
-- manual  : Scripted/crafted danmaku fed directly into the pipeline. Deterministic,
-            no network. (formerly test_vtuber_manual.py)
-- live    : Connects to a real Bilibili room and feeds live danmaku directly into the
-            in-process pipeline, no main server. (formerly test_vtuber_standalone.py)
-- server  : Real Bilibili + full main server end-to-end via register/websocket.
-            (formerly test_vtuber_danmaku.py)
+            before the heavier real-config modes.
+- manual  : Scripted/crafted danmaku over the real server. Deterministic
+            scenario suite (batching, priorities, playback_complete pacing).
+- server  : Real Bilibili danmaku + full main server end-to-end.
 """
 import argparse
 import asyncio
@@ -51,7 +50,6 @@ logging.getLogger("blivedm").setLevel(logging.CRITICAL)
 
 BLIVEDM_LISTEN_DURATION = 60  # seconds
 HTTP_TIMEOUT = 30
-PIPELINE_STOP_TIMEOUT = 40
 
 
 def wav_duration(base64_audio):
@@ -62,40 +60,6 @@ def wav_duration(base64_audio):
         if frame_rate <= 0:
             raise ValueError("WAV frame rate must be positive")
         return wav_file.getnframes() / frame_rate
-
-
-def stop_pipeline(cancel_queues, threads, timeout=PIPELINE_STOP_TIMEOUT):
-    """Stop every pipeline node and confirm every worker actually exited."""
-    for cancel_queue in cancel_queues:
-        cancel_queue.put(json.dumps({"signal": "cancel", "timestamp": float("inf")}))
-        cancel_queue.put(json.dumps({"signal": "kill"}))
-
-    deadline = time.monotonic() + timeout
-    for thread in threads:
-        thread.join(max(0, deadline - time.monotonic()))
-    alive = [thread.name for thread in threads if thread.is_alive()]
-    if alive:
-        print(f"[FAIL] Pipeline threads did not stop: {alive}")
-        return False
-    return True
-
-
-def cleanup_local_test_log(client_id):
-    """Close this test logger and remove only its per-run log file."""
-    logger = logging.getLogger(client_id)
-    for handler in list(logger.handlers):
-        handler.close()
-        logger.removeHandler(handler)
-
-    log_path = os.path.join("logs", f"client_{client_id}.log")
-    try:
-        os.remove(log_path)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        print(f"[FAIL] Could not remove test log {log_path}: {e}")
-        return False
-    return True
 
 
 async def stop_blivedm(client, timeout=15):
@@ -209,69 +173,98 @@ async def run_blivedm():
 
 
 # =============================================================================
-# Mode: manual  (from test_vtuber_manual.py)
-# Scripted/crafted danmaku fed into the pipeline directly; deterministic.
+# Mode: manual
+# Scripted/crafted danmaku over the REAL server (register + init_pipeline +
+# WebSocket): deterministic scenarios on the production path — entry
+# validation, event routing and the send loop are all the real thing.
 # =============================================================================
 
 MANUAL_CLIENT_ID = f"vtuber_manual_test_{uuid.uuid4().hex}"
-MANUAL_PIPELINE_CONFIG_FILE = "configs/unity_chan_live.json"
+MANUAL_PIPELINE_CONFIG = "unity_chan_live"
 
 
-def manual_setup_logger():
-    from Modules import FUNCTION_MAP  # noqa: F401  (ensure project import path works)
-    logger = logging.getLogger(MANUAL_CLIENT_ID)
-    logger.setLevel(logging.INFO)
-    os.makedirs("logs", exist_ok=True)
-    fh = logging.FileHandler(f"logs/client_{MANUAL_CLIENT_ID}.log", mode="w")
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    fh.setFormatter(fmt)
-    if not logger.hasHandlers():
-        logger.addHandler(fh)
-    return logger
+class ManualSession:
+    """Real-server session for the scripted scenarios. A background thread
+    pumps the WebSocket into recv_queue (the same .get() interface the
+    collector reads); send() is thread-safe from the scenario thread."""
+
+    def __init__(self):
+        self.recv_queue = Queue()
+        self.loop = None
+        self.ws = None
+        self.thread = None
+        self.ready = threading.Event()
+        self.error = None
+
+    def start(self):
+        r = requests.post(f"{YACHIYO_SERVER}/register/",
+                          json={"client_id": MANUAL_CLIENT_ID},
+                          timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+        print(f"[YACHIYO] Register: {r.json()}")
+        r = requests.post(f"{YACHIYO_SERVER}/init_pipeline/{MANUAL_CLIENT_ID}",
+                          json={"config": MANUAL_PIPELINE_CONFIG},
+                          timeout=180)
+        r.raise_for_status()
+        print(f"[YACHIYO] Init pipeline: {r.json()}")
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        if not self.ready.wait(timeout=HTTP_TIMEOUT) or self.error:
+            raise RuntimeError(f"WebSocket connect failed: {self.error}")
+
+    def _run(self):
+        asyncio.run(self._pump())
+
+    async def _pump(self):
+        try:
+            async with websockets.connect(
+                f"{YACHIYO_WS}/{MANUAL_CLIENT_ID}",
+                max_size=16 * 1024 * 1024,
+            ) as ws:
+                self.ws = ws
+                self.loop = asyncio.get_running_loop()
+                self.ready.set()
+                async for raw in ws:
+                    self.recv_queue.put(raw)
+        except ConnectionClosed:
+            pass
+        except Exception as e:
+            self.error = e
+            self.ready.set()
+
+    def send(self, msg):
+        fut = asyncio.run_coroutine_threadsafe(
+            self.ws.send(json.dumps(msg)), self.loop)
+        fut.result(timeout=HTTP_TIMEOUT)
+
+    def close(self):
+        """Close the socket (the server disposes the pipeline) and
+        unregister. Best effort: cleanup must not mask a test failure."""
+        ok = True
+        try:
+            if self.loop and self.ws:
+                asyncio.run_coroutine_threadsafe(
+                    self.ws.close(), self.loop).result(timeout=10)
+            if self.thread:
+                self.thread.join(timeout=10)
+                ok = ok and not self.thread.is_alive()
+        except Exception as e:
+            print(f"[FAIL] session close: {e}")
+            ok = False
+        try:
+            requests.post(f"{YACHIYO_SERVER}/unregister/",
+                          json={"client_id": MANUAL_CLIENT_ID},
+                          timeout=HTTP_TIMEOUT)
+        except Exception as e:
+            print(f"[FAIL] unregister: {e}")
+            ok = False
+        return ok
 
 
-def manual_create_pipeline():
-    from Modules import FUNCTION_MAP
-
-    with open(MANUAL_PIPELINE_CONFIG_FILE, "r") as f:
-        config = json.load(f)
-
-    pipeline = config["pipeline"]
-    num_nodes = len(pipeline)
-    logger = manual_setup_logger()
-
-    queues = [Queue() for _ in range(num_nodes + 1)]
-    cancel_queues = [Queue() for _ in range(num_nodes)]
-    send_queue = queues[-1]
-
-    threads = []
-    try:
-        for i, node in enumerate(pipeline):
-            func_name = node["function"]
-            func_class = FUNCTION_MAP[func_name]
-            node_config = node.get("config", {})
-            print(f"  Creating node {node['node_id']}: {func_name}")
-            instance = func_class(
-                node["node_id"], MANUAL_CLIENT_ID, logger, send_queue,
-                queues[i], queues[i + 1], cancel_queues[i],
-                node_config,
-            )
-            if instance.init_error:
-                raise RuntimeError(f"{func_name}: {instance.init_error}")
-            t = threading.Thread(target=instance.run, name=f"{i}_{func_name}", daemon=True)
-            t.start()
-            threads.append(t)
-    except Exception:
-        stop_pipeline(cancel_queues, threads)
-        raise
-
-    return queues[0], send_queue, cancel_queues, threads
-
-
-def manual_send_msg(input_queue, text, user, msg_type="danmaku", **kwargs):
+def manual_send_msg(session, text, user, msg_type="danmaku", **kwargs):
     msg = {"text": text, "user": user, "msg_type": msg_type, "timestamp": time.time()}
     msg.update(kwargs)
-    input_queue.put(json.dumps(msg))
+    session.send(msg)
 
 
 def manual_collect_response(send_queue, timeout=30):
@@ -321,15 +314,15 @@ def manual_drain_queue(send_queue):
             break
 
 
-def manual_run_scenario(name, input_queue, send_queue, messages, wait_before=0):
-    manual_drain_queue(send_queue)
+def manual_run_scenario(name, session, messages, wait_before=0):
+    manual_drain_queue(session.recv_queue)
     print(f"\n{'='*60}")
     print(f"SCENARIO: {name}")
     print(f"{'='*60}")
 
     # Send all messages
     for msg in messages:
-        manual_send_msg(input_queue, **msg)
+        manual_send_msg(session, **msg)
         print(f"  → {msg.get('msg_type', 'danmaku')}: {msg.get('user', '?')}: {msg.get('text', '')}")
         time.sleep(0.1)
 
@@ -340,15 +333,16 @@ def manual_run_scenario(name, input_queue, send_queue, messages, wait_before=0):
     # Collect response
     try:
         response, audio_count, batch_timestamp = manual_collect_response(
-            send_queue, timeout=30
+            session.recv_queue, timeout=30
         )
         print(f"\n  RESPONSE ({audio_count} audio chunks):")
         print(f"  {response}")
-        input_queue.put(json.dumps({
+        # the pacing ack rides the real path: entry -> event handler
+        session.send({
             "signal": "playback_complete",
             "timestamp": time.time(),
             "last_batch_timestamp": batch_timestamp,
-        }))
+        })
         success = True
     except Exception as e:
         print(f"\n  [FAIL] {e}")
@@ -357,70 +351,68 @@ def manual_run_scenario(name, input_queue, send_queue, messages, wait_before=0):
 
     # Wait for pipeline to fully flush before next scenario
     time.sleep(3)
-    manual_drain_queue(send_queue)
+    manual_drain_queue(session.recv_queue)
     return success
 
 
 def run_manual():
-    print("Manual VTuber Pipeline Test")
-    print("Creating pipeline...")
+    print("Manual VTuber Pipeline Test (real server)")
+    session = ManualSession()
     try:
-        input_queue, send_queue, cancel_queues, threads = manual_create_pipeline()
+        session.start()
     except Exception as e:
-        print(f"[FAIL] Pipeline setup failed: {e}")
-        cleanup_local_test_log(MANUAL_CLIENT_ID)
+        print(f"[FAIL] Session setup failed: {e}")
+        session.close()
         return False
 
     success = False
     try:
-        print("Pipeline ready. Waiting 3s for init...\n")
-        time.sleep(3)
         results = []
 
         # ===== Scenario 1: Normal chat =====
-        results.append(manual_run_scenario("普通聊天", input_queue, send_queue, [
+        results.append(manual_run_scenario("普通聊天", session, [
             {"text": "优酱今天吃了什么", "user": "路人A"},
             {"text": "好无聊啊", "user": "路人B"},
         ], wait_before=2))
 
         # ===== Scenario 2: Gift =====
-        results.append(manual_run_scenario("礼物感谢", input_queue, send_queue, [
+        results.append(manual_run_scenario("礼物感谢", session, [
             {"text": "小花花", "user": "大佬甲", "msg_type": "gift",
              "num": 10, "price": 1},
         ], wait_before=0))  # gift is immediate priority
 
         # ===== Scenario 3: Super Chat =====
-        results.append(manual_run_scenario("SC必须读", input_queue, send_queue, [
+        results.append(manual_run_scenario("SC必须读", session, [
             {"text": "优酱能唱一首歌吗？我超喜欢你的声音！", "user": "土豪君",
              "msg_type": "super_chat", "price": 50},
         ], wait_before=0))
 
         # ===== Scenario 4: Guard purchase =====
-        results.append(manual_run_scenario("上舰感谢", input_queue, send_queue, [
+        results.append(manual_run_scenario("上舰感谢", session, [
             {"text": "舰长", "user": "新舰长", "msg_type": "guard",
              "guard_level": 3, "price": 198},
         ], wait_before=0))
 
         # ===== Scenario 5: Guard member chat =====
-        results.append(manual_run_scenario("舰长发言+普通弹幕", input_queue, send_queue, [
+        results.append(manual_run_scenario("舰长发言+普通弹幕", session, [
             {"text": "今天的直播好有趣", "user": "老舰长", "guard_level": 3},
             {"text": "同意楼上", "user": "路人F"},
         ], wait_before=2))
 
         # ===== Scenario 6: Fishing/troll danmaku =====
-        results.append(manual_run_scenario("钓鱼弹幕", input_queue, send_queue, [
+        results.append(manual_run_scenario("钓鱼弹幕", session, [
             {"text": "我送了一百个舰长", "user": "钓鱼佬"},
             {"text": "我也上舰了快感谢我", "user": "骗子"},
         ], wait_before=2))
 
         # ===== Scenario 7: Duplicate messages (trending) =====
-        results.append(manual_run_scenario("刷屏趋势", input_queue, send_queue, [
+        results.append(manual_run_scenario("刷屏趋势", session, [
             {"text": "唱歌！", "user": "粉丝A"},
             {"text": "唱歌！", "user": "粉丝B"},
         ], wait_before=2))
 
         # ===== Scenario 8: Embarrassing SC =====
-        results.append(manual_run_scenario("羞耻SC", input_queue, send_queue, [
+        results.append(manual_run_scenario("羞耻SC", session, [
             {"text": "优酱我喜欢你❤能做我女朋友吗", "user": "痴汉",
              "msg_type": "super_chat", "price": 30},
         ], wait_before=0))
@@ -432,24 +424,12 @@ def run_manual():
     except Exception as e:
         print(f"[FAIL] Manual mode failed: {e}")
     finally:
-        pipeline_ok = stop_pipeline(cancel_queues, threads)
-        log_ok = cleanup_local_test_log(MANUAL_CLIENT_ID)
-        cleanup_ok = pipeline_ok and log_ok
+        cleanup_ok = session.close()
 
     return success and cleanup_ok
 
 
-# =============================================================================
-# Mode: live  (from test_vtuber_standalone.py)
-# Connects to a real Bilibili room, feeds live danmaku directly into the
-# in-process pipeline, no main server.
-# =============================================================================
-
-LIVE_CLIENT_ID = f"vtuber_standalone_{uuid.uuid4().hex}"
-LIVE_PIPELINE_CONFIG_FILE = "configs/unity_chan_live.json"
-# Set to a room ID to force connect, or None for auto-discovery of an active room
-LIVE_FORCE_ROOM_ID = None
-
+# Bilibili API constants (shared by the blivedm and server modes)
 BILIBILI_ROOM_LIST_API = "https://api.live.bilibili.com/room/v1/area/getRoomList"
 BILIBILI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -457,414 +437,6 @@ BILIBILI_HEADERS = {
     "Referer": "https://live.bilibili.com/",
     "Origin": "https://live.bilibili.com",
 }
-
-
-def live_create_bilibili_session():
-    from utils.settings import get_secret
-    cookies = {"buvid3": str(uuid.uuid4()) + "infoc"}
-    sessdata = get_secret("BILIBILI_SESSDATA", "")
-    if sessdata:
-        cookies["SESSDATA"] = sessdata
-        print("[BILI] Logged in with SESSDATA")
-    else:
-        print("[BILI] No SESSDATA, usernames will be masked")
-    return aiohttp.ClientSession(
-        headers=BILIBILI_HEADERS,
-        cookies=cookies,
-        timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT),
-    )
-
-
-async def live_find_active_vtuber_room(session, exclude_rooms=None):
-    exclude_rooms = exclude_rooms or set()
-    params = {
-        "platform": "web",
-        "parent_area_id": 9,
-        "cate_id": 0,
-        "area_id": 371,
-        "sort_type": "online",
-        "page": 1,
-        "page_size": 30,
-    }
-    try:
-        async with session.get(BILIBILI_ROOM_LIST_API, params=params) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            rooms = data.get("data", [])
-            available = [r for r in rooms if r["roomid"] not in exclude_rooms]
-            if not available:
-                available = rooms
-            if not available:
-                return None, None, None
-            room = random.choice(available[:min(15, len(available))])
-            return room["roomid"], room["title"], room["uname"]
-    except Exception as e:
-        print(f"[ERROR] find_active_vtuber_room: {e}")
-        raise
-
-
-def live_setup_logger():
-    logger = logging.getLogger(LIVE_CLIENT_ID)
-    logger.setLevel(logging.INFO)
-    os.makedirs("logs", exist_ok=True)
-    fh = logging.FileHandler(f"logs/client_{LIVE_CLIENT_ID}.log", mode="w")
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.WARNING)  # Only warnings/errors to console
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    fh.setFormatter(fmt)
-    ch.setFormatter(fmt)
-    if not logger.hasHandlers():
-        logger.addHandler(fh)
-        logger.addHandler(ch)
-    return logger
-
-
-def live_create_pipeline():
-    """Create pipeline modules connected by queues, same as YACHIYO server does."""
-    with open(LIVE_PIPELINE_CONFIG_FILE, "r") as f:
-        config = json.load(f)
-
-    pipeline = config["pipeline"]
-    num_nodes = len(pipeline)
-    logger = live_setup_logger()
-
-    # Create queues (num_nodes + 1: input for each node + final output)
-    queues = [Queue() for _ in range(num_nodes + 1)]
-    cancel_queues = [Queue() for _ in range(num_nodes)]
-    send_queue = queues[-1]  # Last queue is the output
-
-    # Module class lookup
-    from Modules import FUNCTION_MAP
-
-    threads = []
-    try:
-        for i, node in enumerate(pipeline):
-            func_name = node["function"]
-            func_class = FUNCTION_MAP[func_name]
-            node_config = node.get("config", {})
-
-            print(f"  Creating node {node['node_id']}: {func_name} ({func_class.__name__})")
-            instance = func_class(
-                node["node_id"],
-                LIVE_CLIENT_ID,
-                logger,
-                send_queue,
-                queues[i],
-                queues[i + 1],
-                cancel_queues[i],
-                node_config,
-            )
-            if instance.init_error:
-                raise RuntimeError(f"{func_name}: {instance.init_error}")
-            t = threading.Thread(target=instance.run, name=f"{i}_{func_name}", daemon=True)
-            t.start()
-            threads.append(t)
-    except Exception:
-        stop_pipeline(cancel_queues, threads)
-        raise
-
-    return queues[0], send_queue, cancel_queues, threads
-
-
-# ===== blivedm Handler (live mode) =====
-class LiveDanmakuForwarder(blivedm.BaseHandler):
-    def __init__(self, input_queue, stats):
-        self.input_queue = input_queue
-        self.stats = stats
-        self.msg_count = 0
-
-    GUARD_NAMES = {0: "", 1: "总督", 2: "提督", 3: "舰长"}
-
-    def _send(self, msg_dict):
-        self.stats["messages"] += 1
-        msg_dict["timestamp"] = time.time()
-        self.input_queue.put(json.dumps(msg_dict))
-
-    def _on_danmaku(self, client, message: web_models.DanmakuMessage):
-        self.msg_count += 1
-        guard = self.GUARD_NAMES.get(message.privilege_type, "")
-        tag = f"({guard})" if guard else ""
-        print(f"[弹幕] {message.uname}{tag}: {message.msg}")
-        self._send({
-            "text": message.msg,
-            "user": message.uname,
-            "msg_type": "danmaku",
-            "guard_level": message.privilege_type,
-        })
-
-    def _on_gift(self, client, message: web_models.GiftMessage):
-        self.msg_count += 1
-        # total_coin is in gold/silver coins; gold coins / 1000 = RMB
-        price = message.total_coin / 1000 if message.coin_type == "gold" else 0
-        print(f"[礼物] {message.uname} 送了 {message.gift_name} x{message.num} (¥{price:.0f})")
-        self._send({
-            "text": message.gift_name,
-            "user": message.uname,
-            "msg_type": "gift",
-            "num": message.num,
-            "price": price,
-        })
-
-    def _on_super_chat(self, client, message: web_models.SuperChatMessage):
-        self.msg_count += 1
-        print(f"[SC ¥{message.price}] {message.uname}: {message.message}")
-        self._send({
-            "text": message.message,
-            "user": message.uname,
-            "msg_type": "super_chat",
-            "price": message.price,
-        })
-
-    def _on_buy_guard(self, client, message: web_models.GuardBuyMessage):
-        self.msg_count += 1
-        guard_name = self.GUARD_NAMES.get(message.guard_level, "舰长")
-        print(f"[上舰] {message.username} 开通了{guard_name}")
-        self._send({
-            "text": guard_name,
-            "user": message.username,
-            "msg_type": "guard",
-            "guard_level": message.guard_level,
-            "price": message.price / 1000,
-        })
-
-
-# ===== Output Consumer (live mode) =====
-def live_get_wav_duration(base64_audio):
-    """Calculate duration in seconds from base64 WAV audio."""
-    return wav_duration(base64_audio)
-
-
-def live_output_consumer(input_queue, send_queue, stop_event, stats):
-    """Background thread that reads pipeline output."""
-    current_response = ""
-    current_audio_duration = 0.0
-    response_start = None
-
-    while not stop_event.is_set():
-        try:
-            data = send_queue.get(timeout=1)
-            data = json.loads(data)
-            signal = data.get("signal", "")
-            text = data.get("text", "")
-            audio_data = data.get("audio_data", "")
-
-            if signal == "SoS":
-                current_response = ""
-                current_audio_duration = 0.0
-                response_start = time.time()
-            elif signal == "EoS":
-                if response_start is None:
-                    raise RuntimeError("received EoS before SoS")
-                if not current_response.strip():
-                    raise RuntimeError("received an empty response")
-                if "timestamp" not in data:
-                    raise RuntimeError("EoS is missing its batch timestamp")
-                elapsed = time.time() - response_start
-                stats["responses"].append({
-                    "text": current_response,
-                    "time": time.time(),
-                    "audio_duration": current_audio_duration,
-                    "llm_elapsed": elapsed,
-                })
-                print(
-                    f"\n{'='*60}\n"
-                    f"[RESPONSE] (audio {current_audio_duration:.1f}s, pipeline {elapsed:.1f}s)\n"
-                    f"{current_response}\n"
-                    f"{'='*60}"
-                )
-                current_response = ""
-                current_audio_duration = 0.0
-                response_start = None
-                input_queue.put(json.dumps({
-                    "signal": "playback_complete",
-                    "timestamp": time.time(),
-                    "last_batch_timestamp": data["timestamp"],
-                }))
-            else:
-                if text:
-                    current_response += text
-                if audio_data:
-                    current_audio_duration += live_get_wav_duration(audio_data)
-        except Empty:
-            continue
-        except Exception as e:
-            stats["errors"].append(f"output receiver failed: {type(e).__name__}: {e}")
-            return
-
-
-# ===== Evaluation (live mode) =====
-def live_evaluate(stats):
-    responses = stats["responses"]
-    if not responses:
-        return {"status": "no responses yet"}
-
-    now = time.time()
-    recent = [r for r in responses if now - r["time"] < 3600]
-    if not recent:
-        return {"status": "no recent responses"}
-
-    # Frequency
-    if len(recent) > 1:
-        span = (recent[-1]["time"] - recent[0]["time"]) / 60
-        freq = len(recent) / max(span, 0.1)
-    else:
-        freq = 0
-
-    # Diversity
-    prefixes = [r["text"][:15] for r in recent]
-    diversity = len(set(prefixes)) / len(prefixes)
-
-    # TTS duration
-    durations = [r["audio_duration"] for r in recent if r["audio_duration"] > 0]
-    avg_dur = sum(durations) / max(len(durations), 1)
-
-    # LLM time
-    llm_times = [r["llm_elapsed"] for r in recent if r["llm_elapsed"] > 0]
-    avg_llm = sum(llm_times) / max(len(llm_times), 1)
-
-    return {
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "total_responses": len(recent),
-        "response_freq_per_min": round(freq, 2),
-        "diversity": round(diversity, 3),
-        "avg_tts_duration_s": round(avg_dur, 1),
-        "avg_llm_time_s": round(avg_llm, 1),
-    }
-
-
-async def run_live():
-    print("=" * 60)
-    print("VTuber Danmaku Pipeline - Standalone Test")
-    print("=" * 60)
-
-    # Create pipeline
-    print("\n[PIPELINE] Creating pipeline...")
-    os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    try:
-        input_queue, send_queue, cancel_queues, threads = live_create_pipeline()
-    except Exception as e:
-        print(f"[FAIL] Pipeline setup failed: {e}")
-        cleanup_local_test_log(LIVE_CLIENT_ID)
-        return False
-
-    stop_event = threading.Event()
-    print(f"[PIPELINE] Ready! {len(threads)} nodes running.\n")
-
-    # Start output consumer
-    stats = {"messages": 0, "responses": [], "errors": []}
-    consumer_thread = threading.Thread(
-        target=live_output_consumer,
-        args=(input_queue, send_queue, stop_event, stats),
-        daemon=True,
-    )
-    try:
-        consumer_thread.start()
-    except Exception as e:
-        print(f"[FAIL] Output consumer setup failed: {e}")
-        stop_pipeline(cancel_queues, threads)
-        cleanup_local_test_log(LIVE_CLIENT_ID)
-        return False
-
-    # Setup Bilibili
-    bili_session = None
-    visited_rooms = set()
-    start_time = time.time()
-    last_eval = time.time()
-    run_error = None
-
-    try:
-        bili_session = live_create_bilibili_session()
-        while True:
-            if stats["errors"]:
-                raise RuntimeError(stats["errors"][-1])
-            if LIVE_FORCE_ROOM_ID and LIVE_FORCE_ROOM_ID not in visited_rooms:
-                room_id, title, uname = LIVE_FORCE_ROOM_ID, "(forced)", "(forced)"
-            else:
-                room_id, title, uname = await live_find_active_vtuber_room(
-                    bili_session, visited_rooms
-                )
-            if room_id is None:
-                print("[WARN] No active rooms, retrying in 30s...")
-                await asyncio.sleep(30)
-                continue
-
-            visited_rooms.add(room_id)
-            print(f"\n[ROOM] Connecting to {room_id}: {uname} - {title}")
-
-            handler = LiveDanmakuForwarder(input_queue, stats)
-            blived = blivedm.BLiveClient(room_id, session=bili_session)
-            blived.set_handler(handler)
-            blived.start()
-
-            try:
-                while True:
-                    await asyncio.sleep(10)
-                    if stats["errors"]:
-                        raise RuntimeError(stats["errors"][-1])
-                    if not blived.is_running:
-                        print(f"\n[ROOM] Room {room_id} offline, switching...")
-                        break
-
-                    # Hourly eval
-                    if time.time() - last_eval >= 3600:
-                        report = live_evaluate(stats)
-                        last_eval = time.time()
-                        print(f"\n[EVAL] {json.dumps(report, indent=2, ensure_ascii=False)}\n")
-
-                    elapsed = (time.time() - start_time) / 60
-                    print(
-                        f"  [{elapsed:.0f}min] msgs={handler.msg_count} "
-                        f"responses={len(stats['responses'])}",
-                        end="\r",
-                    )
-            except KeyboardInterrupt:
-                raise
-            finally:
-                if not await stop_blivedm(blived):
-                    raise RuntimeError("blivedm client cleanup failed")
-
-            await asyncio.sleep(5)
-
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\n\n[INFO] Shutting down...")
-    except Exception as e:
-        run_error = e
-        print(f"\n[FAIL] Live mode failed: {e}")
-    finally:
-        report = live_evaluate(stats)
-        print(f"\n[FINAL EVAL] {json.dumps(report, indent=2, ensure_ascii=False)}")
-        stop_event.set()
-        consumer_thread.join(5)
-        consumer_ok = not consumer_thread.is_alive()
-        if not consumer_ok:
-            print("[FAIL] Output consumer thread did not stop")
-        pipeline_ok = stop_pipeline(cancel_queues, threads)
-        session_ok = True
-        if bili_session is not None:
-            try:
-                await bili_session.close()
-            except Exception as e:
-                session_ok = False
-                print(f"[FAIL] Bilibili session cleanup failed: {e}")
-        log_ok = cleanup_local_test_log(LIVE_CLIENT_ID)
-        print("[INFO] Done.")
-
-    if stats["messages"] == 0:
-        print("[FAIL] No live messages received")
-    if not stats["responses"]:
-        print("[FAIL] No pipeline responses received")
-    for error in stats["errors"]:
-        print(f"[FAIL] {error}")
-    return (
-        run_error is None
-        and stats["messages"] > 0
-        and bool(stats["responses"])
-        and not stats["errors"]
-        and consumer_ok
-        and pipeline_ok
-        and session_ok
-        and log_ok
-    )
 
 
 # =============================================================================
@@ -1423,15 +995,14 @@ async def run_server():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Consolidated VTuber / live danmaku test (blivedm | manual | live | server)."
+        description="Consolidated VTuber / live danmaku test (blivedm | manual | server)."
     )
     parser.add_argument(
         "--mode",
-        choices=["blivedm", "manual", "live", "server"],
+        choices=["blivedm", "manual", "server"],
         default="manual",
         help="blivedm: minimal Bilibili connection smoke test (no pipeline, run first); "
-             "manual: scripted danmaku into in-process pipeline (no network); "
-             "live: real Bilibili into in-process pipeline (no main server); "
+             "manual: scripted danmaku over the real server (deterministic); "
              "server: real Bilibili + full main server end-to-end.",
     )
     args = parser.parse_args()
@@ -1441,8 +1012,6 @@ def main():
             success = asyncio.run(run_blivedm())
         elif args.mode == "manual":
             success = run_manual()
-        elif args.mode == "live":
-            success = asyncio.run(run_live())
         else:
             success = asyncio.run(run_server())
     except Exception as e:

@@ -1180,8 +1180,10 @@ def run_cancel(args):
     except OSError as e:
         print(f"[FAIL] cannot read client log: {e}")
         return False
-    # The expected lookback follows the config's signed start_offset_ms
-    # (a lead <= 0; e.g. -200 -> "(lookback 0.20s)", 0 -> "(lookback 0.00s)")
+    # The expected vad start log follows the config's signed
+    # start_offset_ms: <= 0 marks into the ring history ("(lookback
+    # 0.20s)"), > 0 defers the mark to future audio ("vad start pending
+    # until sample N (0.20s)")
     with open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "configs", f"{PIPELINE_CONFIG}.json")) as f:
         _pipeline = json.load(f)["pipeline"]
@@ -1189,13 +1191,20 @@ def run_cancel(args):
                     if "vad" in n["function"])
     _lb_ms = _vad_cfg.get("manual_start_offset_ms",
                           _vad_cfg.get("start_offset_ms", 0))
-    _lookback = f"(lookback {abs(_lb_ms) / 1000:.2f}s)"
+    if _lb_ms > 0:
+        _start_name = f"vad start pending (lead {_lb_ms / 1000:.2f}s)"
+        _start_ok = (f"vad start pending until sample" in log
+                     and f"({_lb_ms / 1000:.2f}s)" in log)
+    else:
+        _start_name = f"vad start lookback live " \
+                      f"(lookback {abs(_lb_ms) / 1000:.2f}s)"
+        _start_ok = f"(lookback {abs(_lb_ms) / 1000:.2f}s)" in log
     checks = [
         ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
         ("recording_end after cancel ignored",
          "recording_end without active mark - ignored" in log
          or "recording_end without a manual turn - ignored" in log),
-        (f"vad start lookback live {_lookback}", _lookback in log),
+        (_start_name, _start_ok),
         ("no ERROR in client log", "ERROR" not in log),
     ]
     print()
@@ -2131,15 +2140,15 @@ def fs_build_frame_splitter(logger, config_overrides=None):
             {"source": "video", "target": "video"},
             {"source": "data", "target": "data"},
         ],
-        "catch_signals": [
-            {"source": "connection_start", "target": "connection_start"},
-        ],
         "pass_signals": [
             {"source": "SoS", "target": "SoS"},
             {"source": "EoS", "target": "EoS"},
         ],
         "emit_signals": [
             {"source": "meta", "target": "meta"},
+        ],
+        "catch_events": [
+            {"source": "connection_start", "target": "connection_start"},
         ],
         "next_nodes": [-1],
         "audio_fps": 50,
@@ -2180,25 +2189,16 @@ def fs_stop_splitter(ctx, thread, timeout=3):
 
 
 def fs_send_connection_start(ctx, ts=None):
+    # connection_start is a control-plane event: broadcast into the node's
+    # control queue (in production the EventHandler does this)
     if ts is None:
         ts = time.time()
     msg = json.dumps({
         "signal": "connection_start",
-        "destination": 7,
         "timestamp": ts,
+        "source": 0,
     })
-    ctx["input_queue"].put(msg)
-
-
-def fs_send_connection_stop(ctx, ts=None):
-    if ts is None:
-        ts = time.time()
-    msg = json.dumps({
-        "signal": "connection_stop",
-        "destination": 7,
-        "timestamp": ts,
-    })
-    ctx["input_queue"].put(msg)
+    ctx["cancel_queue"].put(msg)
 
 
 def fs_send_audio(ctx, duration_s=0.5, ts=None):

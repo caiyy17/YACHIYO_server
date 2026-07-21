@@ -81,8 +81,10 @@ class ClientConnection:
         self.queues = [self.send_queue]
         # Control plane: one event handler per pipeline (built in setup,
         # torn down with it); all control-verb traffic goes through its
-        # inbox via submit().
+        # inbox via submit(). The config's top-level `events` list names
+        # the verbs the entry routes there (cancel is built-in).
         self.events = None
+        self.event_verbs = set()
         self.threads = []
         self.websocket = None
         self.last_timestamp = 0  # entry monotonicity floor (non-cancel)
@@ -113,6 +115,7 @@ class ClientConnection:
 
         self.pipeline_config = pipeline_config
         self.debug_level = int(pipeline_config.get("__debug_level", 1) or 0)
+        self.event_verbs = set(pipeline_config.get("events") or [])
         self.last_timestamp = 0
         self.log_info(
             f"Init: Initializing client {self.client_id} with pipeline: {self.pipeline_config}",
@@ -306,9 +309,12 @@ class ClientConnection:
                         f"Received: missing/invalid timestamp, dropped: {data}")
                     continue
 
-                # Cancel is exempt from monotonicity (its timestamp refers
-                # to what to cancel) and routes to the control plane
-                if data.get("signal", "") == "cancel":
+                # Control-plane verbs — cancel (built-in) plus the config's
+                # top-level events list — are exempt from monotonicity
+                # (their timestamps refer to the past) and route to the
+                # event handler
+                verb = data.get("signal", "")
+                if verb == "cancel" or verb in self.event_verbs:
                     # boundary events are source 0 — FORCED here, so a
                     # client cannot impersonate a node (exclusion and
                     # client-echo routing key off the source)
@@ -351,6 +357,7 @@ class ClientConnection:
             self.receive_task = None
         self.queues = [self.send_queue]
         self.events = None
+        self.event_verbs = set()
         self.threads = []
         self.initialized = False
         self.log_info(f"Dispose: Client {self.client_id} disposed")
@@ -580,12 +587,13 @@ async def init_pipeline(client_id: str, data: ConfigData):
         with open(json_file, "r") as file:
             pipeline_config = json.load(file)
 
-        # Static validation before building: strictly PER-NODE self-consistency
-        # (each node's config vs its own module contract — required catches,
-        # required inputs, emit/dispatch references). No cross-module flow
-        # modeling; broken links between nodes surface at runtime via the
-        # four-state signal rules. Reject on any finding, with the details in
-        # the response and the client log.
+        # Static validation before building: per-node self-consistency (each
+        # node's config vs its own module contract — required catches,
+        # required inputs, emit/dispatch references; no cross-module flow
+        # modeling, broken links surface at runtime via the four-state
+        # signal rules) plus the pipeline-level control-plane check (top-level
+        # events list == union of catch_events sources). Reject on any
+        # finding, with the details in the response and the client log.
         from utils.pipeline_validator import validate_pipeline
         errors, warnings = validate_pipeline(
             pipeline_config, get_function_class_by_name

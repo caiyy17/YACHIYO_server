@@ -10,7 +10,7 @@
 - **WebSocket & WebRTC** — WebSocket 提供句子级流式；WebRTC 提供帧级（20ms）同步流式，帧率/分辨率可配
 - **服务化架构** — 轻量的每用户 pipeline 实例；计算密集型模型作为共享独立服务运行(ASR/LLM/TTS 提供 OpenAI 兼容 API;无官方标准处用自定协议,如流式 VAD)
 - **配置驱动** — pipeline、模型和角色完全由 JSON 定义；切换本地/云端只需改配置文件
-- **声明式接口契约** — 节点的每个信号（catch / pass / emit）和每个输入/输出变量都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名）；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且双向恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS、输入 targets == 模块声明的输入集、输出 sources == 其产物集。线上侧显式 `null` 为声明式退出：输入用默认值 / 输出不上线 / catch 不接线 / emit 不发射
+- **声明式接口契约** — 节点的每个信号（catch / pass / emit）和每个输入/输出变量都以显式一对一 `{source, target}` 条目声明在 pipeline 配置中（双字段全写、含改名）；未声明的信号不会漂流穿过任何节点，转发副本与数据一样沿边逐跳。init 时按模块契约静态校验且双向恰好匹配：catch targets == 模块 required、emit 声明 == EMIT_SIGNALS、输入 targets == 模块声明的输入集、输出 sources == 其产物集。线上侧显式 `null` 为声明式退出：输入用默认值 / 输出不上线 / catch 不接线 / emit 不发射。控制面**事件**（如 `connection_start`、`playback_complete`）以同样格式声明——顶层 `events` 列表决定入口路由、节点 `catch_events` 条目声明消费——但经每个节点的 control queue 带外广播，不走数据路径（`cancel`/`kill` 为内建动词，不声明）
 
 ## 快速开始
 

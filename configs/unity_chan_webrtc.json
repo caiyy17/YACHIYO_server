@@ -5,6 +5,7 @@
         "data_fps": 20,
         "dc_offset_ms": 100
     },
+    "events": ["connection_start"],
     "pipeline": [
         {
             "node_id": 1,
@@ -36,10 +37,6 @@
                     }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
                     {
                         "source": "recording_start",
                         "target": "recording_start"
@@ -77,12 +74,6 @@
                     {
                         "source": "recording_start",
                         "target": "recording_start"
-                    }
-                ],
-                "pass_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
                     }
                 ],
                 "emit_signals": [
@@ -126,10 +117,6 @@
                     }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
                     {
                         "source": "recording_end",
                         "target": "recording_end"
@@ -178,10 +165,6 @@
                     }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
                     {
                         "source": "recording_end",
                         "target": "recording_end"
@@ -268,10 +251,6 @@
                         "target": "SoS"
                     },
                     {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
-                    {
                         "source": "recording_end",
                         "target": "recording_end"
                     },
@@ -329,10 +308,6 @@
                     {
                         "source": "SoS",
                         "target": "SoS"
-                    },
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
                     },
                     {
                         "source": "recording_end",
@@ -414,10 +389,6 @@
                         "target": "SoS"
                     },
                     {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
-                    {
                         "source": "recording_end",
                         "target": "recording_end"
                     },
@@ -492,10 +463,6 @@
                         "target": "SoS"
                     },
                     {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    },
-                    {
                         "source": "recording_end",
                         "target": "recording_end"
                     },
@@ -562,12 +529,6 @@
                         "target": "data"
                     }
                 ],
-                "catch_signals": [
-                    {
-                        "source": "connection_start",
-                        "target": "connection_start"
-                    }
-                ],
                 "pass_signals": [
                     {
                         "source": "EoS",
@@ -590,6 +551,12 @@
                     {
                         "source": "meta",
                         "target": "meta"
+                    }
+                ],
+                "catch_events": [
+                    {
+                        "source": "connection_start",
+                        "target": "connection_start"
                     }
                 ],
                 "next_nodes": [-1],

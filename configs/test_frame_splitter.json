@@ -5,6 +5,7 @@
         "data_fps": 20,
         "dc_offset_ms": 0
     },
+    "events": ["connection_start"],
     "pipeline": [
         {
             "node_id": 1,
@@ -35,7 +36,7 @@
                         "target": "data"
                     }
                 ],
-                "catch_signals": [
+                "catch_events": [
                     {
                         "source": "connection_start",
                         "target": "connection_start"

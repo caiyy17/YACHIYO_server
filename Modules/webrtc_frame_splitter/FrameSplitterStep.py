@@ -39,7 +39,8 @@ class FrameSplitterStep(BaseProcessingStep):
     Clock-driven group output for WebRTC streaming.
 
     Overrides BaseProcessingStep.run() with an absolute-time clock loop.
-    Paused until connection_start signal; runs until the kill verb.
+    Paused until the connection_start event (control plane, caught via
+    catch_events); runs until the kill verb.
 
     Each tick outputs exactly one group:
       - Content groups from input messages when available
@@ -66,7 +67,7 @@ class FrameSplitterStep(BaseProcessingStep):
       {"audio": [<pcm>...], "video": [<jpeg>...], "data": [{...}, null, ...]}
     """
 
-    REQUIRED_CATCH_SIGNALS = ["connection_start"]
+    REQUIRED_CATCH_EVENTS = ["connection_start"]
     # media lanes are fixed contract inputs (null source = lane off); the
     # data lane is free-form (any extra input target becomes a data key).
     # At least one wired input overall, validated below.
@@ -172,7 +173,7 @@ class FrameSplitterStep(BaseProcessingStep):
         self._stats_silence = 0
         self._stats_content = 0
 
-        # Requires config: catch_signals: ["connection_start"]; signals
+        # Requires config: catch_events: ["connection_start"]; signals
         # passing through to the client (SoS/EoS/recording_*) must be
         # declared in pass_signals — they are interleaved in group order.
         self.logger.info(
@@ -299,11 +300,22 @@ class FrameSplitterStep(BaseProcessingStep):
                 f"dispose failed: {type(e).__name__}: {e}"
             )
 
+    def custom_event(self, event):
+        """connection_start (control plane): start the output clock. A
+        duplicate while running is a no-op."""
+        if event.get("signal") != "connection_start":
+            return
+        if not self._clock_running:
+            self._clock_running = True
+            self.logger.info("connection_start received, clock started")
+
     def _wait_for_start(self):
-        """Block on input_queue waiting for connection_start signal.
-        Forwards non-matching messages, handles cancel/kill."""
+        """Paused state: drain the input queue (forward, relay, discard)
+        while waiting for the connection_start event, which arrives on the
+        control queue (check_cancel -> custom_event). The short timeout
+        bounds the clock-start latency to one poll interval."""
         try:
-            raw = self.input_queue.get(timeout=1)
+            raw = self.input_queue.get(timeout=0.05)
         except queue.Empty:
             self.check_cancel()
             return
@@ -323,14 +335,9 @@ class FrameSplitterStep(BaseProcessingStep):
         if ts is not None and ts < self.cancel_timestamp:
             return
 
-        signal = data.get("signal", "")
-        if signal == "connection_start":
-            self._clock_running = True
-            self.logger.info("connection_start received, clock started")
-            return
-
-        # Paused state: apply the same four-state rules for other signals
+        # Paused state: apply the same four-state rules for signals
         # (one relay copy per declared pass target)
+        signal = data.get("signal", "")
         if signal:
             if signal in self.pass_signal_set:
                 self._relay_caught(data, signal)
@@ -486,14 +493,9 @@ class FrameSplitterStep(BaseProcessingStep):
 
             signal = data.get("signal", "")
 
-            if signal == "connection_start":
-                continue  # already running; duplicate start is a no-op
-
-            # Four-state signal rules (catch = consume / catch+pass =
-            # consume then relay / pass = relay / undeclared = warn+drop).
-            # The splitter has no generic handler beyond connection_start,
-            # so a caught signal here is a wiring mistake — interleave it
-            # instead of silently dropping it into the content path.
+            # Signal rules (the splitter catches no in-band signals — its
+            # one control input, connection_start, is a catch_events verb):
+            # pass = relay in group order, undeclared = warn + drop.
             if signal:
                 if signal in self.pass_signal_set:
                     relay = {k: v for k, v in data.items()
@@ -502,19 +504,10 @@ class FrameSplitterStep(BaseProcessingStep):
                     self.add_destination(relay)
                     self._group_buffer.append(("signal", json.dumps(relay)))
                     self.current_timestamp = ts
-                elif signal in self.catch_signal_set:
-                    self.logger.error(
-                        f"splitter cannot process caught signal '{signal}'; "
-                        f"interleaving as pass-through"
-                    )
-                    data.pop("destination", None)
-                    self._group_buffer.append(("signal", json.dumps(data)))
-                    self.current_timestamp = ts
                 else:
                     self.logger.warning(
                         f"undeclared signal '{signal}' at splitter; dropped "
-                        f"(declare it in catch_signals or pass_signals to "
-                        f"handle or forward)"
+                        f"(declare it in pass_signals to forward)"
                     )
                 return
 

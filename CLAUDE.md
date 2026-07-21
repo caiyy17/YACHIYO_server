@@ -1,6 +1,11 @@
 # YACHIYO Server — 项目须知
 
-## 信号声明约定(最终协议)
+## 事件声明约定(控制面,与信号正交)
+
+- **事件走控制面广播,信号走数据面沿边**:事件由 EventHandler 直投每个节点的 control queue(排除 source),不排在数据后面、不逐跳穿管线;与数据流相对顺序承载语义的(recording_start/end、SoS/EoS)必须留在信号面,只靠 timestamp/ID 匹配身份的会话级事实(playback_complete、connection_start)用事件面。
+- **cancel/kill 是内建动词**:永远路由、永远投递,不声明;写进 events/catch_events 反而 400。cancel 政策(ε 修正、source 排除、server-originated 回声客户端)不变;其他事件动词纯广播(同 source 排除),无 ε、无回声。
+- **声明三层**:顶层 `events` 列表(entry 按它路由客户端消息进控制面,并豁免单调性检查)== 全体节点 catch_events 非 null source 并集(双向恰好,管线级检查);节点 `catch_events` 显式 `{source,target}` 对(格式/改名/null 退出/唯一性与 catch_signals 完全同构,键序在 emit_signals 后)== 模块 `REQUIRED_CATCH_EVENTS`(config 依赖时覆写 `required_catch_events`)。
+- **节点消费**:check_cancel 按 verb 分发——命中 catch_event_map 改名进 `custom_event(event)` 钩子(异常被包住,不打断在飞工作),未命中静默跳过(广播到达非 catcher 是常态),事件永不触碰 cancel_timestamp。
 
 - **emit/catch/pass 三面都必须显式写在 config 里**:条目一律为显式 `{"source","target"}` 双字段(全同名也要写全;无字符串简写、无缺省 target)。每列表**一对一**:source 唯一(一个信号只映射一个名)、target 唯一(禁止多对一合流)。
 - **validator 恰好匹配**:catch targets == 模块 `required_catch_signals(config)`(多一个少一个都 400);emit 声明 == `EMIT_SIGNALS`(双向)。dispatcher 例外:它自身不消费,其 catch 契约 = dispatch_signals 引用集(双向恰好,"先 catch 才能 dispatch")。
