@@ -433,13 +433,16 @@ function sendSignal(signal) {
 
 function sendCancel() { sendSignal('cancel'); }
 
-// Talk button: press=recording_start, release=recording_end
+// Talk button: press = barge-in (cancel voids the playing reply, the
+// gateway stamps both in FIFO order so the new turn survives the
+// watermark) then recording_start; release = recording_end
 const talkBtn = document.getElementById('talkBtn');
 function talkStart(e) {
   e.preventDefault();
   if (talkBtn.disabled) return;
   talkBtn.classList.add('active');
   talkBtn.textContent = 'Speaking...';
+  sendCancel();
   sendSignal('recording_start');
 }
 function talkEnd(e) {
