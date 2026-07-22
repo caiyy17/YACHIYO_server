@@ -16,10 +16,12 @@ network, per-session model instance) and `energy` (a lightweight RMS
 threshold with debounce).
 """
 import argparse
+import asyncio
 import base64
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -32,8 +34,10 @@ DEFAULT_PREFIX_MS = 0         # pre-roll is the pipeline vad's job
 ACTIVATION_FRAMES = 3         # consecutive active frames to open speech
 # energy detector: normalized RMS (0..1) that maps to threshold=0.5
 ENERGY_RMS_AT_HALF = 0.04
-# idle sessions are reaped (covers pipelines that died without DELETE)
+# Idle sessions are reaped independently of session creation (covers a
+# pipeline that died before it could send DELETE).
 SESSION_TTL_S = 1800
+SESSION_REAP_INTERVAL_S = 60
 
 
 class EnergyDetector:
@@ -138,7 +142,6 @@ class SileroDetector:
 
 DETECTORS = {"energy": EnergyDetector, "silero": SileroDetector}
 
-app = FastAPI()
 _sessions = {}   # sid -> [detector, last_used]
 _lock = threading.Lock()
 
@@ -147,6 +150,32 @@ def _reap_stale_locked(now):
     for sid in [s for s, (_, ts) in _sessions.items()
                 if now - ts > SESSION_TTL_S]:
         del _sessions[sid]
+
+
+async def _session_reaper():
+    """Remove idle sessions periodically, without waiting for a new create."""
+    while True:
+        await asyncio.sleep(SESSION_REAP_INTERVAL_S)
+        with _lock:
+            _reap_stale_locked(time.monotonic())
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    reaper = asyncio.create_task(
+        _session_reaper(), name="vad-session-reaper"
+    )
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        try:
+            await reaper
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class SessionRequest(BaseModel):
@@ -176,9 +205,8 @@ def create_session(req: SessionRequest):
             req.threshold, req.silence_duration_ms, req.sample_rate)
     except Exception as e:
         raise HTTPException(400, f"detector init failed: {e}")
-    now = time.time()
+    now = time.monotonic()
     with _lock:
-        _reap_stale_locked(now)
         _sessions[sid] = [det, now]
     return {"session_id": sid, "model": req.model}
 
@@ -188,7 +216,7 @@ def append(sid: str, req: AppendRequest):
     with _lock:
         entry = _sessions.get(sid)
         if entry is not None:
-            entry[1] = time.time()
+            entry[1] = time.monotonic()
     if entry is None:
         raise HTTPException(404, "unknown session")
     det = entry[0]

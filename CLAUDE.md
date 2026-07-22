@@ -22,8 +22,8 @@
 - **节点 config 键序标准**:`input_vars → pass_vars → output_vars → catch_signals → pass_signals → emit_signals → (dispatch_vars/dispatch_signals/streams) → next_nodes → 模块参数`。程序化改 config 后必须保持此序,不允许把键追加到末尾。
 
 - `configs/` 里 **`dev_*` 开头的 config 是开发实验配置,不在 sync 范围内**:不纳入 `test/test_all_configs.py` 的正式在册列表,文档/测试同步时跳过。正式范围 = demo + unity_chan_* 系列。
-- `loopback.json` / `test_frame_splitter.json` 是工具 config,不适用语音 e2e。
-- `unity_chan_default_vad` 是 vad-chunk 类 config(客户端逐块流式喂 audio_data),不进 `test_all_configs` 在册(该 runner 喂整文件),用其专属 WS e2e 验证;依赖 VAD 服务(8012)。
+- `loopback.json` 是 collector/splitter 工具 config,不适用语音 e2e。
+- `unity_chan_default_vad` 是 vad-chunk 类 config,已以 `vad_audio` 输入类型纳入 `test_all_configs`(客户端逐块流式喂 audio_data);依赖 VAD 服务(8012)。
 - **webrtc 类 config(含 collector/splitter 的管线)必须带顶层 `webrtc` 段**显式声明车道参数——网关 offer 期强制,缺段 400;不允许靠隐式默认。
 
 ## 环境与服务
@@ -36,6 +36,8 @@
 
 - 正式 e2e:`python test/test_all_configs.py [config名...]`(不带参数跑全部在册 config)
 - WebRTC 专用:`python test/test_webrtc.py --mode single|cancel|compat|lifecycle|multi|framesplitter`
+- 延迟采样:`python test/test_connect.py --mode latency` 是 benchmark,不设性能回归阈值;退出成功只表示采样完成。
+- `python test/test_llm.py --mode single|multi|instruction` 是 eval/diagnostic,非常规回归;模型输出问题只报告,请求/协议/输出缺失等执行错误才非零退出。
 - 客户端日志在 `logs/client_<id>.log`;信号接线错误 grep `undeclared signal`
 
 ## 文档

@@ -6,6 +6,34 @@ from ..base.BaseProcessingStep import BaseProcessingStep
 from ..utils.functions import bytes_to_base64
 
 
+def _pad_wav_to_ms(wav_bytes, duration_ms):
+    """Pad a PCM WAV with zero samples up to ``duration_ms``.
+
+    The original channel count, sample width and sample rate are preserved.
+    A full or longer WAV is returned unchanged.
+    """
+    try:
+        with wave.open(BytesIO(wav_bytes), "rb") as wf:
+            channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            sample_rate = wf.getframerate()
+            frames = wf.getnframes()
+            pcm = wf.readframes(frames)
+        target = int(round(sample_rate * duration_ms / 1000))
+        if frames >= target:
+            return wav_bytes
+        pcm += b"\x00" * ((target - frames) * channels * sample_width)
+        bio = BytesIO()
+        with wave.open(bio, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm)
+        return bio.getvalue()
+    except Exception:
+        return wav_bytes
+
+
 class BaseTTSCaller:
     def __init__(self, config, logger):
         # (config, logger) signature, aligned with BaseMotionCaller /
@@ -46,10 +74,11 @@ class BaseTTSCaller:
             return ""
 
     def call_stream(self, prompt, language="auto", speaker="", duration=None):
-        """Chunk the test clip into `stream_chunk_ms` WAV pieces (last may be
-        shorter), one per {"audio": <WAV bytes>} — the same per-chunk shape
-        the real OpenaiTTSCaller streams (which overrides this). chunk_ms is
-        rounded to a 100ms multiple so the webrtc splitter packs whole groups."""
+        """Chunk the test clip into `stream_chunk_ms` WAV pieces, one per
+        {"audio": <WAV bytes>} — the same per-chunk shape the real
+        OpenaiTTSCaller streams (which overrides this). chunk_ms is rounded to
+        a 100ms multiple. With exact_chunk=true (default), a natural short tail
+        is padded with silence; false preserves its original duration."""
         try:
             seg = self._build_segment(prompt, duration)
         except Exception as e:
@@ -57,9 +86,13 @@ class BaseTTSCaller:
             return
         raw = int(self.config.get("stream_chunk_ms", 300))
         chunk_ms = max(100, (raw // 100) * 100)
+        exact_chunk = self.config.get("exact_chunk", True)
         for i in range(0, len(seg), chunk_ms):
             piece = seg[i:i + chunk_ms]
-            yield {"audio": self._seg_to_wav(piece)}
+            wav_bytes = self._seg_to_wav(piece)
+            if exact_chunk and i + chunk_ms >= len(seg):
+                wav_bytes = _pad_wav_to_ms(wav_bytes, chunk_ms)
+            yield {"audio": wav_bytes}
 
 
 class TTSStep(BaseProcessingStep):
@@ -73,6 +106,15 @@ class TTSStep(BaseProcessingStep):
     # SoS -> tts_SoS) when the turn-level SoS/EoS also passes through this
     # node — the emit/pass wire-name clash check enforces that.
     EMIT_SIGNALS = ["SoS", "EoS"]
+
+    @classmethod
+    def validate_config(cls, config):
+        errors = super().validate_config(config)
+        exact_chunk = config.get("exact_chunk", True)
+        if not isinstance(exact_chunk, bool):
+            errors.append(
+                f"exact_chunk must be a bool, got {exact_chunk!r}")
+        return errors
 
     @classmethod
     def emitted_signals(cls, config):

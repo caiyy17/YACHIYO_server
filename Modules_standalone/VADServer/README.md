@@ -45,3 +45,6 @@ DELETE /v1/audio/vad/sessions/{id}
 ```
 
 `offset_s` is negative, relative to the END of the appended chunk.
+Successful pipeline teardown deletes its session immediately. As a fallback
+for a caller that disappears without DELETE, the server also scans once per
+minute and removes sessions that received no append for 30 minutes.

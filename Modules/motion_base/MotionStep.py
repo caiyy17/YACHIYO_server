@@ -39,20 +39,37 @@ class BaseMotionCaller:
         return frames
 
     def call_stream(self, prompt, duration=None):
-        """Yield chunks as {"motion": [frame, ...]} — each chunk is
-        `stream_frames` frames (the last may be shorter). Real streaming
-        callers (MotionGenerationCaller) override with actual generation."""
+        """Yield chunks as {"motion": [frame, ...]}.
+
+        exact_chunk=true (default) repeats the final frame to fill a natural
+        short tail; false preserves the short final block. The requested
+        duration itself is never changed. Real streaming callers
+        (MotionGenerationCaller) override with actual generation.
+        """
         total = self._total_frames(duration)
         chunk = max(1, int(self.config.get("stream_frames", self.fps)))
         for i in range(0, total, chunk):
             n = min(chunk, total - i)
-            yield {"motion": [self._stub_frame() for _ in range(n)]}
+            frames = [self._stub_frame() for _ in range(n)]
+            if self.config.get("exact_chunk", True) and n < chunk:
+                last = frames[-1]
+                frames.extend(dict(last) for _ in range(chunk - n))
+            yield {"motion": frames}
 
     def reset_history(self):
         pass
 
 
 class MotionStep(BaseProcessingStep):
+    @classmethod
+    def validate_config(cls, config):
+        errors = super().validate_config(config)
+        exact_chunk = config.get("exact_chunk", True)
+        if not isinstance(exact_chunk, bool):
+            errors.append(
+                f"exact_chunk must be a bool, got {exact_chunk!r}")
+        return errors
+
     @classmethod
     def required_catch_signals(cls, config):
         # continuous mode consumes SoS to reset continuation history

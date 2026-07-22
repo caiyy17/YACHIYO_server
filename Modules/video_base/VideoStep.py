@@ -58,16 +58,22 @@ class BaseVideoCaller:
         return frames
 
     def call_stream(self, prompt, duration=None):
-        """Yield chunks as {"video": [frame, ...]} — each chunk is
-        `stream_frames` solid-color frames (the last may be shorter); the
-        stream's very first frame additionally carries a "header" with
-        framerate."""
+        """Yield chunks as {"video": [frame, ...]}.
+
+        exact_chunk=true (default) repeats the last frame to fill a natural
+        short tail; false preserves the short final block. The requested
+        duration itself is never changed. The first stream frame carries the
+        header.
+        """
         total = self._total_frames(duration)
         chunk = max(1, int(self.config.get("stream_frames", self.fps)))
         first = True
         for i in range(0, total, chunk):
             n = min(chunk, total - i)
             frames = [{"image": self._frame} for _ in range(n)]
+            if self.config.get("exact_chunk", True) and n < chunk:
+                last = frames[-1]
+                frames.extend(dict(last) for _ in range(chunk - n))
             if first and frames:
                 frames[0] = {"header": {"framerate": self.fps}, **frames[0]}
                 first = False
@@ -99,6 +105,10 @@ class VideoStep(BaseProcessingStep):
             errors.append(
                 f"color must be an RGB triple of 0..255 integers, "
                 f"got {color!r}")
+        exact_chunk = config.get("exact_chunk", True)
+        if not isinstance(exact_chunk, bool):
+            errors.append(
+                f"exact_chunk must be a bool, got {exact_chunk!r}")
         return errors
 
     def custom_init(self):

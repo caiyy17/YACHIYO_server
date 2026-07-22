@@ -21,7 +21,7 @@ WEBUI_PORT = 18083
 WEBUI_URL = f"http://{WEBUI_HOST}:{WEBUI_PORT}"
 MAIN_SERVER = "http://127.0.0.1:8910"
 
-PIPELINE_CONFIG = "test_frame_splitter"
+PIPELINE_CONFIG = "loopback"
 TEST_CLIENT_ID = f"webui_test_{os.getpid()}_{time.time_ns()}"
 
 STARTUP_TIMEOUT = 15

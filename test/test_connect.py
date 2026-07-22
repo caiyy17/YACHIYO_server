@@ -7,9 +7,10 @@ Select a mode with --mode:
   concurrent    Server connection / API lifecycle test (register/unregister/
                 get_clients/get_client/init_pipeline/get_client_log/websocket
                 + concurrency). Requires a running server.
-  latency       Latency benchmark: local, OpenAI API, WebRTC pipelines and
-                multi-user concurrency, with per-stage timings. Requires a
-                running server.
+  latency       Latency benchmark: local and OpenAI API pipelines plus
+                multi-user concurrency, with per-stage timings. It has no
+                regression threshold; success means sampling completed.
+                Requires a running server.
   backpressure  Standalone max_queue_size backpressure test; builds pipelines
                 directly (imports from Modules). Does NOT need a running server.
   vad           Deterministic in-process signed VAD offset tests. Does NOT
@@ -407,12 +408,12 @@ async def benchmark_ws(config_name, label):
 
 
 async def benchmark_multi_user():
-    """Test concurrent users sharing services."""
+    """Benchmark concurrent users sharing services."""
     audio_b64 = load_audio()
     user_count = 3
     run_id = time.time_ns()
     print(f"\n{'='*60}")
-    print(f"  Multi-User Concurrency Test ({user_count} users)")
+    print(f"  Multi-User Concurrency Benchmark ({user_count} users)")
     print(f"{'='*60}")
 
     async def single_user(idx):
@@ -453,12 +454,12 @@ async def latency_main():
 
     # 1. unity_chan_default: Qwen3-ASR (local) + gemma (remote vLLM) + Qwen3-TTS (local)
     avg_local = await benchmark_ws(
-        "unity_chan_default", "Test 1: unity_chan_default (Qwen3-ASR + gemma + Qwen3-TTS)"
+        "unity_chan_default", "Pipeline 1: unity_chan_default (Qwen3-ASR + gemma + Qwen3-TTS)"
     )
 
     # 2. demo: full OpenAI — Whisper (ASR) + GPT (LLM) + OpenAI TTS-1, all remote
     avg_openai = await benchmark_ws(
-        "demo", "Test 2: demo (full OpenAI: Whisper + GPT + TTS-1)"
+        "demo", "Pipeline 2: demo (full OpenAI: Whisper + GPT + TTS-1)"
     )
 
     # WebRTC transport has its own end-to-end test script.
@@ -475,6 +476,7 @@ async def latency_main():
         local_v = avg_local.get(k, 0) * 1000
         openai_v = avg_openai.get(k, 0) * 1000
         print(f"  {k:<22} {local_v:>10.0f} {openai_v:>10.0f}")
+    print("\n  Benchmark complete (no performance pass/fail threshold).")
     return True
 
 
@@ -1089,24 +1091,24 @@ def vad_wav_block(value, samples=VAD_BLOCK_SAMPLES):
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def vad_feed(step, value, timestamp=None):
+def vad_feed(step, value, timestamp):
     step.span_process({
         "audio_data": vad_wav_block(value),
-        "timestamp": timestamp if timestamp is not None else 200.0 + value,
+        "timestamp": timestamp,
     })
 
 
-def vad_start(step):
+def vad_start(step, timestamp=VAD_START_TIMESTAMP):
     step.span_process({
         "signal": "recording_start",
-        "timestamp": VAD_START_TIMESTAMP,
+        "timestamp": timestamp,
     })
 
 
-def vad_end(step):
+def vad_end(step, timestamp):
     step.span_process({
         "signal": "recording_end",
-        "timestamp": VAD_START_TIMESTAMP + 1,
+        "timestamp": timestamp,
     })
 
 
@@ -1148,10 +1150,10 @@ def vad_decode(message):
     return list(pcm)
 
 
-def vad_check_stamps(messages):
+def vad_check_stamps(messages, expected=VAD_START_TIMESTAMP):
     for message in messages:
         vad_require(
-            message.get("timestamp") == VAD_START_TIMESTAMP,
+            message.get("timestamp") == expected,
             f"offset changed the turn timestamp: {message}",
         )
 
@@ -1190,19 +1192,26 @@ def vad_test_validator():
                 any(key in error for error in errors),
                 f"{key}={value!r} was not rejected: {errors}",
             )
+    config = dict(baseline)
+    config["exact_chunk"] = "true"
+    errors = ServerVADStep.validate_config(config)
+    vad_require(
+        any("exact_chunk" in error for error in errors),
+        f"non-boolean exact_chunk was not rejected: {errors}",
+    )
 
 
-def vad_test_negative_start():
+def vad_test_start_lookback():
     step, output = vad_new_step(manual_start_offset_ms=-200)
-    for value in (1, 2, 3):
-        vad_feed(step, value)
+    for value, end_ts in ((1, 99.8), (2, 99.9), (3, 100.0)):
+        vad_feed(step, value, end_ts)
     vad_require(not vad_drain(output), "audio before start produced output")
     vad_start(step)
     start_messages = vad_drain(output)
     vad_require(vad_kinds(start_messages) == ["vad_start"],
-                f"negative start was not immediate: {vad_kinds(start_messages)}")
-    vad_feed(step, 4)
-    vad_end(step)
+                f"start lookback was not immediate: {vad_kinds(start_messages)}")
+    vad_feed(step, 4, 100.1)
+    vad_end(step, 100.1)
     end_messages = vad_drain(output)
     vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
                 f"unexpected end output: {vad_kinds(end_messages)}")
@@ -1210,18 +1219,19 @@ def vad_test_negative_start():
     vad_check_stamps(start_messages + end_messages)
 
 
-def vad_test_positive_start():
+def vad_test_start_delay():
     step, output = vad_new_step(manual_start_offset_ms=150)
+    vad_feed(step, 0, 100.0)
     vad_start(step)
-    vad_require(not vad_drain(output), "positive start was forwarded immediately")
-    vad_feed(step, 1)
-    vad_require(not vad_drain(output), "positive start fired before 150 ms")
-    vad_feed(step, 2)
+    vad_require(not vad_drain(output), "delayed start was forwarded immediately")
+    vad_feed(step, 1, 100.1)
+    vad_require(not vad_drain(output), "delayed start fired before 150 ms")
+    vad_feed(step, 2, 100.2)
     start_messages = vad_drain(output)
     vad_require(vad_kinds(start_messages) == ["vad_start"],
-                f"positive start did not fire once: {vad_kinds(start_messages)}")
-    vad_feed(step, 3)
-    vad_end(step)
+                f"delayed start did not fire once: {vad_kinds(start_messages)}")
+    vad_feed(step, 3, 100.3)
+    vad_end(step, 100.3)
     end_messages = vad_drain(output)
     vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
                 f"unexpected end output: {vad_kinds(end_messages)}")
@@ -1231,15 +1241,16 @@ def vad_test_positive_start():
 
 def vad_test_positive_end():
     step, output = vad_new_step(manual_end_offset_ms=150)
+    vad_feed(step, 0, 100.0)
     vad_start(step)
     start_messages = vad_drain(output)
-    for value in (1, 2):
-        vad_feed(step, value)
-    vad_end(step)
+    for value, end_ts in ((1, 100.1), (2, 100.2)):
+        vad_feed(step, value, end_ts)
+    vad_end(step, 100.2)
     vad_require(not vad_drain(output), "positive end finalized immediately")
-    vad_feed(step, 3)
+    vad_feed(step, 3, 100.3)
     vad_require(not vad_drain(output), "positive end fired before 150 ms")
-    vad_feed(step, 4)
+    vad_feed(step, 4, 100.4)
     end_messages = vad_drain(output)
     vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
                 f"unexpected delayed end output: {vad_kinds(end_messages)}")
@@ -1250,12 +1261,13 @@ def vad_test_positive_end():
 
 def vad_test_negative_end():
     step, output = vad_new_step(manual_end_offset_ms=-150)
+    vad_feed(step, 0, 100.0)
     vad_start(step)
     start_messages = vad_drain(output)
-    for value in (1, 2, 3):
-        vad_feed(step, value)
+    for value, end_ts in ((1, 100.1), (2, 100.2), (3, 100.3)):
+        vad_feed(step, value, end_ts)
     vad_require(not vad_drain(output), "non-stream VAD emitted audio before end")
-    vad_end(step)
+    vad_end(step, 100.3)
     end_messages = vad_drain(output)
     vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
                 f"negative end was not immediate: {vad_kinds(end_messages)}")
@@ -1269,11 +1281,12 @@ def vad_test_collapsed_nonstream():
             manual_start_offset_ms=300,
             manual_end_offset_ms=end_offset,
         )
+        vad_feed(step, 0, 100.0)
         vad_start(step)
-        vad_feed(step, 1)
+        vad_feed(step, 1, 100.1)
         vad_require(not vad_drain(output),
                     f"{name} collapsed case emitted before end")
-        vad_end(step)
+        vad_end(step, 100.1)
         messages = vad_drain(output)
         vad_require(
             vad_kinds(messages) == ["vad_start", "vad_end", "audio_file"],
@@ -1287,20 +1300,21 @@ def vad_test_stream_holdback_and_collapse():
     step, output = vad_new_step(
         manual_end_offset_ms=-150, stream=True, stream_chunk_ms=100,
     )
+    vad_feed(step, 0, 100.0)
     vad_start(step)
     messages = vad_drain(output)
     vad_require(vad_kinds(messages) == ["vad_start"],
                 f"unexpected stream start: {vad_kinds(messages)}")
-    vad_feed(step, 1)
-    vad_feed(step, 2)
+    vad_feed(step, 1, 100.1)
+    vad_feed(step, 2, 100.2)
     vad_require(not vad_drain(output),
                 "stream emitted samples still inside the -150 ms holdback")
-    vad_feed(step, 3)
+    vad_feed(step, 3, 100.3)
     safe = vad_drain(output)
     vad_require(vad_kinds(safe) == ["audio_file"],
                 f"stream did not release its safe prefix: {vad_kinds(safe)}")
     vad_check_audio(safe[0], [1] * 100)
-    vad_end(step)
+    vad_end(step, 100.3)
     final = vad_drain(output)
     vad_require(vad_kinds(final) == ["audio_file", "vad_end"],
                 f"unexpected stream final order: {vad_kinds(final)}")
@@ -1313,11 +1327,12 @@ def vad_test_stream_holdback_and_collapse():
         stream=True,
         stream_chunk_ms=100,
     )
+    vad_feed(collapsed, 0, 100.0)
     vad_start(collapsed)
-    vad_feed(collapsed, 1)
+    vad_feed(collapsed, 1, 100.1)
     vad_require(not vad_drain(collapsed_output),
                 "collapsed stream emitted before end")
-    vad_end(collapsed)
+    vad_end(collapsed, 100.1)
     collapsed_messages = vad_drain(collapsed_output)
     vad_require(
         vad_kinds(collapsed_messages) == ["vad_start", "vad_end"],
@@ -1326,17 +1341,288 @@ def vad_test_stream_holdback_and_collapse():
     )
     vad_check_stamps(collapsed_messages)
 
+    natural, natural_output = vad_new_step(
+        stream=True, stream_chunk_ms=100, exact_chunk=False,
+    )
+    vad_feed(natural, 0, 100.0)
+    vad_start(natural)
+    natural_started = vad_drain(natural_output)
+    vad_feed(natural, 1, 100.1)
+    full = vad_drain(natural_output)
+    natural.span_process({
+        "audio_data": vad_wav_block(2, samples=50),
+        "timestamp": 100.15,
+    })
+    vad_end(natural, 100.15)
+    natural_finished = vad_drain(natural_output)
+    vad_require(vad_kinds(full) == ["audio_file"],
+                f"natural stream full chunk: {vad_kinds(full)}")
+    vad_require(vad_kinds(natural_finished) == ["audio_file", "vad_end"],
+                f"natural stream tail: {vad_kinds(natural_finished)}")
+    vad_check_audio(full[0], [1] * 100)
+    vad_check_audio(natural_finished[0], [2] * 50)
+    vad_check_stamps(natural_started + full + natural_finished)
+
+
+def vad_test_manual_timestamp_boundaries():
+    # The start signal lies inside an already-ingested chunk. Its own stamp,
+    # not the latest sample position, must select the final 50 samples.
+    step, output = vad_new_step()
+    vad_feed(step, 1, 100.0)
+    vad_feed(step, 2, 100.1)
+    vad_start(step, 100.05)
+    start_messages = vad_drain(output)
+    vad_require(vad_kinds(start_messages) == ["vad_start"],
+                f"historical in-chunk start: {vad_kinds(start_messages)}")
+    vad_end(step, 100.1)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"historical in-chunk end: {vad_kinds(end_messages)}")
+    vad_check_audio(end_messages[1], [2] * 50)
+    vad_check_stamps(start_messages + end_messages, 100.05)
+
+    # Offset targets exactly on chunk boundaries: the start excludes the
+    # chunk ending there, while the end includes the chunk ending there.
+    exact, exact_output = vad_new_step(
+        manual_start_offset_ms=-50,
+        manual_end_offset_ms=-50,
+    )
+    vad_feed(exact, 1, 99.9)
+    vad_feed(exact, 2, 100.0)
+    vad_start(exact, 100.05)       # target = 100.0
+    vad_feed(exact, 3, 100.1)
+    vad_end(exact, 100.15)         # target = 100.1
+    exact_messages = vad_drain(exact_output)
+    vad_require(
+        vad_kinds(exact_messages) == ["vad_start", "vad_end", "audio_file"],
+        f"exact timestamp boundaries: {vad_kinds(exact_messages)}",
+    )
+    vad_check_audio(exact_messages[2], [3] * 100)
+    vad_check_stamps(exact_messages, 100.05)
+
+
+def vad_test_manual_future_timestamp_boundaries():
+    step, output = vad_new_step()
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.05)
+    vad_require(not vad_drain(output), "future in-chunk start fired early")
+    vad_feed(step, 1, 100.1)
+    start_messages = vad_drain(output)
+    vad_require(vad_kinds(start_messages) == ["vad_start"],
+                f"future in-chunk start: {vad_kinds(start_messages)}")
+    vad_feed(step, 2, 100.2)
+    vad_end(step, 100.25)
+    vad_require(not vad_drain(output), "future in-chunk end fired early")
+    vad_feed(step, 3, 100.3)
+    end_messages = vad_drain(output)
+    vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
+                f"future in-chunk end: {vad_kinds(end_messages)}")
+    vad_check_audio(
+        end_messages[1], [1] * 50 + [2] * 100 + [3] * 50)
+    vad_check_stamps(start_messages + end_messages, 100.05)
+
+
+def vad_test_multi_chunk_timestamp_crop():
+    step, output = vad_new_step(
+        manual_start_offset_ms=-350,
+        manual_end_offset_ms=-250,
+    )
+    for value, end_ts in (
+            (1, 99.6), (2, 99.7), (3, 99.8), (4, 99.9), (5, 100.0)):
+        vad_feed(step, value, end_ts)
+
+    # target start = 100.0 - 350 ms = 99.65, halfway through chunk 2.
+    vad_start(step, 100.0)
+    started = vad_drain(output)
+    vad_require(vad_kinds(started) == ["vad_start"],
+                f"multi-chunk start: {vad_kinds(started)}")
+
+    for value, end_ts in ((6, 100.1), (7, 100.2), (8, 100.3)):
+        vad_feed(step, value, end_ts)
+    # target end = 100.3 - 250 ms = 100.05, halfway through chunk 6.
+    vad_end(step, 100.3)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == ["vad_end", "audio_file"],
+                f"multi-chunk end: {vad_kinds(finished)}")
+    expected = (
+        [2] * 50 + [3] * 100 + [4] * 100 + [5] * 100 + [6] * 50
+    )
+    vad_check_audio(finished[1], expected)
+    vad_check_stamps(started + finished, 100.0)
+
+
+def vad_test_multi_chunk_future_wait():
+    step, output = vad_new_step(
+        manual_start_offset_ms=350,
+        manual_end_offset_ms=350,
+    )
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.0)  # target start = 100.35
+    vad_require(not vad_drain(output), "350 ms start fired immediately")
+
+    for value in (1, 2, 3):
+        vad_feed(step, value, 100.0 + value * 0.1)
+        vad_require(not vad_drain(output),
+                    f"350 ms start fired on early chunk {value}")
+    vad_feed(step, 4, 100.4)
+    started = vad_drain(output)
+    vad_require(vad_kinds(started) == ["vad_start"],
+                f"350 ms start resolution: {vad_kinds(started)}")
+
+    vad_feed(step, 5, 100.5)
+    vad_end(step, 100.5)  # target end = 100.85
+    vad_require(not vad_drain(output), "350 ms end finalized immediately")
+    for value in (6, 7, 8):
+        vad_feed(step, value, 100.0 + value * 0.1)
+        vad_require(not vad_drain(output),
+                    f"350 ms end fired on early chunk {value}")
+    vad_feed(step, 9, 100.9)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == ["vad_end", "audio_file"],
+                f"350 ms end resolution: {vad_kinds(finished)}")
+    expected = (
+        [4] * 50 + [5] * 100 + [6] * 100 + [7] * 100
+        + [8] * 100 + [9] * 50
+    )
+    vad_check_audio(finished[1], expected)
+    vad_check_stamps(started + finished, 100.0)
+
+
+def vad_test_exact_empty_duration():
+    step, output = vad_new_step()
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.0)
+    started = vad_drain(output)
+    vad_require(vad_kinds(started) == ["vad_start"],
+                f"empty non-stream start: {vad_kinds(started)}")
+    vad_end(step, 100.0)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == ["vad_end", "audio_file"],
+                f"empty non-stream end: {vad_kinds(finished)}")
+    vad_check_audio(finished[1], [])
+    vad_check_stamps(started + finished, 100.0)
+
+    stream, stream_output = vad_new_step(stream=True, stream_chunk_ms=100)
+    vad_feed(stream, 0, 100.0)
+    vad_start(stream, 100.0)
+    stream_started = vad_drain(stream_output)
+    vad_end(stream, 100.0)
+    stream_finished = vad_drain(stream_output)
+    vad_require(vad_kinds(stream_started + stream_finished) == [
+        "vad_start", "vad_end",
+    ], f"empty stream envelope: "
+       f"{vad_kinds(stream_started + stream_finished)}")
+    vad_check_stamps(stream_started + stream_finished, 100.0)
+
+
+def vad_test_stream_timestamp_boundaries():
+    step, output = vad_new_step(stream=True, stream_chunk_ms=100)
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.05)
+    vad_feed(step, 1, 100.1)
+    started = vad_drain(output)
+    vad_require(vad_kinds(started) == ["vad_start"],
+                f"stream timestamp start: {vad_kinds(started)}")
+
+    vad_feed(step, 2, 100.2)
+    first = vad_drain(output)
+    vad_require(vad_kinds(first) == ["audio_file"],
+                f"stream first timestamp chunk: {vad_kinds(first)}")
+    vad_check_audio(first[0], [1] * 50 + [2] * 50)
+
+    vad_end(step, 100.25)
+    vad_require(not vad_drain(output), "stream timestamp end fired early")
+    vad_feed(step, 3, 100.3)
+    final = vad_drain(output)
+    vad_require(vad_kinds(final) == ["audio_file", "vad_end"],
+                f"stream timestamp final: {vad_kinds(final)}")
+    vad_check_audio(final[0], [2] * 50 + [3] * 50)
+    vad_check_stamps(started + first + final, 100.05)
+
+
+def vad_test_stream_finalize_rechunks_holdback():
+    step, output = vad_new_step(
+        stream=True, stream_chunk_ms=100, manual_end_offset_ms=-500,
+    )
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.0)
+    started = vad_drain(output)
+    prior = []
+    for value in range(1, 11):
+        vad_feed(step, value, 100.0 + value * 0.1)
+        prior += vad_drain(output)
+    vad_require(
+        all(len(vad_decode(message)) == 100 for message in prior),
+        "open stream emitted a non-exact chunk",
+    )
+
+    # target=100.7 leaves 200 ms beyond the already emitted prefix. Finalize
+    # must release that as two configured chunks, never one oversized WAV.
+    vad_end(step, 101.2)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == [
+        "audio_file", "audio_file", "vad_end",
+    ], f"holdback finalize envelope: {vad_kinds(finished)}")
+    vad_check_audio(finished[0], [6] * 100)
+    vad_check_audio(finished[1], [7] * 100)
+    vad_check_stamps(started + prior + finished, 100.0)
+
+
+def vad_test_cancel_trims_partial_ring_chunk():
+    step, output = vad_new_step(manual_start_offset_ms=-100)
+    vad_feed(step, 1, 100.1)        # chunk interval [100.0, 100.1)
+    step.cancel_timestamp = 100.05  # invalidate only its first 50 ms
+    vad_start(step, 100.1)          # requested target 100.0 clamps to 100.05
+    started = vad_drain(output)
+    vad_feed(step, 2, 100.2)
+    vad_end(step, 100.2)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(started + finished) == [
+        "vad_start", "vad_end", "audio_file",
+    ], f"partial cancel envelope: {vad_kinds(started + finished)}")
+    vad_check_audio(finished[1], [1] * 50 + [2] * 100)
+    vad_check_stamps(started + finished, 100.1)
+
+
+def vad_test_pending_end_bypasses_open_segment_cap():
+    step, output = vad_new_step(
+        ring_seconds=1,
+        manual_end_offset_ms=1000,
+    )
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.0)
+    started = vad_drain(output)
+    for value in range(1, 10):
+        vad_feed(step, value, 100.0 + value * 0.1)
+    vad_end(step, 100.9)  # target 101.9 is known but still in future audio
+    vad_feed(step, 10, 101.0)
+    vad_require(step.span_active,
+                "pending explicit end was mistaken for an open segment")
+    vad_require(not vad_drain(output),
+                "pending explicit end was force-ended at ring_seconds")
+    for value in range(11, 20):
+        vad_feed(step, value, 100.0 + value * 0.1)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == ["vad_end", "audio_file"],
+                f"pending end completion: {vad_kinds(finished)}")
+    vad_require(len(vad_decode(finished[1])) == 1900,
+                "pending end segment length was not 1.9 seconds")
+    vad_check_stamps(started + finished, 100.0)
+
 
 class VadFakeDetector:
     def __init__(self, responses):
         self.responses = list(responses)
         self.closed = False
+        self.feed_count = 0
+        self.reset_count = 0
 
     def feed(self, _pcm):
+        self.feed_count += 1
         return self.responses.pop(0)
 
     def reset(self):
-        pass
+        self.reset_count += 1
 
     def close(self):
         self.closed = True
@@ -1348,6 +1634,117 @@ class VadFakeEvents:
 
     def submit(self, message):
         self.messages.append(message)
+
+
+def vad_test_server_manual_pending():
+    from Modules.vad_server.ServerVADStep import ServerVADStep
+
+    detector = VadFakeDetector([[]])
+    output = Queue()
+    config = vad_config(
+        auto_detect=True,
+        start_offset_ms=0,
+        end_offset_ms=0,
+        __events=VadFakeEvents(),
+    )
+    with patch(
+        "Modules.vad_server.ServerVADStep.ServerVADCaller",
+        return_value=detector,
+    ):
+        step = ServerVADStep(
+            1, "vad_manual_pending_test",
+            setup_logger("vad_manual_pending_test"), Queue(), Queue(),
+            output, Queue(), config,
+        )
+
+    # Establish the latest audio end at 100.0, then put the manual boundary
+    # 50 ms into the next chunk. Pending _mark=None must not resume detection.
+    vad_feed(step, 0, 100.0)
+    vad_start(step, 100.05)
+    vad_require(step.span_active and step._manual,
+                "pending manual start incorrectly resumed detection")
+    vad_require(detector.reset_count == 0,
+                "pending manual start reset the detector")
+
+    vad_feed(step, 1, 100.1)
+    started = vad_drain(output)
+    vad_require(vad_kinds(started) == ["vad_start"],
+                f"server manual timestamp start: {vad_kinds(started)}")
+    vad_end(step, 100.15)
+    vad_require(step.span_active and detector.reset_count == 0,
+                "pending manual end resumed detection early")
+
+    vad_feed(step, 2, 100.2)
+    finished = vad_drain(output)
+    vad_require(vad_kinds(finished) == ["vad_end", "audio_file"],
+                f"server manual timestamp end: {vad_kinds(finished)}")
+    vad_check_audio(finished[1], [1] * 50 + [2] * 50)
+    vad_check_stamps(started + finished, 100.05)
+    vad_require(not step.span_active and not step._manual,
+                "finished manual turn did not resume detection")
+    vad_require(detector.reset_count == 1,
+                f"detector reset count: {detector.reset_count}")
+    vad_require(detector.feed_count == 1,
+                "manual audio leaked into the suspended detector")
+    step.custom_dispose()
+
+
+def vad_test_manual_auto_boundary_parity():
+    from Modules.vad_server.ServerVADStep import ServerVADStep
+
+    # Manual reference: start looks back 50 ms from 100.1; end extends 25 ms
+    # after 100.2 and therefore resolves in the next chunk.
+    manual, manual_output = vad_new_step(
+        manual_start_offset_ms=-50,
+        manual_end_offset_ms=25,
+    )
+    vad_feed(manual, 1, 100.0)
+    vad_feed(manual, 2, 100.1)
+    vad_start(manual, 100.1)
+    manual_messages = vad_drain(manual_output)
+    vad_feed(manual, 3, 100.2)
+    vad_end(manual, 100.2)
+    vad_feed(manual, 4, 100.3)
+    manual_messages += vad_drain(manual_output)
+
+    detector = VadFakeDetector([
+        [], [{"type": "speech_started"}],
+        [{"type": "speech_stopped"}], [],
+    ])
+    auto_output = Queue()
+    auto_config = vad_config(
+        auto_detect=True,
+        start_offset_ms=-50,
+        end_offset_ms=25,
+        __events=VadFakeEvents(),
+    )
+    with patch(
+        "Modules.vad_server.ServerVADStep.ServerVADCaller",
+        return_value=detector,
+    ):
+        auto = ServerVADStep(
+            1, "vad_auto_parity_test", setup_logger("vad_auto_parity_test"),
+            Queue(), Queue(), auto_output, Queue(), auto_config,
+        )
+    for value, end_ts in (
+            (1, 100.0), (2, 100.1), (3, 100.2), (4, 100.3)):
+        vad_feed(auto, value, end_ts)
+    auto_messages = vad_drain(auto_output)
+
+    vad_require(
+        vad_kinds(manual_messages) == ["vad_start", "vad_end", "audio_file"],
+        f"manual parity envelope: {vad_kinds(manual_messages)}",
+    )
+    vad_require(
+        vad_kinds(auto_messages) == ["vad_start", "vad_end", "audio_file"],
+        f"auto parity envelope: {vad_kinds(auto_messages)}",
+    )
+    expected = [2] * 50 + [3] * 100 + [4] * 25
+    vad_check_audio(manual_messages[2], expected)
+    vad_check_audio(auto_messages[2], expected)
+    vad_check_stamps(manual_messages, 100.1)
+    vad_check_stamps(auto_messages, 100.1)
+    auto.custom_dispose()
 
 
 def vad_test_auto_offsets():
@@ -1377,16 +1774,19 @@ def vad_test_auto_offsets():
                 f"auto VAD init failed: {step.init_error}")
 
     for value in (1, 2):
-        vad_feed(step, value, timestamp=VAD_START_TIMESTAMP + value - 1)
+        vad_feed(
+            step, value,
+            timestamp=VAD_START_TIMESTAMP + (value - 1) * 0.1,
+        )
         vad_require(not vad_drain(output),
-                    f"auto positive start fired on block {value}")
-    vad_feed(step, 3, timestamp=VAD_START_TIMESTAMP + 2)
+                    f"auto delayed start fired on block {value}")
+    vad_feed(step, 3, timestamp=VAD_START_TIMESTAMP + 0.2)
     start_messages = vad_drain(output)
     vad_require(vad_kinds(start_messages) == ["vad_start"],
                 f"auto start output: {vad_kinds(start_messages)}")
-    vad_feed(step, 4, timestamp=VAD_START_TIMESTAMP + 3)
+    vad_feed(step, 4, timestamp=VAD_START_TIMESTAMP + 0.3)
     vad_require(not vad_drain(output), "auto non-stream emitted before stop")
-    vad_feed(step, 5, timestamp=VAD_START_TIMESTAMP + 4)
+    vad_feed(step, 5, timestamp=VAD_START_TIMESTAMP + 0.4)
     end_messages = vad_drain(output)
     vad_require(vad_kinds(end_messages) == ["vad_end", "audio_file"],
                 f"auto end output: {vad_kinds(end_messages)}")
@@ -1406,12 +1806,28 @@ def vad_test_auto_offsets():
 def run_vad():
     tests = [
         ("Signed offset validation", vad_test_validator),
-        ("Negative start lookback", vad_test_negative_start),
-        ("Positive start delay", vad_test_positive_start),
+        ("Negative start lookback", vad_test_start_lookback),
+        ("Positive start delay", vad_test_start_delay),
         ("Positive end delay", vad_test_positive_end),
         ("Negative end crop", vad_test_negative_end),
         ("Collapsed non-stream WAV", vad_test_collapsed_nonstream),
         ("Stream negative-end holdback", vad_test_stream_holdback_and_collapse),
+        ("Manual timestamp boundaries", vad_test_manual_timestamp_boundaries),
+        ("Manual future timestamp boundaries",
+         vad_test_manual_future_timestamp_boundaries),
+        ("Multi-chunk timestamp crop", vad_test_multi_chunk_timestamp_crop),
+        ("Multi-chunk future wait", vad_test_multi_chunk_future_wait),
+        ("Exact empty duration", vad_test_exact_empty_duration),
+        ("Stream timestamp boundaries", vad_test_stream_timestamp_boundaries),
+        ("Stream finalize re-chunks holdback",
+         vad_test_stream_finalize_rechunks_holdback),
+        ("Cancel trims partial ring chunk",
+         vad_test_cancel_trims_partial_ring_chunk),
+        ("Pending end bypasses open-segment cap",
+         vad_test_pending_end_bypasses_open_segment_cap),
+        ("Server manual pending timestamps", vad_test_server_manual_pending),
+        ("Manual/automatic boundary parity",
+         vad_test_manual_auto_boundary_parity),
         ("Automatic VAD offsets", vad_test_auto_offsets),
     ]
     results = []
@@ -1609,7 +2025,7 @@ def main():
             return run_vad()
         return run_backpressure()
     except Exception as exc:
-        print(f"{args.mode} test failed: {exc}")
+        print(f"{args.mode} mode failed: {exc}")
         return False
 
 

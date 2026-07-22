@@ -16,9 +16,10 @@ Consolidated WebRTC test script — six modes via --mode:
                 without replacing the healthy session; re-init enables reuse.
 
   lifecycle     Connection start/stop lifecycle test:
-                Verifies FrameSplitter pause/clock-start, data flow, pipeline
-                dispose on disconnect, and re-init without force.
-                Uses a FrameSplitter-only pipeline (no external model services).
+                Verifies FrameSplitter pause/clock-start, exact DataChannel
+                loopback, pipeline dispose, and re-init without force.
+                Uses the collector → splitter loopback pipeline (no external
+                model services).
 
   multi         Multi-user N concurrent clients test:
                 Runs N clients in separate processes against the full pipeline,
@@ -26,8 +27,8 @@ Consolidated WebRTC test script — six modes via --mode:
 
   framesplitter Standalone clock-driven FrameSplitterStep test:
                 Drives a FrameSplitterStep in-process via queues — no server.
-                Verifies steady 100ms output rate, audio grouping, signal
-                ordering, cancel buffer clearing, no drift, startup buffering.
+                Verifies a five-second steady 100ms clock without drift,
+                audio grouping, signal ordering, and cancel buffer clearing.
 
 Usage:
   conda activate yachiyo
@@ -92,9 +93,9 @@ RUN_TOKEN = uuid.uuid4().hex[:10]
 CLIENT_ID = f"test_webrtc_client_{RUN_TOKEN}"
 PIPELINE_CONFIG = "unity_chan_webrtc"
 
-# --- lifecycle-mode-specific constants (from test_webrtc_lifecycle.py) ---
+# --- lifecycle-mode-specific constants ---
 LIFECYCLE_CLIENT_ID = f"test_lifecycle_{RUN_TOKEN}"
-LIFECYCLE_PIPELINE_CONFIG = "test_frame_splitter"
+LIFECYCLE_PIPELINE_CONFIG = "loopback"
 
 # --- multi-mode-specific constants (from test_webrtc_multi.py) ---
 NUM_CLIENTS = 3
@@ -545,6 +546,19 @@ def record_mp4(
     return True
 
 
+def remove_success_artifact(path):
+    """Remove an MP4 from a successful run, reporting cleanup failures."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError as error:
+        print(f"[FAIL] cannot remove test artifact {path}: {error}")
+        return False
+    print(f"[Cleanup] Removed successful-run artifact: {path}")
+    return True
+
+
 # ============================================================
 # Mode: single  (from test_webrtc.py run_test)
 # ============================================================
@@ -839,7 +853,7 @@ async def run_test():
 
 
 def run_single(args):
-    """Entry for --mode single. Mirrors original test_webrtc.py main()."""
+    """Run one full client, retaining its MP4 only on failure or request."""
     global WEBRTC_SERVER, PIPELINE_CONFIG, TEST_DURATION
     global SAMPLE_RATE, AUDIO_PTIME, AUDIO_SAMPLES, AUDIO_TIME_BASE
     global VIDEO_FPS, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_TIMESTAMP_INCREMENT, DATA_FPS
@@ -896,11 +910,15 @@ def run_single(args):
     else:
         PIPELINE_CONFIG = args.pipeline
 
+    result = False
     try:
-        return asyncio.run(run_test())
+        result = asyncio.run(run_test())
     finally:
         if custom_config_path and os.path.exists(custom_config_path):
             os.remove(custom_config_path)
+    if result and not args.keep_artifacts:
+        result = remove_success_artifact(OUTPUT_MP4) and result
+    return result
 
 
 # ============================================================
@@ -1180,10 +1198,9 @@ def run_cancel(args):
     except OSError as e:
         print(f"[FAIL] cannot read client log: {e}")
         return False
-    # The expected vad start log follows the config's signed
-    # start_offset_ms: <= 0 marks into the ring history ("(lookback
-    # 0.20s)"), > 0 defers the mark to future audio ("vad start pending
-    # until sample N (0.20s)")
+    # A negative start_offset_ms is lookback; a positive value delays the
+    # boundary into future audio. Both resolve through the timestamp/chunk
+    # mapper.
     with open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "configs", f"{PIPELINE_CONFIG}.json")) as f:
         _pipeline = json.load(f)["pipeline"]
@@ -1192,13 +1209,12 @@ def run_cancel(args):
     _lb_ms = _vad_cfg.get("manual_start_offset_ms",
                           _vad_cfg.get("start_offset_ms", 0))
     if _lb_ms > 0:
-        _start_name = f"vad start pending (lead {_lb_ms / 1000:.2f}s)"
-        _start_ok = (f"vad start pending until sample" in log
-                     and f"({_lb_ms / 1000:.2f}s)" in log)
+        _start_name = f"vad start pending (delay {_lb_ms / 1000:.2f}s)"
+        _start_ok = "vad start pending at timestamp" in log
     else:
-        _start_name = f"vad start lookback live " \
-                      f"(lookback {abs(_lb_ms) / 1000:.2f}s)"
-        _start_ok = f"(lookback {abs(_lb_ms) / 1000:.2f}s)" in log
+        _start_name = f"vad start resolved (lookback {abs(_lb_ms) / 1000:.2f}s)"
+        _start_ok = "vad mark at sample" in log \
+                    and "from start anchor timestamp" in log
     checks = [
         ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
         ("recording_end after cancel ignored",
@@ -1515,10 +1531,10 @@ def run_compat(args):
 
 
 # ============================================================
-# Mode: lifecycle  (from test_webrtc_lifecycle.py test_lifecycle)
+# Mode: lifecycle  (connection state and real loopback payload)
 # ============================================================
 async def _test_lifecycle_once():
-    """Test connection_start/stop flow through WebRTC server."""
+    """Test connection lifecycle and collector → splitter data echo."""
     import requests
 
     print("=" * 60)
@@ -1561,6 +1577,8 @@ async def _test_lifecycle_once():
     pc = RTCPeerConnection()
     received_data = []
     dc_open = asyncio.Event()
+    loopback_echo = asyncio.Event()
+    echo_payload = {"payload": f"lifecycle-echo-{RUN_TOKEN}"}
     receiver_errors = []
     receiver_tasks = []
 
@@ -1584,7 +1602,10 @@ async def _test_lifecycle_once():
         @channel.on("message")
         def on_msg(msg):
             try:
-                received_data.append(json.loads(msg))
+                parsed = json.loads(msg)
+                received_data.append(parsed)
+                if parsed == echo_payload:
+                    loopback_echo.set()
             except Exception as error:
                 receiver_errors.append(f"DataChannel receiver: {error}")
 
@@ -1618,7 +1639,19 @@ async def _test_lifecycle_once():
     await asyncio.wait_for(dc_open.wait(), timeout=5)
     print("    DataChannel open")
 
-    await asyncio.sleep(2)  # let groups flow
+    # The loopback assembler needs one full data group (two slots) before it
+    # starts. Repeat this run-unique marker for a few data ticks, then require
+    # the exact same dict back; periodic gateway filler messages are just {}.
+    for _ in range(4):
+        dc.send(json.dumps(echo_payload))
+        await asyncio.sleep(1 / DATA_FPS)
+    try:
+        await asyncio.wait_for(loopback_echo.wait(), timeout=5)
+        data_echoed = True
+    except asyncio.TimeoutError:
+        data_echoed = False
+    print(f"    Unique payload echoed: {'OK' if data_echoed else 'FAIL'} "
+          f"({echo_payload!r}, {len(received_data)} total msgs)")
 
     log = requests.get(
         f"{MAIN_SERVER}/logs/{LIFECYCLE_CLIENT_ID}", timeout=30
@@ -1626,15 +1659,7 @@ async def _test_lifecycle_once():
     clock_started = "clock started" in log
     print(f"    FrameSplitter clock started: {'OK' if clock_started else 'FAIL'}")
 
-    # 5. Check we're receiving data via DataChannel
-    data_count_before = len(received_data)
-    await asyncio.sleep(1)
-    data_count_after = len(received_data)
-    data_flowing = data_count_after > data_count_before
-    print(f"    Data flowing via DataChannel: {'OK' if data_flowing else 'FAIL'} "
-          f"({data_count_after - data_count_before} msgs in 1s)")
-
-    # 6. Disconnect WebRTC → pipeline auto-disposed
+    # 5. Disconnect WebRTC → pipeline auto-disposed
     print("\n  [3] Disconnect WebRTC...")
     await pc.close()
     if receiver_tasks:
@@ -1647,7 +1672,7 @@ async def _test_lifecycle_once():
     pipeline_disposed = "disposed" in log.lower()
     print(f"    Pipeline disposed: {'OK' if pipeline_disposed else 'FAIL'}")
 
-    # 7. Verify pipeline is no longer initialized (can re-init without force)
+    # 6. Verify pipeline is no longer initialized (can re-init without force)
     r = requests.post(
         f"{MAIN_SERVER}/init_pipeline/{LIFECYCLE_CLIENT_ID}",
         json={"config": LIFECYCLE_PIPELINE_CONFIG},
@@ -1660,14 +1685,14 @@ async def _test_lifecycle_once():
     print("\n" + "=" * 60)
     all_ok = (
         clock_started
-        and data_flowing
+        and data_echoed
         and pipeline_disposed
         and can_reinit
         and not receiver_errors
     )
     results = [
         ("Clock started on connect", clock_started),
-        ("Data flowing", data_flowing),
+        ("Unique DataChannel payload looped back", data_echoed),
         ("Pipeline disposed on disconnect", pipeline_disposed),
         ("Re-init without force", can_reinit),
         ("Receivers completed without error", not receiver_errors),
@@ -1690,7 +1715,7 @@ async def test_lifecycle():
 
 
 def run_lifecycle(args):
-    """Entry for --mode lifecycle. Mirrors original test_webrtc_lifecycle.py."""
+    """Entry for the WebRTC connection and loopback lifecycle test."""
     global WEBRTC_SERVER
     WEBRTC_SERVER = args.server
     return asyncio.run(test_lifecycle())
@@ -1941,7 +1966,7 @@ def run_client_process(
 
 
 def run_multi(args):
-    """Entry for --mode multi. Mirrors original test_webrtc_multi.py main()."""
+    """Run concurrent clients, retaining MP4s only on failure or request."""
     global WEBRTC_SERVER, PIPELINE_CONFIG
     WEBRTC_SERVER = args.server
     PIPELINE_CONFIG = args.pipeline
@@ -1958,12 +1983,14 @@ def run_multi(args):
     manager = multiprocessing.Manager()
     processes = []
     results = []
+    output_mp4s = []
 
     for i in range(num_clients):
         cid = f"multi_test_{RUN_TOKEN}_{i+1}"
         mp4 = os.path.join(
             OUTPUT_DIR, f"test_webrtc_multi_{RUN_TOKEN}_{i+1}.mp4"
         )
+        output_mp4s.append(mp4)
         result_dict = manager.dict()
         results.append((cid, result_dict))
         p = multiprocessing.Process(
@@ -2076,6 +2103,12 @@ def run_multi(args):
             print(f"  [FAIL] test log cleanup for {cid}: {error}")
             all_ok = False
 
+    # Failed runs retain their MP4s for diagnosis. Successful runs are
+    # ephemeral unless the caller explicitly asks to keep artifacts.
+    if all_ok and not args.keep_artifacts:
+        for output_mp4 in output_mp4s:
+            all_ok = remove_success_artifact(output_mp4) and all_ok
+
     if all_ok:
         print("\nAll clients passed!")
     else:
@@ -2085,13 +2118,13 @@ def run_multi(args):
 
 
 # ============================================================
-# Mode: framesplitter  (from test_frame_splitter_clock.py)
+# Mode: framesplitter  (isolated FrameSplitter unit tests)
 #
 # Standalone clock-driven FrameSplitterStep test. Drives a
 # FrameSplitterStep in-process via queues (no server). Names are
 # prefixed with `fs_` to avoid colliding with the WebRTC helpers above
 # (e.g. the `send_audio` local used in single/multi modes). Logic is
-# copied verbatim from test_frame_splitter_clock.py.
+# kept local to this mode.
 # ============================================================
 
 # ── Utilities ─────────────────────────────────────────────────
@@ -2249,16 +2282,19 @@ def fs_collect(output_queue, duration_s=2.0, max_items=200):
 # ── Tests ─────────────────────────────────────────────────────
 
 def fs_test_steady_clock_rate():
-    """Default groups are output at steady ~100ms intervals."""
+    """Default groups hold a steady ~100ms clock without long-run drift."""
     print("\n" + "=" * 60)
-    print("  Test 1: Steady clock rate (default groups)")
+    print("  Test 1: Steady clock rate and no drift (default groups)")
     print("=" * 60)
 
     logger = fs_setup_logger("fs_test_1")
     ctx = fs_build_frame_splitter(logger)
     thread = fs_start_splitter(ctx)
     fs_send_connection_start(ctx)
-    results = fs_collect(ctx["output_queue"], duration_s=1.5)
+    duration = 5.0
+    results = fs_collect(
+        ctx["output_queue"], duration_s=duration, max_items=100
+    )
     teardown_failed = fs_stop_splitter(ctx, thread)
 
     # Check timing intervals
@@ -2267,19 +2303,27 @@ def fs_test_steady_clock_rate():
 
     avg_interval = sum(intervals) / len(intervals) if intervals else 0
     max_jitter = max(abs(iv - 0.1) for iv in intervals) if intervals else 0
+    elapsed = times[-1] - times[0] if len(times) >= 2 else 0
+    actual_rate = (len(times) - 1) / elapsed if elapsed > 0 else 0
+    expected = int(duration / 0.1)
 
-    print(f"  Groups collected:  {len(results)}")
+    print(f"  Duration:          {duration}s")
+    print(f"  Groups collected:  {len(results)} (expected ~{expected})")
+    print(f"  Long-term rate:    {actual_rate:.2f} groups/s (expected 10.0)")
     print(f"  Avg interval:      {avg_interval*1000:.1f}ms (expected 100ms)")
     print(f"  Max jitter:        {max_jitter*1000:.1f}ms")
 
     # All should have audio field (silence)
-    has_audio = all("audio" in r for r in results)
+    has_audio = bool(results) and all("audio" in r for r in results)
 
     ok = not teardown_failed
     if teardown_failed:
         print("  FAIL: FrameSplitter thread still alive")
-    if len(results) < 12:  # 1.5s / 0.1s = 15, minus some startup
-        print(f"  FAIL: too few groups ({len(results)})")
+    if abs(len(results) - expected) > expected * 0.1:
+        print("  FAIL: group count off by > 10%")
+        ok = False
+    if abs(actual_rate - 10.0) > 0.5:
+        print("  FAIL: long-term rate drift detected")
         ok = False
     if avg_interval > 0.12 or avg_interval < 0.08:
         print(f"  FAIL: avg interval out of range")
@@ -2499,123 +2543,16 @@ def fs_test_cancel_clears_buffer():
     return ok
 
 
-def fs_test_no_drift():
-    """Over a longer run, verify no systematic drift in output rate."""
-    print("\n" + "=" * 60)
-    print("  Test 5: No drift over longer run")
-    print("=" * 60)
-
-    logger = fs_setup_logger("fs_test_5")
-    ctx = fs_build_frame_splitter(logger)
-    thread = fs_start_splitter(ctx)
-    fs_send_connection_start(ctx)
-
-    duration = 5.0
-    results = fs_collect(ctx["output_queue"], duration_s=duration, max_items=100)
-    teardown_failed = fs_stop_splitter(ctx, thread)
-
-    # Expected: duration / 0.1 = 50 groups
-    expected = int(duration / 0.1)
-
-    # Check actual rate
-    if len(results) >= 2:
-        total_time = results[-1]["_collect_time"] - results[0]["_collect_time"]
-        actual_rate = (len(results) - 1) / total_time if total_time > 0 else 0
-    else:
-        actual_rate = 0
-
-    print(f"  Duration:          {duration}s")
-    print(f"  Groups collected:  {len(results)} (expected ~{expected})")
-    print(f"  Actual rate:       {actual_rate:.2f} groups/s (expected 10.0)")
-
-    ok = not teardown_failed
-    if teardown_failed:
-        print("  FAIL: FrameSplitter thread still alive")
-    # Allow ±5% tolerance
-    if abs(len(results) - expected) > expected * 0.1:
-        print(f"  FAIL: group count off by > 10%")
-        ok = False
-    if abs(actual_rate - 10.0) > 0.5:
-        print(f"  FAIL: rate drift detected")
-        ok = False
-
-    print(f"  {'PASS' if ok else 'FAIL'}")
-    return ok
-
-
-def fs_test_webrtc_startup_buffer():
-    """Simulate WebRTC group_consumer startup buffering logic."""
-    print("\n" + "=" * 60)
-    print("  Test 6: WebRTC startup buffering simulation")
-    print("=" * 60)
-
-    STARTUP_BUFFER = 4
-    group_queue = Queue()
-
-    # Simulate FrameSplitter filling group_queue
-    def producer():
-        for i in range(20):
-            group_queue.put(json.dumps({"group": i, "timestamp": time.time()}))
-            time.sleep(0.1)
-
-    t = threading.Thread(target=producer, daemon=True)
-    t.start()
-
-    # Simulate group_consumer with startup buffering
-    consumed = []
-    buffering = True
-    start = time.time()
-    deadline = start + STARTUP_BUFFER * 0.1 * 5
-
-    for tick in range(30):
-        time.sleep(0.1)
-
-        if buffering:
-            if group_queue.qsize() >= STARTUP_BUFFER or time.time() > deadline:
-                buffering = False
-                print(f"  Primed at tick {tick}, queue size: {group_queue.qsize()}")
-            continue
-
-        try:
-            msg = group_queue.get_nowait()
-            consumed.append(json.loads(msg))
-        except Empty:
-            consumed.append(None)  # would be fill_empty
-
-    t.join(timeout=2)
-
-    real = [c for c in consumed if c is not None]
-    empty = [c for c in consumed if c is None]
-
-    print(f"  Consumed real:     {len(real)}")
-    print(f"  Consumed empty:    {len(empty)}")
-    print(f"  Remaining in queue:{group_queue.qsize()}")
-
-    ok = not t.is_alive()
-    if t.is_alive():
-        print("  FAIL: startup-buffer producer thread still alive")
-    if len(real) == 0:
-        print(f"  FAIL: no real groups consumed")
-        ok = False
-
-    print(f"  {'PASS' if ok else 'FAIL'}")
-    return ok
-
-
 def run_framesplitter(args):
-    """Entry for --mode framesplitter. Mirrors test_frame_splitter_clock.py __main__."""
-    # Original test inserted project root on sys.path so the
-    # `Modules.webrtc_frame_splitter` import resolves. SCRIPT_DIR is test/,
-    # so the project root is its parent.
+    """Entry for isolated FrameSplitter timing and packing tests."""
+    # SCRIPT_DIR is test/, so add its parent for the Modules import.
     sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
     tests = [
-        ("Steady clock rate", fs_test_steady_clock_rate),
+        ("Steady clock rate and no drift", fs_test_steady_clock_rate),
         ("Audio groups from TTS", fs_test_audio_groups),
         ("Signal ordering", fs_test_signal_ordering),
         ("Cancel clears buffer", fs_test_cancel_clears_buffer),
-        ("No drift", fs_test_no_drift),
-        ("WebRTC startup buffer", fs_test_webrtc_startup_buffer),
     ]
 
     results = []
@@ -2662,6 +2599,10 @@ def main():
                         help="[single] Override video height")
     parser.add_argument("--data-fps", type=int, default=None,
                         help="[single] Override data channel fps")
+    parser.add_argument(
+        "--keep-artifacts", action="store_true",
+        help="[single/multi] Keep MP4s from successful runs",
+    )
 
     # --- multi-mode args (NUM_CLIENTS was a module constant originally) ---
     parser.add_argument("--num-clients", type=int, default=NUM_CLIENTS,

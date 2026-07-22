@@ -80,8 +80,12 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `pad`                    | `pad`                               | 同消息内各产物(音频 WAV + 帧列表)时长对齐:最长/最短/锚定三模式,每车道可关 cut/extend |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组                                        |
 | `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                                          |
-| `parallel`               | `call_joint_stream`                 | 单节点内逐块合并 N 路 caller 流(如 TTS ∥ motion 块按消息配对打包)              |
+| `parallel`               | `call_joint_stream`                 | 单节点内逐块合并 N 路 caller 流；整体长度可选 longest/shortest/anchor，每路可复制末块延长 |
 | `memory_manager`         | `call_memory_manager`               | 观察者:经 SoS/EoS 跟踪 LLM 回复,把有实质内容的对话存入记忆                    |
+
+仅 stream 路径使用 `exact_chunk`（默认 `true`，非 stream 完全不受影响）。
+VAD/TTS 会为自然短尾补静音；Motion/Video 会复制最后一帧，直到短尾达到
+`stream_frames`。设为 `false` 时保留短尾。请求时长始终保持原值。
 
 ## API
 

@@ -186,8 +186,9 @@ class MotionGenerationCaller:
         the TTS caller's _rechunk) — server deltas of arbitrary size (the
         backend rounds its flushes to the model's commit size) are buffered
         at the SMPL-H frame level and re-cut into blocks of exactly
-        `stream_frames` frames; the final block may be shorter. Losslessly:
-        the frame sequence is untouched, only the block boundaries move.
+        `stream_frames` frames. With exact_chunk=true (default), a clean final
+        short block repeats its last frame to reach stream_frames; false keeps
+        it short. The backend request duration is never changed.
         stream_frames == 0 (default): one payload per server delta,
         unchanged behavior.
 
@@ -226,7 +227,6 @@ class MotionGenerationCaller:
             if stream_size > 0:
                 body["stream_size"] = stream_size
             stream_frames = int(self.config.get("stream_frames", 0))
-
             response = requests.post(
                 self.addr_motion + "/api/generate_json_stream",
                 json=body,
@@ -322,7 +322,19 @@ class MotionGenerationCaller:
 
             # final short block (stream ended cleanly with a remainder)
             if buf_poses is not None and buf_poses.shape[0] > 0:
-                yield {"motion": _make_block(buf_poses, buf_trans)}
+                frames = _make_block(buf_poses, buf_trans)
+                if self.config.get("exact_chunk", True) \
+                        and stream_frames > 0 \
+                        and frames \
+                        and len(frames) < stream_frames:
+                    filler = {
+                        key: value for key, value in frames[-1].items()
+                        if key != "header"
+                    }
+                    frames.extend(
+                        dict(filler) for _ in range(stream_frames - len(frames))
+                    )
+                yield {"motion": frames}
 
             if self.continuous and tail_poses is not None:
                 self.history_poses = tail_poses.copy()

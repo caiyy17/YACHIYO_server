@@ -80,8 +80,14 @@ Each service runs in its own conda environment. The model services expose OpenAI
 | `pad`                    | `pad`                               | Length-aligns the products in one message (audio WAV + frame lists) to the longest/shortest/anchor duration, per-lane cut/extend opt-outs |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups                                                     |
 | `parallel`               | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                                                                     |
-| `parallel`               | `call_joint_stream`                 | Merges N caller streams chunk-by-chunk inside one node (e.g. TTS ∥ motion chunks packed per message)                     |
+| `parallel`               | `call_joint_stream`                 | Merges N caller streams chunk-by-chunk; overall length uses longest/shortest/anchor and each stream can repeat its last chunk |
 | `memory_manager`         | `call_memory_manager`               | Observer: tracks LLM responses via SoS/EoS and stores substantive conversations to memory                                |
+
+Stream-only chunk alignment is controlled by `exact_chunk` (default `true`;
+non-stream calls are unaffected). VAD/TTS zero-pad a natural short audio tail;
+Motion/Video repeat the last frame of a natural short tail until it reaches
+`stream_frames`. Set it to `false` to preserve a short final chunk. Request
+durations are never changed.
 
 ## API
 

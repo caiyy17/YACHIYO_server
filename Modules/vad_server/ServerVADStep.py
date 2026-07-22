@@ -83,12 +83,13 @@ class ServerVADStep(VADStep):
     session, no auto events, no barge-in cancels; turns come only from the
     caught recording signals below.
 
-    Margins are per source: signed `start_offset_ms` / `end_offset_ms` shape
-    DETECTOR turns (the end defaults to 0 — the stop verdict already
-    contains silence_duration_ms of confirmed silence), while
-    `manual_start_offset_ms` /
-    `manual_end_offset_ms` shape SIGNAL turns (manual = the standalone
-    client signals; the end tail covers e.g. the DC hold lag).
+    Margins are per source: `start_offset_ms` / `end_offset_ms` shape
+    DETECTOR turns, while `manual_start_offset_ms` /
+    `manual_end_offset_ms` shape SIGNAL turns. Both use identical signed
+    semantics: negative start means lookback and positive end means tail. The detector
+    end defaults to 0 because its stop verdict already contains
+    silence_duration_ms of confirmed silence; a manual end tail can cover
+    transport lag such as the DC hold.
 
     Client recording signals take MANUAL control: a caught recording_start
     opens the turn through the base machinery and SUSPENDS detection (no
@@ -115,7 +116,7 @@ class ServerVADStep(VADStep):
                 and not isinstance(ring_s, bool) \
                 and ms <= -ring_s * 1000:
             errors.append(f"start_offset_ms ({ms}) must be > "
-                          f"-ring_seconds*1000")
+                          f"-ring_seconds*1000 ({-ring_s * 1000})")
         me = config.get("end_offset_ms", 0)
         if isinstance(me, bool) or not isinstance(me, (int, float)):
             errors.append(
@@ -170,14 +171,14 @@ class ServerVADStep(VADStep):
                     "client recording_end without a manual turn - ignored")
                 return
             super().span_process(data, pass_data)
-            if self._mark is None:   # no tail to wait for: turn done now
+            if not self.span_active:  # no tail to wait for: turn done now
                 self._resume_detection()
             return
 
         msg_ts = data.get("timestamp")
         pcm = super().span_process(data, pass_data)
         if self._manual:
-            if self._mark is None:   # tail filled, manual turn finalized
+            if not self.span_active:  # tail filled, manual turn finalized
                 self._resume_detection()
             return                   # suspended: nothing goes to the service
         if pcm is None:
@@ -197,8 +198,8 @@ class ServerVADStep(VADStep):
                 # the stop verdict already sat through
                 # silence_duration_ms of confirmed silence; the detector
                 # tail (end_offset_ms, default 0) is extra on top
-                if self._mark is not None:
-                    self._on_end()
+                if self.span_active:
+                    self._on_end({"timestamp": msg_ts})
 
     def _on_activation(self, chunk_ts):
         """Barge-in: cancel everything older than this turn everywhere but

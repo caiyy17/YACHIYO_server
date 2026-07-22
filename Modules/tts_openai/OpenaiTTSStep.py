@@ -4,7 +4,7 @@ import wave
 from pydub import AudioSegment
 from io import BytesIO
 
-from ..tts_base.TTSStep import TTSStep
+from ..tts_base.TTSStep import TTSStep, _pad_wav_to_ms
 
 
 class OpenaiTTSCaller:
@@ -101,16 +101,20 @@ class OpenaiTTSCaller:
         """Real streaming via the backend's SSE endpoint (stream_format="sse"):
         each `speech.audio.delta` event carries base64 raw PCM16 (sample rate
         in the X-Sample-Rate header); deltas are re-buffered into WAV chunks
-        whose duration is a multiple of 100ms, so the webrtc frame splitter
-        packs each chunk into whole 20ms-frame groups with no padding gaps
-        between chunks. _rechunk adds no bytes — only the sentence's final
-        short tail gets group-padded by the splitter, inside the natural
-        end-of-sentence silence.
+        whose duration is a multiple of 100ms. With exact_chunk=true
+        (default), _rechunk zero-pads the sentence's natural short tail to one
+        complete configured chunk; false preserves the short tail.
         """
+        chunk_ms = int(self.config.get("stream_chunk_ms", 300))
+        chunk_ms = max(100, (chunk_ms // 100) * 100)  # multiples of 100ms
+        exact_chunk = self.config.get("exact_chunk", True)
         if prompt == "":
             bio = BytesIO()
             self.empty_audio.export(bio, format="wav")
-            yield {"audio": bio.getvalue()}
+            audio = bio.getvalue()
+            if exact_chunk:
+                audio = _pad_wav_to_ms(audio, chunk_ms)
+            yield {"audio": audio}
             return
         try:
             model_name = self.model_config.get("model_name", "tts-1")
@@ -118,8 +122,6 @@ class OpenaiTTSCaller:
             extra = dict(self.model_config.get("extra", {}))
             extra_body = dict(extra.pop("extra_body", None) or {})
             voice = speaker if speaker else self.default_voice
-            chunk_ms = int(self.config.get("stream_chunk_ms", 300))
-            chunk_ms = max(100, (chunk_ms // 100) * 100)  # multiples of 100ms
             extra_body["stream_format"] = "sse"
             # reference length for the backend (advisory); None = not sent
             if duration is not None:
@@ -147,16 +149,20 @@ class OpenaiTTSCaller:
 
                 # stream products are dicts keyed by product name —
                 # one uniform shape for every caller
-                for pcm in self._rechunk(pcm_deltas(), chunk_bytes):
+                for pcm in self._rechunk(
+                        pcm_deltas(), chunk_bytes, exact_chunk=exact_chunk):
                     yield {"audio": self._pcm_to_wav(pcm, sr)}
         except Exception as e:
             self.logger.error(f"failed to stream tts: {e}")
 
     @staticmethod
-    def _rechunk(byte_iter, chunk_bytes):
-        """Re-buffer an irregular byte stream into fixed-size chunks (plus a
-        final short tail). Lossless and order-preserving regardless of how
-        the transport fragments the data."""
+    def _rechunk(byte_iter, chunk_bytes, exact_chunk=True):
+        """Re-buffer an irregular byte stream into fixed-size chunks.
+
+        The sequence is lossless and order-preserving. On natural completion,
+        exact_chunk pads a non-empty short tail with zero PCM; false yields the
+        tail unchanged. An exactly divisible or empty stream gains no chunk.
+        """
         buf = b""
         for data in byte_iter:
             buf += data
@@ -164,6 +170,8 @@ class OpenaiTTSCaller:
                 yield buf[:chunk_bytes]
                 buf = buf[chunk_bytes:]
         if buf:
+            if exact_chunk:
+                buf += b"\x00" * (chunk_bytes - len(buf))
             yield buf
 
     @staticmethod

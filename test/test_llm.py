@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Consolidated LLM test script.
+Consolidated LLM evaluation/diagnostic script.
 
 Three modes selected via --mode:
-  single       Single-turn LLM test for character presets (scenario-based,
+  single       Single-turn LLM evaluation for character presets (scenario-based,
                direct Kimi/LLM call; from test_llm_preset.py).
-  multi        Multi-turn LLM test for any lorebook (prompt-set driven, direct
+  multi        Multi-turn LLM evaluation for any lorebook (prompt-set driven, direct
                LLM call; from test_multiturn.py, which subsumes test_iter.py).
-  instruction  Instruction / prompt compliance test over the unity_chan_text
+  instruction  Instruction / prompt compliance diagnostic over the unity_chan_text
                pipeline (action/expression tag adherence, tag frequency,
                forbidden words, format; connects to the running YACHIYO server).
+
+Model-quality findings are reported without a regression threshold. A non-zero
+exit status means the evaluation could not complete because of an operational
+error such as a failed request, protocol error, or missing output.
 
 Examples:
     python test/test_llm.py --mode single unity_chan
@@ -232,7 +236,7 @@ def get_scenarios(lorebook_name):
 
 
 def run_single(args):
-    """Run all single-turn test scenarios for a preset. Returns success."""
+    """Run single-turn evaluation scenarios. Returns operational success."""
     lorebook_name = args.lorebook
     model_config_name = args.model
     client, model_config = create_client(model_config_name)
@@ -240,7 +244,7 @@ def run_single(args):
     scenarios = get_scenarios(lorebook_name)
 
     print(f"\n{'='*70}")
-    print(f"Testing: {lorebook_name} | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Evaluating: {lorebook_name} | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(
         f"Model: {model_config['model_name']} | "
         f"Temp: {model_config['extra'].get('temperature', 'default')}"
@@ -384,7 +388,7 @@ def assemble_messages_multi(lorebook_data, history, current_input, static_vars):
 
 
 def check_format(history, lorebook_name):
-    """Check action/expression list compliance. unity_chan has free-form actions."""
+    """Report action/expression list findings. unity_chan is free-form."""
     if lorebook_name == "unity_chan":
         # unity_chan uses free-form [action](expression)
         print("  (unity_chan uses free-form actions/expressions, skipping list check)")
@@ -404,7 +408,7 @@ def check_format(history, lorebook_name):
                     print(f"  EXPRESSION VIOLATION: ({e})")
                     violations += 1
     if violations == 0:
-        print("  All tags within allowed lists!")
+        print("  No out-of-list tags observed.")
     else:
         print(f"  {violations} violation(s) found")
     return violations == 0
@@ -434,7 +438,7 @@ def run_multi(args):
         try:
             text = call_llm(client, model_config, assembled)
         except Exception as e:
-            print(f"[{i}] FAIL: {type(e).__name__}: {e}")
+            print(f"[{i}] ERROR: {type(e).__name__}: {e}")
             return False
         print(f"[{i}] User: {prompt}")
         print(f"    Reply: {text}")
@@ -442,10 +446,10 @@ def run_multi(args):
         history.append({"role": "user", "content": prompt})
         history.append({"role": "assistant", "content": text})
 
-    print("=== Format Check ===")
-    format_ok = check_format(history, lorebook_name)
-    print("=== Done ===")
-    return format_ok
+    print("=== Format Diagnostics ===")
+    check_format(history, lorebook_name)
+    print("=== Evaluation Complete ===")
+    return True
 
 
 # ============================================================================
@@ -658,7 +662,7 @@ async def run_instruction_async(args):
                     print(f"  Hint: [{ah}]{ah_ok} ({eh}){eh_ok} → {matched_a}/{matched_e}")
 
                 # Compliance findings are diagnostic; only transport/protocol/output
-                # failures determine this test's objective pass/fail result.
+                # failures determine the process exit status.
                 issues = analyze_response(i, prompt, text, action_hints, expression_hints)
                 total += 1
                 if not issues:
@@ -672,7 +676,7 @@ async def run_instruction_async(args):
                 await asyncio.sleep(1)
     except Exception as e:
         success = False
-        print(f"[FAIL] Instruction mode failed: {type(e).__name__}: {e}")
+        print(f"[ERROR] Instruction mode failed: {type(e).__name__}: {e}")
     finally:
         if registered:
             try:
@@ -684,14 +688,14 @@ async def run_instruction_async(args):
                     print(f"Unregister: {response.json()}")
             except Exception as e:
                 success = False
-                print(f"[FAIL] Unregister failed: {type(e).__name__}: {e}")
+                print(f"[ERROR] Unregister failed: {type(e).__name__}: {e}")
         try:
             os.unlink(f"logs/client_{client_id}.log")
         except FileNotFoundError:
             pass
         except OSError as e:
             success = False
-            print(f"[FAIL] Test log cleanup failed: {e}")
+            print(f"[ERROR] Client log cleanup failed: {e}")
 
     print(f"\n{'='*60}")
     rate = 100 * compliant / total if total else 0
@@ -715,14 +719,14 @@ def run_instruction(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Consolidated LLM test (single / multi / instruction modes)."
+        description="Consolidated LLM evaluation (single / multi / instruction modes)."
     )
     parser.add_argument(
         "--mode",
         choices=["single", "multi", "instruction"],
         default="multi",
-        help="Test mode: single (preset scenarios), multi (multi-turn lorebook), "
-             "instruction (server-side prompt compliance). Default: multi.",
+        help="Evaluation mode: single (preset scenarios), multi (multi-turn lorebook), "
+             "instruction (server-side prompt diagnostics). Default: multi.",
     )
     # single / multi take a positional lorebook name; instruction connects to server.
     parser.add_argument(
@@ -767,7 +771,7 @@ def main():
         else:
             success = run_instruction(args)
     except Exception as e:
-        print(f"[FAIL] {args.mode} mode crashed: {type(e).__name__}: {e}")
+        print(f"[ERROR] {args.mode} mode crashed: {type(e).__name__}: {e}")
         success = False
     return 0 if success else 1
 

@@ -5,8 +5,14 @@ ids actually reach the exit), snapshot the full history, send a
 playback_complete report for item 2 (exclusive: keep item 1 only),
 assert the history file is cut to a strict prefix + marker, then assert
 a stale second report is ignored."""
-import asyncio, json, sys, time, uuid
-import requests, websockets
+import asyncio
+import json
+import sys
+import time
+import uuid
+
+import requests
+import websockets
 
 MAIN = "http://127.0.0.1:8910"
 # config -> (llm node id, prompt wire field)
@@ -21,7 +27,9 @@ FAIL = []
 
 def check(d, c):
     print(("  OK   " if c else "  FAIL ") + d)
-    if not c: FAIL.append(d)
+    if not c:
+        FAIL.append(d)
+
 
 async def run_case(config, llm_node, field):
     print(f"== {config}")
@@ -96,4 +104,6 @@ async def main():
     print("ALL PASS" if not FAIL else f"{len(FAIL)} FAILURES: {FAIL}")
     sys.exit(1 if FAIL else 0)
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
