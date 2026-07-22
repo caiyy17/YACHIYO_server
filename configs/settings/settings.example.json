@@ -14,5 +14,8 @@
     },
     "motion_generation": {
         "motion_api": "http://127.0.0.1:7861"
+    },
+    "vad": {
+        "vad_api": "http://127.0.0.1:8012"
     }
 }

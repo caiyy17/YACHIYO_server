@@ -90,10 +90,12 @@ class LLMStep(BaseProcessingStep):
         """playback_complete {response_id, item_id}: item_id is the item
         that was playing when the client was interrupted — it was heard
         only partially, so history keeps the items STRICTLY BEFORE it and
-        the reported item itself is discarded whole. A fully played turn
-        sends no truncating report. Only the last turn is repairable — an
-        unknown/expired response_id (a new generation already started, or
-        a stale report) is ignored."""
+        the reported item itself is discarded whole. An explicitly empty
+        item_id means playback ended before the first item, so the retained
+        prefix is empty; a missing item_id is malformed and ignored. A fully
+        played turn sends no truncating report. Only the last turn is
+        repairable — an unknown/expired response_id (a new generation already
+        started, or a stale report) is ignored."""
         if event.get("signal") != "playback_complete":
             return
         turn = self._last_turn
@@ -103,14 +105,22 @@ class LLMStep(BaseProcessingStep):
                 f"playback report for unknown/expired response "
                 f"'{rid}'; ignored")
             return
+        if "item_id" not in event:
+            self.logger.info(
+                f"playback report missing item_id for response "
+                f"'{rid}'; ignored")
+            return
         item_ids = [i for i, _ in turn["items"]]
-        iid = event.get("item_id")
-        if iid not in item_ids:
+        iid = event["item_id"]
+        if iid == "":
+            kept = 0
+        elif iid in item_ids:
+            kept = item_ids.index(iid)
+        else:
             self.logger.info(
                 f"playback report item '{iid}' not in response "
                 f"'{rid}'; ignored")
             return
-        kept = item_ids.index(iid)
         # refine rebuilds the committed turn from the harness's buffer:
         # the played prefix (plus tool bookkeeping before the cut) with
         # the interruption marker — a coarse cancel-time cut is replaced

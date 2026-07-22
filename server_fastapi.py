@@ -441,8 +441,23 @@ class ClientManager:
             client = self.clients[client_id]
             await client.dispose()
             if self.clients.get(client_id) is client:
+                self.close_logger(client.logger)
                 del self.clients[client_id]
-            self.registered_clients.discard(client_id)
+                self.registered_clients.discard(client_id)
+
+    @staticmethod
+    def close_logger(logger: logging.Logger):
+        """Detach and close every handler owned by a client logger."""
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception as e:
+                # Logger cleanup must not leave a successfully disposed client
+                # stuck in the registered set with no connection object.
+                global_logger.error(
+                    f"Client {logger.name} log handler close failed: {e}"
+                )
 
     def setup_logger(self, client_id: str) -> logging.Logger:
         # Create logger
@@ -463,9 +478,7 @@ class ClientManager:
         file_handler.setFormatter(formatter)
 
         # Replace old handlers (logger is cached by name, old handlers may point to deleted files)
-        for h in logger.handlers[:]:
-            logger.removeHandler(h)
-            h.close()
+        self.close_logger(logger)
         logger.addHandler(file_handler)
 
         logger.info(f"---------- Logger initialized for client {client_id} ----------")
