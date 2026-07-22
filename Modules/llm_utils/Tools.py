@@ -100,7 +100,7 @@ def web_search(query: str, max_results: int = 3):
     """
     try:
         from ddgs import DDGS
-        results = list(DDGS().text(query, max_results=max_results, backend="api"))
+        results = list(DDGS(timeout=10).text(query, max_results=max_results, backend="api"))
         if not results:
             return {"results": [], "message": "No results found."}
         return {

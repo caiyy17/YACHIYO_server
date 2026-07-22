@@ -41,7 +41,7 @@ class OpenaiTTSCaller:
         else:
             api_key = get_secret(api_key)
 
-        return OpenAI(api_key=api_key, base_url=api_base)
+        return OpenAI(api_key=api_key, base_url=api_base, timeout=10)
 
     def _init_call(self):
         """Init call to trigger server-side model loading if needed."""

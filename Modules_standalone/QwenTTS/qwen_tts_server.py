@@ -116,13 +116,10 @@ def speech(req: SpeechRequest):
 
     language = req.language or "auto"
     voice = req.voice
-    # Fallback to first loaded reference voice if requested voice not found
-    if voice not in ref_cache and ref_cache:
-        fallback = list(ref_cache.keys())[0]
-        print(f"Voice '{voice}' not found, falling back to '{fallback}'")
-        voice = fallback
+    # unknown voice is a caller error: explicit 400, no silent fallback
     if voice not in ref_cache:
-        raise HTTPException(500, "No reference voices loaded")
+        raise HTTPException(
+            400, f"unknown voice '{voice}'; available: {get_available_voices()}")
 
     # OpenAI-compatible SSE streaming (stream_format="sse"): text/event-stream of
     #   data: {"type": "speech.audio.delta", "audio": "<b64 pcm16>"}
@@ -134,7 +131,14 @@ def speech(req: SpeechRequest):
 
         def sse_stream():
             # Same locking rules as the binary pcm path (CUDA Graph is serial).
-            with _model_lock:
+            # Bounded acquire: a stuck generation must not queue later
+            # requests forever — they fail fast with an SSE error event.
+            if not _model_lock.acquire(timeout=30):
+                err = {"type": "error",
+                       "error": "TTS busy: model lock timeout (30s)"}
+                yield f"data: {json.dumps(err)}\n\n".encode()
+                return
+            try:
                 gen = model.generate_voice_clone_streaming(
                     text=req.input,
                     language=language,
@@ -162,6 +166,8 @@ def speech(req: SpeechRequest):
                 usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
                 done = {"type": "speech.audio.done", "usage": usage}
                 yield f"data: {json.dumps(done)}\n\n".encode()
+            finally:
+                _model_lock.release()
 
         headers = {}
         if MODEL_SR:
@@ -180,7 +186,11 @@ def speech(req: SpeechRequest):
             # CUDA Graph is not thread-safe: hold the lock for the whole
             # generation. Runs in a threadpool thread; acquire and release
             # happen in that same thread (incl. client-disconnect unwinding).
-            with _model_lock:
+            # Bounded acquire: raising aborts the chunked response, which
+            # the caller sees as a connection error instead of a hang.
+            if not _model_lock.acquire(timeout=30):
+                raise RuntimeError("TTS busy: model lock timeout (30s)")
+            try:
                 gen = model.generate_voice_clone_streaming(
                     text=req.input,
                     language=language,
@@ -192,6 +202,8 @@ def speech(req: SpeechRequest):
                         yield _to_pcm16_bytes(chunk)
                 finally:
                     gen.close()
+            finally:
+                _model_lock.release()
 
         headers = {}
         if MODEL_SR:
@@ -201,7 +213,9 @@ def speech(req: SpeechRequest):
         )
 
     try:
-        with _model_lock:
+        if not _model_lock.acquire(timeout=30):
+            raise HTTPException(503, "TTS busy: model lock timeout (30s)")
+        try:
             if voice in ref_cache:
                 ref = ref_cache[voice]
                 wavs, sr = model.generate_voice_clone(
@@ -211,7 +225,11 @@ def speech(req: SpeechRequest):
                     ref_text=ref["text"],
                 )
             else:
-                raise HTTPException(500, "No reference voices loaded")
+                raise HTTPException(
+                    500, f"voice '{voice}' missing from cache after "
+                         f"entry validation")
+        finally:
+            _model_lock.release()
     except HTTPException:
         raise
     except Exception as e:
@@ -224,8 +242,10 @@ def speech(req: SpeechRequest):
 
 
 def load_reference_voices(ref_dir):
+    # reference voices are a hard dependency: without them every TTS
+    # request fails, so a missing/empty dir must fail startup, not warn
     if not os.path.isdir(ref_dir):
-        return
+        raise SystemExit(f"reference voice dir not found: {ref_dir}")
     for fname in os.listdir(ref_dir):
         if not fname.endswith(".wav"):
             continue
@@ -266,6 +286,9 @@ if __name__ == "__main__":
     print("Model loaded with CUDA Graph acceleration")
 
     load_reference_voices(args.ref_dir)
+    if not ref_cache:
+        raise SystemExit(f"no reference voices loaded from {args.ref_dir} "
+                         f"(need <name>.wav + <name>.txt pairs)")
     print(f"Available voices: {get_available_voices()}")
 
     # Warmup with reference voice (also captures the native sample rate for pcm)

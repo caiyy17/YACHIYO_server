@@ -28,7 +28,7 @@ def health():
 
 @app.get("/v1/models")
 async def models():
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(f"{BACKEND_URL}/v1/models")
         return r.json()
 
@@ -41,7 +41,7 @@ async def transcriptions(
     language: Optional[str] = Form(None),
 ):
     audio_data = await file.read()
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         files = {"file": (file.filename or "audio.wav", audio_data, file.content_type or "audio/wav")}
         data = {"model": model or MODEL_NAME, "response_format": "json"}
         if language:

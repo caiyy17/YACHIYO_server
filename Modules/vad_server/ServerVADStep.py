@@ -31,7 +31,7 @@ class ServerVADCaller:
             "sample_rate": self.config.get("sample_rate", 48000),
         }
         r = requests.post(f"{self.base}/v1/audio/vad/sessions",
-                          json=body, timeout=5)
+                          json=body, timeout=10)
         r.raise_for_status()
         sid = r.json()["session_id"]
         self.logger.info(f"vad service session {sid} ({body})")
@@ -41,7 +41,7 @@ class ServerVADCaller:
         """One raw-PCM16 chunk in, the chunk's detector events out."""
         r = requests.post(
             f"{self.base}/v1/audio/vad/sessions/{self.session_id}/append",
-            json={"audio": pcm_b64}, timeout=5)
+            json={"audio": pcm_b64}, timeout=10)
         r.raise_for_status()
         return r.json().get("events", [])
 
@@ -50,8 +50,8 @@ class ServerVADCaller:
             requests.delete(
                 f"{self.base}/v1/audio/vad/sessions/{self.session_id}",
                 timeout=2)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.error(f"vad session close failed: {e}")
 
     def reset(self):
         """Fresh session: drops the detector's in_speech/debounce state."""
@@ -225,7 +225,7 @@ class ServerVADStep(VADStep):
         detector: it still believes it is mid-speech, so without a fresh
         session the rest of the ongoing utterance would never re-trigger
         speech_started and would be lost until the next pause. The reset
-        is a service call but BOUNDED (every request carries timeout=5),
+        is a service call but BOUNDED (every request carries timeout=10),
         so it belongs here with the rest of the cancel semantics — hooks
         may do bounded work, only unbounded blocking is forbidden."""
         super().on_span_cancel(cancel_message)

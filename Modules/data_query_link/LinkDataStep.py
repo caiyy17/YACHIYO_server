@@ -17,19 +17,20 @@ class LinkDataCaller:
         self.type = self.config.get("type", "Simple")
         self.k = self.config.get("k", 0)
         self.score_threshold = self.config.get("score_threshold", 0.5)
-        self.return_type = self.config.get("type", "any")  # first, any, all
+        self.return_type = self.config.get("return_type", "any")
+        if self.return_type not in ("first", "any", "all"):
+            raise ValueError(
+                f"return_type must be first/any/all, got {self.return_type!r}")
         self.init_dataset()
 
     def init_dataset(self):
         self.logger.info("Loading dataset...")
         dataset_path = datasets_path + self.dataset_name + ".json"
-        if os.path.exists(dataset_path):
-            with open(dataset_path, "r", encoding="utf-8") as file:
-                dataset = json.load(file)
-        else:
-            dataset_path = datasets_path + "default" + ".json"
-            with open(dataset_path, "r", encoding="utf-8") as file:
-                dataset = json.load(file)
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(
+                f"dataset '{self.dataset_name}' not found: {dataset_path}")
+        with open(dataset_path, "r", encoding="utf-8") as file:
+            dataset = json.load(file)
         self.dataset = dataset["data"]
 
         current_index = 0
@@ -48,19 +49,19 @@ class LinkDataCaller:
         self.index2value = index2value
         self.logger.info(f"Load {self.num_items} items, {len(self.keys)} keys")
 
-        try:
-            requests.post(
-                addr_data_query + "/load_dataset",
-                json={
-                    "dataset": self.dataset_name,
-                    "type": self.type,
-                    "keys": self.keys,
-                },
-            )
-            self.logger.info("Dataset loaded successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to load dataset: {e}")
-            return "error"
+        # init path: a failed load must fail the pipeline init, so the
+        # error propagates (custom_init catches it into init_error)
+        r = requests.post(
+            addr_data_query + "/load_dataset",
+            json={
+                "dataset": self.dataset_name,
+                "type": self.type,
+                "keys": self.keys,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        self.logger.info("Dataset loaded successfully")
 
     def call(self, prompt):
         try:
@@ -72,6 +73,7 @@ class LinkDataCaller:
                     "k": self.k,
                     "score_threshold": self.score_threshold,
                 },
+                timeout=10,
             )
             result = response.json()["results"][0]
             if len(result) == 0:
@@ -88,7 +90,8 @@ class LinkDataCaller:
                 elif self.return_type == "all":
                     result = values
                 else:
-                    result = values[0]
+                    raise ValueError(
+                        f"unknown return_type {self.return_type!r}")
 
             return result
         except Exception as e:

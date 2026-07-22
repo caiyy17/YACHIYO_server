@@ -231,7 +231,7 @@ class MotionGenerationCaller:
                 self.addr_motion + "/api/generate_json_stream",
                 json=body,
                 stream=True,
-                timeout=30,
+                timeout=10,
             )
             response.raise_for_status()
             framerate = float(response.headers.get("X-Framerate", FRAMERATE))

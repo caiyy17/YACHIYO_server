@@ -39,14 +39,21 @@ def load_dataset():
     if dataset_name in databases:
         print("Dataset already loaded, reloading...")
 
-    if dataset_type == "Simple" or keys == []:
+    if dataset_type not in ("Simple", "Vector", "BGE"):
+        print(f"Unknown dataset type: {dataset_type}")
+        return jsonify({"error": f"unknown type '{dataset_type}'; "
+                        f"supported: Simple/Vector/BGE"}), 400
+    if dataset_type != "Simple" and not keys:
+        print(f"Type {dataset_type} requires keys")
+        return jsonify({"error": f"type '{dataset_type}' requires "
+                        f"non-empty keys"}), 400
+
+    if dataset_type == "Simple":
         database = SimpleDatabase(dataset_name, keys)
     elif dataset_type == "Vector":
         database = VectorDatabase(dataset_name, list(retrievers.values())[0], keys)
-    elif dataset_type == "BGE":
+    else:  # "BGE"
         database = VectorDatabase(dataset_name, retrievers["BGE"], keys)
-    else:
-        database = SimpleDatabase(dataset_name, keys)
 
     databases[dataset_name] = database
     print(f"Dataset {dataset_name} loaded in {time.time() - start_time} seconds")
@@ -76,7 +83,9 @@ def query():
         score_threshold = data.get("score_threshold", 0.5)
         results = database.query(queries, k=k, score_threshold=score_threshold)
     else:
-        results = []
+        print(f"Unknown database class: {type(database)}")
+        return jsonify({"error": f"unknown database class "
+                        f"{type(database).__name__}"}), 500
 
     print("results:", results)
     print("query time:", time.time() - start_time, "seconds")

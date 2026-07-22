@@ -36,7 +36,7 @@ class OpenaiCaller(BaseLLMCaller):
         else:
             api_key = get_secret(api_key)
 
-        client = OpenAI(api_key=api_key, base_url=api_base)
+        client = OpenAI(api_key=api_key, base_url=api_base, timeout=10)
         self._init_call(client)
         return client
 
@@ -79,6 +79,10 @@ class OpenaiCaller(BaseLLMCaller):
         result = self.create_stream(history, allow_tools=allow_tools)
         has_tool_call = False
         self.toolsCaller.reset()
+        # round-start reset: a previous round that died mid-stream (API
+        # error between chunks) never reached cut_last, leaving a partial
+        # sentence and possibly an open command-mark state in the cutter
+        self.cutter.reset()
         for chunk in result:
             delta = chunk.choices[0].delta
             yield None
@@ -122,8 +126,10 @@ class OpenaiStep(LLMStep):
         if history_mode == "tavern":
             self.harness = TavernHistory(
                 self.client_id, self.config, self.logger)
-        else:
+        elif history_mode == "simple":
             self.harness = SimpleHistory(self.client_id, self.config)
+        else:
+            raise ValueError(f"unknown history_mode {history_mode!r}")
         self.llm_caller = OpenaiCaller(
             self.client_id, self.config, self.logger,
             warmup_messages=self.harness.modify_history("hi"))

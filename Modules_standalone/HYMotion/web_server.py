@@ -500,7 +500,16 @@ def _build_fastapi_app():
 
         async def event_stream():
             while True:
-                event_type, data = await queue.get()
+                # per-hop bound: 30s for the NEXT event, no total limit —
+                # a steadily producing generation never trips this
+                try:
+                    event_type, data = await asyncio.wait_for(
+                        queue.get(), timeout=30)
+                except asyncio.TimeoutError:
+                    yield ("event: error\ndata: "
+                           + _json.dumps({"error": "generation stalled: "
+                                          "no event within 30s"}) + "\n\n")
+                    break
                 yield f"event: {event_type}\ndata: {_json.dumps(data)}\n\n"
                 if event_type == "done":
                     break

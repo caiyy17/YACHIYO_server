@@ -42,4 +42,5 @@
 
 - 系统语义(信号四态/路由/校验)的权威文档是 `technical_report/main.tex`,README 只放概览 bullet
 - 改动记入 `PROGRESS.md`(只保留最新版本要求,不堆历史)
+- 审计/问题清单类文件(如 AUDIT_BUG_REPORT)只保留**未处理**的发现:已修条目直接删除,不在清单里写"已修复"注记或清理说明——修复状态只存在于 PROGRESS.md
 - 代码注释必须简洁、自包含:不写 "see X" 式交叉引用,不写"不再是什么"的历史对比;演进历史只进 PROGRESS.md

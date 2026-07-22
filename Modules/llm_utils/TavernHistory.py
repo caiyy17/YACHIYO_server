@@ -36,18 +36,18 @@ class Database:
         self.num_items = current_index
         self.num_keys = current_key_index
 
-        try:
-            requests.post(
-                addr_data_query + "/load_dataset",
-                json={
-                    "dataset": self.name + "_keywords",
-                    "type": self.type,
-                    "keys": self.keys,
-                },
-            )
-        except Exception as e:
-            self.logger.error(f"Database init_dataset error: {e}")
-            return "error"
+        # init path: a failed load must fail the pipeline init, so the
+        # error propagates (custom_init catches it into init_error)
+        r = requests.post(
+            addr_data_query + "/load_dataset",
+            json={
+                "dataset": self.name + "_keywords",
+                "type": self.type,
+                "keys": self.keys,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
 
     def query(self, prompts):
         if not prompts:
@@ -61,6 +61,7 @@ class Database:
                     "k": self.k,
                     "score_threshold": self.threshold,
                 },
+                timeout=10,
             )
             results = response.json()["results"]
             score_table = [
@@ -133,54 +134,78 @@ class TavernHistory(SimpleHistory):
             name = lorebook.get("name", "")
             json_file = f"configs/lorebooks/{name}.json"
             self.logger.info(f"Loading lorebook {name} from {json_file}...")
-            if os.path.exists(json_file):
-                with open(json_file, "r", encoding="utf-8") as file:
-                    current_book = json.load(file)
-                for item in current_book["data"]:
-                    if item["strategy"] == "keywords" or item["strategy"] == "both":
-                        lore = {}
-                        lore["keys"] = item["keywords"]
-                        lore["index"] = current_index
-                        lore["context_length"] = item.get(
-                            "context_length", self.keyword_context_length
-                        )
-                        lore["logic"] = item.get("logic", "and_any")
-                        lore["threshold"] = item.get("threshold", self.threshold)
-                        self.keywords_lore_items.append(lore)
-                    if item["strategy"] == "vertorized" or item["strategy"] == "both":
-                        lore = {}
-                        lore["keys"] = item["vectorization_keywords"]
-                        lore["index"] = current_index
-                        lore["context_length"] = item.get(
-                            "context_length", self.keyword_context_length
-                        )
-                        lore["logic"] = item.get("logic", "and_any")
-                        lore["threshold"] = item.get("threshold", self.threshold)
-                        self.vectorized_lore_items.append(lore)
-                    item["order"] += lorebook.get("offset", 0)
-                    item["content"] = {"role": item["role"], "content": item["content"]}
-                    self.lore_items.append(item)
-                    current_index += 1
+            if not os.path.exists(json_file):
+                raise FileNotFoundError(
+                    f"lorebook '{name}' not found: {json_file}")
+            with open(json_file, "r", encoding="utf-8") as file:
+                current_book = json.load(file)
+            for item in current_book["data"]:
+                if item["strategy"] not in (
+                        "constant", "keywords", "vertorized", "both"):
+                    raise ValueError(
+                        f"lorebook '{name}' item "
+                        f"'{item.get('name', '?')}': strategy must be "
+                        f"constant/keywords/vertorized/both, got "
+                        f"{item['strategy']!r}")
+                logic = item.get("logic", "and_any")
+                if logic not in ("and_any", "and_all",
+                                 "not_any", "not_all"):
+                    raise ValueError(
+                        f"lorebook '{name}' item "
+                        f"'{item.get('name', '?')}': logic must be "
+                        f"and_any/and_all/not_any/not_all, got "
+                        f"{logic!r}")
+                if item["strategy"] == "keywords" or item["strategy"] == "both":
+                    lore = {}
+                    lore["keys"] = item["keywords"]
+                    lore["index"] = current_index
+                    lore["context_length"] = item.get(
+                        "context_length", self.keyword_context_length
+                    )
+                    lore["logic"] = item.get("logic", "and_any")
+                    lore["threshold"] = item.get("threshold", self.threshold)
+                    self.keywords_lore_items.append(lore)
+                if item["strategy"] == "vertorized" or item["strategy"] == "both":
+                    lore = {}
+                    lore["keys"] = item["vectorization_keywords"]
+                    lore["index"] = current_index
+                    lore["context_length"] = item.get(
+                        "context_length", self.keyword_context_length
+                    )
+                    lore["logic"] = item.get("logic", "and_any")
+                    lore["threshold"] = item.get("threshold", self.threshold)
+                    self.vectorized_lore_items.append(lore)
+                item["order"] += lorebook.get("offset", 0)
+                item["content"] = {"role": item["role"], "content": item["content"]}
+                self.lore_items.append(item)
+                current_index += 1
         self.logger.info(
             f"lore_items: {len(self.lore_items)}, keywords: {len(self.keywords_lore_items)}, vectorized: {len(self.vectorized_lore_items)}"
         )
 
-        self.keywords_database = Database(
-            name=f"{self.client_id}_simple",
-            type="Simple",
-            items=self.keywords_lore_items,
-            logger=self.logger,
-            k=self.k,
-            threshold=self.threshold,
-        )
-        self.vectorized_database = Database(
-            name=f"{self.client_id}_vector",
-            type="Vector",
-            items=self.vectorized_lore_items,
-            logger=self.logger,
-            k=self.k,
-            threshold=self.threshold,
-        )
+        # a retrieval database is only built when it has entries: no items
+        # means no remote dependency (constant-only lorebooks touch no
+        # data_query service at all)
+        self.keywords_database = None
+        if self.keywords_lore_items:
+            self.keywords_database = Database(
+                name=f"{self.client_id}_simple",
+                type="Simple",
+                items=self.keywords_lore_items,
+                logger=self.logger,
+                k=self.k,
+                threshold=self.threshold,
+            )
+        self.vectorized_database = None
+        if self.vectorized_lore_items:
+            self.vectorized_database = Database(
+                name=f"{self.client_id}_vector",
+                type="Vector",
+                items=self.vectorized_lore_items,
+                logger=self.logger,
+                k=self.k,
+                threshold=self.threshold,
+            )
 
     def get_activated(self, index, item, results_keywords, results_vectorized):
         rand_float = random.random()
@@ -217,8 +242,10 @@ class TavernHistory(SimpleHistory):
         for i in range(min(len(modified_history), self.keyword_context_length)):
             if modified_history[-i - 1]["content"] != "":
                 queries.append(modified_history[-i - 1]["content"])
-        results_keywords = self.keywords_database.query(queries)
-        results_vectorized = self.vectorized_database.query(queries)
+        results_keywords = (self.keywords_database.query(queries)
+                            if self.keywords_database else [])
+        results_vectorized = (self.vectorized_database.query(queries)
+                              if self.vectorized_database else [])
         self.logger.info(
             f"keywords: {results_keywords}, vectorized: {results_vectorized}"
         )
