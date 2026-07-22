@@ -5,7 +5,7 @@
         "data_fps": 20,
         "dc_offset_ms": 100
     },
-    "events": ["connection_start"],
+    "events": ["connection_start", "playback_complete"],
     "pipeline": [
         {
             "node_id": 1,
@@ -162,6 +162,14 @@
                     {
                         "source": "raw_text",
                         "target": null
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "pass_signals": [
@@ -182,6 +190,12 @@
                     {
                         "source": "EoS",
                         "target": "EoS"
+                    }
+                ],
+                "catch_events": [
+                    {
+                        "source": "playback_complete",
+                        "target": "playback_complete"
                     }
                 ],
                 "next_nodes": [5],
@@ -233,6 +247,14 @@
                     {
                         "source": "4_expression",
                         "target": "5_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -292,6 +314,14 @@
                     {
                         "source": "5_action",
                         "target": "6_action_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -367,6 +397,14 @@
                     {
                         "source": "6_expression_hint",
                         "target": "7_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -440,6 +478,14 @@
                     {
                         "source": "7_expression_hint",
                         "target": "7_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -513,6 +559,14 @@
                     {
                         "source": "7_expression_hint",
                         "target": "expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [

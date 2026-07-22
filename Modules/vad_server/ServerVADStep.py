@@ -224,7 +224,10 @@ class ServerVADStep(VADStep):
         """A cancel voiding the active segment must also reset the
         detector: it still believes it is mid-speech, so without a fresh
         session the rest of the ongoing utterance would never re-trigger
-        speech_started and would be lost until the next pause."""
+        speech_started and would be lost until the next pause. The reset
+        is a service call but BOUNDED (every request carries timeout=5),
+        so it belongs here with the rest of the cancel semantics — hooks
+        may do bounded work, only unbounded blocking is forbidden."""
         super().on_span_cancel(cancel_message)
         self._manual = False   # a voided manual turn hands control back
         if self._detector is None:

@@ -1,4 +1,5 @@
 {
+    "events": ["playback_complete"],
     "pipeline": [
         {
             "node_id": 1,
@@ -32,6 +33,14 @@
                     {
                         "source": "raw_text",
                         "target": null
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "emit_signals": [
@@ -42,6 +51,12 @@
                     {
                         "source": "EoS",
                         "target": "EoS"
+                    }
+                ],
+                "catch_events": [
+                    {
+                        "source": "playback_complete",
+                        "target": "playback_complete"
                     }
                 ],
                 "next_nodes": [2],
@@ -93,6 +108,14 @@
                     {
                         "source": "1_expression",
                         "target": "2_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -144,6 +167,14 @@
                     {
                         "source": "2_action",
                         "target": "action_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [

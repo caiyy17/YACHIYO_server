@@ -111,7 +111,8 @@ class BaseProcessingStep:
         contract — run by the pipeline validator BEFORE any node is built
         (pure classmethod: config + class attributes only; no instance, no
         services). Returns a list of finding strings. Subclasses with extra
-        structure extend via super() (see DispatcherStep)."""
+        structure extend via super() — e.g. a dispatcher adds its own
+        dispatch-table rules on top of these."""
         errors = []
         # signals: the wire side may be an explicit null opt-out — catch
         # source null = declared but not wired (never received), emit
@@ -580,47 +581,63 @@ class BaseProcessingStep:
         Returns True when in-flight work must be abandoned — kill always,
         cancel only when it actually voids the current turn (its stamp is
         newer than current_timestamp) — so in-processing polling points
-        (e.g. streaming loops) abort exactly when needed."""
+        (e.g. streaming loops) abort exactly when needed.
+
+        The drain runs to EMPTY: every queued message is processed, one
+        by one, in arrival order, each to completion. custom_cancel is
+        the COMPLETE cancel semantics of a module (state invalidation
+        AND turn conclusion — e.g. the LLM's interrupted commit), so a
+        message behind a triggering cancel already sees the post-cancel
+        state; the loop that polled merely exits fast on True."""
         hasCancel = False
         if not self.cancel_queue.empty():
             while not self.cancel_queue.empty():
                 cancel_message = self.cancel_queue.get()
                 cancel_message = json.loads(cancel_message)
                 verb = cancel_message.get("signal")
+                # verb dispatch, uniform shape: kill / cancel / event. A
+                # hook failure never escapes the checkpoint — the flags
+                # and watermark are set BEFORE the hook, so the polling
+                # loop still exits and the drain still completes.
                 if verb == "kill":
                     self.logger.info("received kill signal")
                     self._killed = True
                     hasCancel = True
-                    continue
-                if verb != "cancel":
-                    if verb in self.catch_event_map:
-                        event = dict(cancel_message)
-                        event["signal"] = self.catch_event_map[verb]
-                        self.logger.info(f"received event: {event}")
-                        # an event handler failure must not abort the node's
-                        # in-flight work (check_cancel runs inside it)
+                elif verb == "cancel":
+                    # cancel always carries a numeric stamp: the entry
+                    # validates client cancels, internal ones are trusted
+                    self.logger.info(
+                        f"received cancel signal: {cancel_message}")
+                    self.cancel_timestamp = max(
+                        self.cancel_timestamp, cancel_message["timestamp"]
+                    )
+                    if self.current_timestamp is not None \
+                            and self.current_timestamp < self.cancel_timestamp:
+                        self.logger.info(
+                            "cancel signal newer than current data, triggered")
+                        hasCancel = True
                         try:
-                            self.custom_event(event)
+                            self.custom_cancel(cancel_message)
                         except Exception as e:
                             self.logger.error(
-                                f"custom_event('{event['signal']}') failed: "
+                                f"custom_cancel failed: "
                                 f"{type(e).__name__}: {e}"
                             )
-                    else:
-                        self.logger.info(
-                            f"event '{verb}' not caught here; skipped",
-                            level=0)
-                    continue
-                # cancel always carries a numeric stamp: the entry validates
-                # client cancels, and internal ones (teardown) are trusted
-                self.logger.info(f"received cancel signal: {cancel_message}")
-                self.cancel_timestamp = max(
-                    self.cancel_timestamp, cancel_message["timestamp"]
-                )
-                if self.current_timestamp is not None and self.current_timestamp < self.cancel_timestamp:
-                    self.logger.info("cancel signal newer than current data, triggered")
-                    hasCancel = True
-                    self.custom_cancel(cancel_message)
+                elif verb in self.catch_event_map:
+                    event = dict(cancel_message)
+                    event["signal"] = self.catch_event_map[verb]
+                    self.logger.info(f"received event: {event}")
+                    try:
+                        self.custom_event(event)
+                    except Exception as e:
+                        self.logger.error(
+                            f"custom_event('{event['signal']}') failed: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                else:
+                    self.logger.info(
+                        f"event '{verb}' not caught here; skipped",
+                        level=0)
         # _killed keeps polling points aborting even after the kill verb
         # itself was consumed (a queue message is read once; the flag is
         # the sticky truth)

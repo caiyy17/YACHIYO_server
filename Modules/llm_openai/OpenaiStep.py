@@ -8,21 +8,11 @@ from ..llm_utils.ToolsCaller import ToolsCaller
 
 class OpenaiCaller(BaseLLMCaller):
     def custom_init(self):
-        self.history_mode = self.config.get("history_mode", "simple")
-        if self.history_mode == "simple":
-            self.history_manager = SimpleHistory(self.client_id, self.config)
-        elif self.history_mode == "tavern":
-            self.history_manager = TavernHistory(
-                self.client_id, self.config, self.logger
-            )
-        else:
-            self.history_manager = SimpleHistory(self.client_id, self.config)
         self.client = self.create_client()
         self.cutter = StreamCutter(self.config)
         self.toolsCaller = ToolsCaller(self.config, self.logger)
 
     def cancel(self, cancel_message):
-        super().cancel(cancel_message)
         self.cutter.reset()
 
     def create_client(self):
@@ -51,11 +41,14 @@ class OpenaiCaller(BaseLLMCaller):
         return client
 
     def _init_call(self, client):
-        """Init call with full system prompt to warm up KV cache."""
+        """Init call with full system prompt to warm up KV cache. The
+        warmup messages are assembled by the step's harness manager and
+        injected at construction."""
         try:
             model_name = self.model_config.get("model_name", "gpt")
             extra = self.model_config.get("extra", {})
-            messages = self.history_manager.modify_history("hi")
+            messages = self.warmup_messages \
+                or [{"role": "user", "content": "hi"}]
             client.chat.completions.create(
                 model=model_name,
                 messages=messages,
@@ -123,14 +116,32 @@ class OpenaiCaller(BaseLLMCaller):
 
 class OpenaiStep(LLMStep):
     def custom_init(self):
-        self.llm_caller = OpenaiCaller(self.client_id, self.config, self.logger)
+        # harness manager per config (assembly + turn history lifecycle);
+        # the caller is a pure API adapter and only receives the warmup
+        history_mode = self.config.get("history_mode", "simple")
+        if history_mode == "tavern":
+            self.harness = TavernHistory(
+                self.client_id, self.config, self.logger)
+        else:
+            self.harness = SimpleHistory(self.client_id, self.config)
+        self.llm_caller = OpenaiCaller(
+            self.client_id, self.config, self.logger,
+            warmup_messages=self.harness.modify_history("hi"))
+        self._last_turn = None
 
     def process(self, data, pass_data={}):
         prompt = data.get("prompt", "")
+        # Generation identity: response_id spans the whole turn (rides on
+        # SoS, every sentence and EoS), item_id is minted per sentence.
+        response_id = self.mint_id("resp")
+        # the previous turn's repair window closes here
+        self._last_turn = None
+        self.harness.begin_turn(prompt, response_id)
         # Stream envelope: pass_vars data travels once on the SoS, wrapped
         # under the fixed "pass_data" key (shape built here; emit_signal
         # ships flat); stream messages and EoS carry only the timestamp.
         sos = self.envelope(self.stamp({}, pass_data), pass_data, wrap=True)
+        sos["response_id"] = response_id
         self.emit_signal("SoS", sos)
         current_loop = 0
         already_end = False
@@ -139,22 +150,40 @@ class OpenaiStep(LLMStep):
             already_end = True
             current_loop += 1
             is_last_loop = current_loop >= loop_num
-            for response in self.llm_caller.call_stream(prompt, allow_tools=not is_last_loop):
+            # assemble per round: history + prompt + this turn's pending
+            # segments (tool context travels in memory, not via the file)
+            for response in self.llm_caller.generate(
+                    self.harness.assemble(),
+                    allow_tools=not is_last_loop):
                 if self.check_cancel():
+                    # the cancel hook already concluded the turn; fast
+                    # exit — no EoS, the envelope only closes naturally
                     self.logger.info("cancel inside loop")
-                    break
+                    return
                 if response is None:
                     continue
                 if "tool_calls" in response:
                     self.logger.info("tool_calls detected")
+                    self.harness.record(response)
                     already_end = False
-                    prompt = None
                     continue
 
+                item_id = self.mint_id("item")
+                self.harness.record(
+                    {"item_id": item_id,
+                     "raw_text": response.get("raw_text", "")})
                 current_data = {}
+                self.add_output(current_data, "response_id", response_id)
+                self.add_output(current_data, "item_id", item_id)
                 for key, value in response.items():
                     self.add_output(current_data, key, value)
                 self.output_to_queue(current_data, pass_data,
                                      is_add_pass_data=False)
-        self.emit_signal("EoS", self.stamp({}, pass_data))
+        # natural completion: close the envelope, open the repair window,
+        # write the turn's single history entry
+        eos = self.stamp({}, pass_data)
+        eos["response_id"] = response_id
+        self.emit_signal("EoS", eos)
+        self._last_turn = self.harness.turn_identity()
+        self.harness.commit()
         return

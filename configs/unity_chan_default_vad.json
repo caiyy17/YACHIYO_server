@@ -1,4 +1,5 @@
 {
+    "events": ["playback_complete"],
     "pipeline": [
         {
             "node_id": 1,
@@ -114,6 +115,14 @@
                     {
                         "source": "raw_text",
                         "target": null
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "emit_signals": [
@@ -124,6 +133,12 @@
                     {
                         "source": "EoS",
                         "target": "EoS"
+                    }
+                ],
+                "catch_events": [
+                    {
+                        "source": "playback_complete",
+                        "target": "playback_complete"
                     }
                 ],
                 "next_nodes": [4],
@@ -185,6 +200,14 @@
                     {
                         "source": "3_expression",
                         "target": "4_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -244,6 +267,14 @@
                     {
                         "source": "4_action",
                         "target": "5_action_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -319,6 +350,14 @@
                     {
                         "source": "5_expression_hint",
                         "target": "expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [

@@ -85,6 +85,14 @@
                     {
                         "source": "raw_text",
                         "target": null
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "emit_signals": [
@@ -95,6 +103,12 @@
                     {
                         "source": "EoS",
                         "target": "EoS"
+                    }
+                ],
+                "catch_events": [
+                    {
+                        "source": "playback_complete",
+                        "target": "playback_complete"
                     }
                 ],
                 "next_nodes": [3],
@@ -146,6 +160,14 @@
                     {
                         "source": "2_expression",
                         "target": "3_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -201,6 +223,14 @@
                     {
                         "source": "3_expression_hint",
                         "target": "4_expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [
@@ -335,6 +365,14 @@
                     {
                         "source": "4_expression_hint",
                         "target": "expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
                     }
                 ],
                 "output_vars": [

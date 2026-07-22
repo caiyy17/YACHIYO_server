@@ -16,22 +16,27 @@ Messages arriving when not collecting are forwarded unchanged.
 FIFO guarantees groups never interleave.
 """
 
-from ..base.BaseProcessingStep import BaseProcessingStep
+from ..base.SpanProcessingStep import SpanProcessingStep
 
 
-class ReceiverStep(BaseProcessingStep):
+class ReceiverStep(SpanProcessingStep):
     REQUIRED_CATCH_SIGNALS = ["dispatch_start", "dispatch_end"]
     # pure merger: expected branch fields and their output names are
     # entirely config-defined
     FREE_INPUTS = True
     FREE_OUTPUTS = True
 
-    """Requires config: catch_signals: ["dispatch_start", "dispatch_end"]."""
+    """Requires config: catch_signals: ["dispatch_start", "dispatch_end"].
 
-    def custom_init(self):
+    Span module: the collection window (dispatch_start .. dispatch_end)
+    is a span — current_timestamp stays set BETWEEN branch messages, so a
+    cancel arriving mid-collection triggers the hook and the half-built
+    group is dropped at once."""
+
+    def span_init(self):
         self.current_group = None
 
-    def process(self, data, pass_data={}):
+    def span_process(self, data, pass_data={}):
         signal = data.get("signal", "")
 
         # Start signal: begin collecting. The group's pass data rides the
@@ -46,6 +51,7 @@ class ReceiverStep(BaseProcessingStep):
             else:
                 base = dict(carried)
             self.current_group = {"base": base, "branches": []}
+            self.start_span(data["timestamp"])
             self.logger.info("dispatch_start")
             return
 
@@ -71,6 +77,7 @@ class ReceiverStep(BaseProcessingStep):
 
                 self.current_group = None
                 self.output_to_queue(output_data, base_pass)
+                self.end_span()
             return
 
         # Collecting: accumulate branch output
@@ -94,7 +101,7 @@ class ReceiverStep(BaseProcessingStep):
                 self.add_output(output_data, key, value)
         self.output_to_queue(output_data, pass_data)
 
-    def custom_cancel(self, cancel_message):
+    def on_span_cancel(self, cancel_message):
         self.current_group = None
 
     def custom_dispose(self):
