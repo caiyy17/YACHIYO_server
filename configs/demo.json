@@ -128,7 +128,7 @@
                     },
                     {
                         "source": "duration",
-                        "target": null
+                        "target": "duration"
                     }
                 ],
                 "pass_signals": [

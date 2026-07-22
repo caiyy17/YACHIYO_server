@@ -34,6 +34,7 @@
 
 ## 测试
 
+- 重型 E2E 前先跑 `python test/test_connect.py --mode services`;该测试在本地监听进程早于其 Python 源码时失败并提示重启,不改变生产 API/行为。
 - 正式 e2e:`python test/test_all_configs.py [config名...]`(不带参数跑全部在册 config)
 - WebRTC 专用:`python test/test_webrtc.py --mode single|cancel|compat|lifecycle|multi|framesplitter`
 - 延迟采样:`python test/test_connect.py --mode latency` 是 benchmark,不设性能回归阈值;退出成功只表示采样完成。

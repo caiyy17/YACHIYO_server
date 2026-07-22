@@ -22,10 +22,12 @@ Mode-specific helpers/constants are namespaced to avoid collisions.
 import argparse
 import array
 import io
-import sys
 import os
+import subprocess
+import sys
+import unittest
 import wave
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 # Needed for backpressure mode, which builds pipelines directly from Modules.
 # Kept at module level to mirror the original test_backpressure.py behavior.
@@ -59,6 +61,29 @@ REQUEST_TIMEOUT = 30
 
 def client_log_path(client_id):
     return os.path.join(PROJECT_ROOT, "logs", f"client_{client_id}.log")
+
+
+def client_history_path(client_id):
+    return os.path.join(
+        PROJECT_ROOT, "history", f"history_{client_id}.json"
+    )
+
+
+def cleanup_client_files(client_id):
+    """Remove only the log and history created for this test client."""
+    errors = []
+    for label, path in (
+        ("client log", client_log_path(client_id)),
+        ("client history", client_history_path(client_id)),
+    ):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            errors.append(f"{label}: {error}")
+    if errors:
+        raise AssertionError("; ".join(errors))
 
 
 def request_json(method, path, expected=200, timeout=REQUEST_TIMEOUT, **kwargs):
@@ -226,10 +251,7 @@ async def concurrent_main():
             try:
                 cleanup_client(client_id)
             finally:
-                try:
-                    os.unlink(log_path)
-                except FileNotFoundError:
-                    pass
+                cleanup_client_files(client_id)
 
 
 def run_concurrent():
@@ -284,10 +306,7 @@ async def run_ws_pipeline(client_id, config_name, audio_b64, timeout=20):
         try:
             cleanup_client(client_id)
         finally:
-            try:
-                os.unlink(client_log_path(client_id))
-            except FileNotFoundError:
-                pass
+            cleanup_client_files(client_id)
 
 
 def parse_log_timing(log):
@@ -1855,11 +1874,99 @@ SERVICES_SETTINGS_PATH = os.path.join(
     PROJECT_ROOT, "configs", "settings", "settings.json",
 )
 SERVICES_TIMEOUT = 5  # seconds per probe
+SOURCE_MTIME_TOLERANCE = 1.0
+
+
+def _listener_pids(port):
+    """Return the local processes listening on a TCP port."""
+    result = subprocess.run(
+        ["ss", "-H", "-ltnp", f"sport = :{port}"],
+        capture_output=True,
+        text=True,
+        timeout=SERVICES_TIMEOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"ss exited {result.returncode}"
+        raise RuntimeError(detail)
+    return sorted({int(pid) for pid in re.findall(r"pid=(\d+)", result.stdout)})
+
+
+def _process_start_time(pid):
+    """Read a Linux process start time as Unix seconds."""
+    with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
+        stat_line = handle.read()
+    closing_paren = stat_line.rfind(")")
+    if closing_paren < 0:
+        raise RuntimeError(f"invalid /proc/{pid}/stat")
+    # Fields after comm start at field 3; starttime is field 22.
+    start_ticks = int(stat_line[closing_paren + 2:].split()[19])
+    with open("/proc/stat", "r", encoding="utf-8") as handle:
+        boot_time = next(
+            int(line.split()[1])
+            for line in handle
+            if line.startswith("btime ")
+        )
+    return boot_time + start_ticks / os.sysconf("SC_CLK_TCK")
+
+
+def _process_workdir(pid):
+    return os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+
+
+def _python_sources(relative_paths):
+    for relative_path in relative_paths:
+        path = os.path.join(PROJECT_ROOT, relative_path)
+        if os.path.isfile(path):
+            if path.endswith(".py"):
+                yield path
+            continue
+        for root, dirs, filenames in os.walk(path):
+            dirs[:] = [name for name in dirs if name != "__pycache__"]
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    yield os.path.join(root, filename)
+
+
+def _runtime_freshness_error(port, relative_paths):
+    """Report local source files newer than the process serving ``port``."""
+    pids = _listener_pids(port)
+    if not pids:
+        return f"cannot identify the local listener process on port {port}"
+
+    expected_workdir = os.path.realpath(PROJECT_ROOT)
+    wrong_workdirs = []
+    for pid in pids:
+        workdir = _process_workdir(pid)
+        if workdir != expected_workdir:
+            wrong_workdirs.append((pid, workdir))
+    if wrong_workdirs:
+        detail = ", ".join(
+            f"pid={pid} cwd={workdir}" for pid, workdir in wrong_workdirs
+        )
+        return f"listener is not running from {expected_workdir}: {detail}"
+
+    started_at = min(_process_start_time(pid) for pid in pids)
+    changed = []
+    for path in _python_sources(relative_paths):
+        if os.path.getmtime(path) > started_at + SOURCE_MTIME_TOLERANCE:
+            changed.append(os.path.relpath(path, PROJECT_ROOT))
+    if not changed:
+        return None
+
+    preview = ", ".join(sorted(changed)[:5])
+    if len(changed) > 5:
+        preview += f", ... (+{len(changed) - 5})"
+    return (
+        f"stale local process pid={','.join(map(str, pids))}; "
+        f"restart after source changes: {preview}"
+    )
 
 
 def _probe_service(
     name, base_url, path, *, method="GET", expected_status=200,
-    json_body=None, response_kind=None,
+    json_body=None, response_kind=None, freshness_port=None,
+    freshness_paths=(),
 ):
     """Probe one documented endpoint and validate its expected response."""
     url = base_url.rstrip("/") + path
@@ -1887,12 +1994,99 @@ def _probe_service(
                 }[response_kind] if isinstance(payload, dict) else False
                 if not valid:
                     error = f"invalid {response_kind} response"
+        if error is None and freshness_port is not None:
+            try:
+                error = _runtime_freshness_error(
+                    freshness_port, freshness_paths
+                )
+            except (
+                IndexError,
+                OSError,
+                RuntimeError,
+                StopIteration,
+                subprocess.SubprocessError,
+                ValueError,
+            ) as exc:
+                error = f"runtime freshness check failed: {exc}"
         return {"name": name, "url": url, "up": error is None,
                 "status": resp.status_code, "error": error, "ms": ms}
     except requests.exceptions.RequestException as e:
         ms = (time.time() - start) * 1000
         return {"name": name, "url": url, "up": False,
                 "status": None, "error": type(e).__name__, "ms": ms}
+
+
+class ServiceFreshnessTest(unittest.TestCase):
+    def test_fresh_process(self):
+        module = sys.modules[__name__]
+        with (
+            patch.object(module, "_listener_pids", return_value=[123]),
+            patch.object(module, "_process_workdir", return_value=PROJECT_ROOT),
+            patch.object(module, "_process_start_time", return_value=100.0),
+            patch.object(
+                module, "_python_sources", return_value=["server_fastapi.py"]
+            ),
+            patch.object(os.path, "getmtime", return_value=100.5),
+        ):
+            self.assertIsNone(
+                _runtime_freshness_error(8910, ("server_fastapi.py",))
+            )
+
+    def test_stale_process(self):
+        module = sys.modules[__name__]
+        with (
+            patch.object(module, "_listener_pids", return_value=[123]),
+            patch.object(module, "_process_workdir", return_value=PROJECT_ROOT),
+            patch.object(module, "_process_start_time", return_value=100.0),
+            patch.object(
+                module, "_python_sources", return_value=["server_fastapi.py"]
+            ),
+            patch.object(os.path, "getmtime", return_value=102.0),
+        ):
+            error = _runtime_freshness_error(8910, ("server_fastapi.py",))
+        self.assertIn("stale local process pid=123", error)
+        self.assertIn("server_fastapi.py", error)
+
+    def test_probe_reports_ss_timeout(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"clients": []}
+        module = sys.modules[__name__]
+        timeout = subprocess.TimeoutExpired(["ss"], SERVICES_TIMEOUT)
+        with (
+            patch.object(requests, "request", return_value=response),
+            patch.object(
+                module, "_runtime_freshness_error", side_effect=timeout
+            ),
+        ):
+            result = _probe_service(
+                "main_server",
+                "http://localhost:8910",
+                "/clients/",
+                response_kind="clients",
+                freshness_port=8910,
+            )
+        self.assertFalse(result["up"])
+        self.assertIn("runtime freshness check failed", result["error"])
+
+    def test_probe_reports_malformed_proc_stat(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"clients": []}
+        module = sys.modules[__name__]
+        with (
+            patch.object(requests, "request", return_value=response),
+            patch.object(
+                module, "_runtime_freshness_error", side_effect=IndexError()
+            ),
+        ):
+            result = _probe_service(
+                "main_server",
+                "http://localhost:8910",
+                "/clients/",
+                response_kind="clients",
+                freshness_port=8910,
+            )
+        self.assertFalse(result["up"])
+        self.assertIn("runtime freshness check failed", result["error"])
 
 
 def run_services():
@@ -1967,11 +2161,19 @@ def run_services():
     # ── First-party servers (not in settings.json) ───────────────────
     probes.append((
         "main_server", "http://localhost:8910", "/clients/",
-        {"response_kind": "clients"},
+        {
+            "response_kind": "clients",
+            "freshness_port": 8910,
+            "freshness_paths": ("server_fastapi.py", "Modules", "utils"),
+        },
     ))
     probes.append((
         "webrtc_server", "http://localhost:15168", "/status",
-        {"response_kind": "gateway"},
+        {
+            "response_kind": "gateway",
+            "freshness_port": 15168,
+            "freshness_paths": ("server_webrtc.py",),
+        },
     ))
 
     # ── Probe & report ───────────────────────────────────────────────

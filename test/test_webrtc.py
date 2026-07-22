@@ -102,6 +102,30 @@ NUM_CLIENTS = 3
 CLIENT_TEST_DURATION = 30
 
 
+def cleanup_client_files(client_id, keep_log=False):
+    """Remove only files belonging to one explicitly named test client."""
+    paths = [
+        ("client history", os.path.join(
+            SCRIPT_DIR, "..", "history", f"history_{client_id}.json"
+        )),
+    ]
+    if not keep_log:
+        paths.append(("client log", os.path.join(
+            SCRIPT_DIR, "..", "logs", f"client_{client_id}.log"
+        )))
+
+    ok = True
+    for label, path in paths:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            print(f"[FAIL] {label} cleanup for {client_id}: {error}")
+            ok = False
+    return ok
+
+
 async def cleanup_test_client(
     client_id, wait_gateway=True, main_server_url=None, gateway_url=None,
     keep_log=False,
@@ -151,16 +175,8 @@ async def cleanup_test_client(
                 ok = False
                 break
             await asyncio.sleep(0.2)
-    if not keep_log:
-        try:
-            os.unlink(os.path.join(
-                SCRIPT_DIR, "..", "logs", f"client_{client_id}.log"
-            ))
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            print(f"[FAIL] test log cleanup: {error}")
-            ok = False
+    files_ok = cleanup_client_files(client_id, keep_log=keep_log)
+    ok = files_ok and ok
     return ok
 
 
@@ -811,6 +827,15 @@ async def _run_test_once():
     signals = [m.get("signal") for m in recv_dc_messages
                if isinstance(m, dict) and m.get("signal")]
     print(f"  Signal sequence: {signals}")
+    meta_durations = [
+        m.get("pass_data", {}).get("duration")
+        for m in recv_dc_messages
+        if isinstance(m, dict) and m.get("signal") == "meta"
+        and isinstance(m.get("pass_data"), dict)
+        and isinstance(m["pass_data"].get("duration"), (int, float))
+        and m["pass_data"]["duration"] > 0
+    ]
+    print(f"  Meta audio duration: {meta_durations}")
 
     # --- Record MP4 ---
     recording_ok = record_mp4(
@@ -833,6 +858,7 @@ async def _run_test_once():
         ("non-silent audio received", nonsilent > 0),
         ("video received", bool(recv_video_frames)),
         ("DataChannel messages received", bool(recv_dc_messages)),
+        ("audio duration received in meta", bool(meta_durations)),
         ("MP4 recorded", recording_ok),
         ("receivers completed without error", not receiver_errors),
     ]
@@ -1190,48 +1216,58 @@ def run_cancel(args):
     log_path = os.path.join(SCRIPT_DIR, "..", "logs",
                             f"client_{CANCEL_CLIENT_ID}.log")
 
-    ok = asyncio.run(run_cancel_test())
-
+    ok = False
     try:
+        ok = asyncio.run(run_cancel_test())
         with open(log_path) as f:
             log = f.read()
-    except OSError as e:
-        print(f"[FAIL] cannot read client log: {e}")
-        return False
-    # A negative start_offset_ms is lookback; a positive value delays the
-    # boundary into future audio. Both resolve through the timestamp/chunk
-    # mapper.
-    with open(os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "configs", f"{PIPELINE_CONFIG}.json")) as f:
-        _pipeline = json.load(f)["pipeline"]
-    _vad_cfg = next(n["config"] for n in _pipeline
-                    if "vad" in n["function"])
-    _lb_ms = _vad_cfg.get("manual_start_offset_ms",
-                          _vad_cfg.get("start_offset_ms", 0))
-    if _lb_ms > 0:
-        _start_name = f"vad start pending (delay {_lb_ms / 1000:.2f}s)"
-        _start_ok = "vad start pending at timestamp" in log
-    else:
-        _start_name = f"vad start resolved (lookback {abs(_lb_ms) / 1000:.2f}s)"
-        _start_ok = "vad mark at sample" in log \
-                    and "from start anchor timestamp" in log
-    checks = [
-        ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
-        ("recording_end after cancel ignored",
-         "recording_end without active mark - ignored" in log
-         or "recording_end without a manual turn - ignored" in log),
-        (_start_name, _start_ok),
-        ("no ERROR in client log", "ERROR" not in log),
-    ]
-    print()
-    for name, passed in checks:
-        print(f"  {'PASS' if passed else 'FAIL'}: {name}")
-        ok = ok and passed
-    try:
-        os.unlink(log_path)
-    except OSError as error:
-        print(f"[FAIL] test log cleanup: {error}")
+
+        # A negative start_offset_ms is lookback; a positive value delays the
+        # boundary into future audio. Both resolve through the timestamp/chunk
+        # mapper.
+        config_path = os.path.join(
+            SCRIPT_DIR, "..", "configs", f"{PIPELINE_CONFIG}.json"
+        )
+        with open(config_path) as config_file:
+            pipeline = json.load(config_file)["pipeline"]
+        vad_config = next(
+            node["config"] for node in pipeline if "vad" in node["function"]
+        )
+        lookback_ms = vad_config.get(
+            "manual_start_offset_ms", vad_config.get("start_offset_ms", 0)
+        )
+        if lookback_ms > 0:
+            start_name = (
+                f"vad start pending (delay {lookback_ms / 1000:.2f}s)"
+            )
+            start_ok = "vad start pending at timestamp" in log
+        else:
+            start_name = (
+                "vad start resolved "
+                f"(lookback {abs(lookback_ms) / 1000:.2f}s)"
+            )
+            start_ok = (
+                "vad mark at sample" in log
+                and "from start anchor timestamp" in log
+            )
+        checks = [
+            ("vad mark cleared on cancel", "cancel - cleared vad mark" in log),
+            ("recording_end after cancel ignored",
+             "recording_end without active mark - ignored" in log
+             or "recording_end without a manual turn - ignored" in log),
+            (start_name, start_ok),
+            ("no ERROR in client log", "ERROR" not in log),
+        ]
+        print()
+        for name, passed in checks:
+            print(f"  {'PASS' if passed else 'FAIL'}: {name}")
+            ok = ok and passed
+    except Exception as error:
+        print(f"[FAIL] cannot evaluate client log: {error}")
         ok = False
+    finally:
+        files_ok = cleanup_client_files(CANCEL_CLIENT_ID)
+        ok = files_ok and ok
     print(f"\n  {'Cancel test passed!' if ok else 'Cancel test FAILED.'}")
     return ok
 
@@ -2093,15 +2129,8 @@ def run_multi(args):
         all_ok = False
 
     for cid, _ in results:
-        try:
-            os.unlink(os.path.join(
-                SCRIPT_DIR, "..", "logs", f"client_{cid}.log"
-            ))
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            print(f"  [FAIL] test log cleanup for {cid}: {error}")
-            all_ok = False
+        files_ok = cleanup_client_files(cid)
+        all_ok = files_ok and all_ok
 
     # Failed runs retain their MP4s for diagnosis. Successful runs are
     # ephemeral unless the caller explicitly asks to keep artifacts.

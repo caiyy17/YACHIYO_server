@@ -490,6 +490,22 @@ INSTRUCTION_PROMPTS = [
 ]
 
 
+def cleanup_instruction_files(client_id):
+    """Remove only the server artifacts created by instruction mode."""
+    errors = []
+    for label, path in (
+        ("client log", f"logs/client_{client_id}.log"),
+        ("client history", f"history/history_{client_id}.json"),
+    ):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            errors.append(f"{label} cleanup failed: {error}")
+    return errors
+
+
 async def collect_response(ws, timeout=30):
     """Collect full streamed text + RAG results."""
     full_text = ""
@@ -689,13 +705,9 @@ async def run_instruction_async(args):
             except Exception as e:
                 success = False
                 print(f"[ERROR] Unregister failed: {type(e).__name__}: {e}")
-        try:
-            os.unlink(f"logs/client_{client_id}.log")
-        except FileNotFoundError:
-            pass
-        except OSError as e:
+        for error in cleanup_instruction_files(client_id):
             success = False
-            print(f"[ERROR] Client log cleanup failed: {e}")
+            print(f"[ERROR] {error}")
 
     print(f"\n{'='*60}")
     rate = 100 * compliant / total if total else 0

@@ -22,6 +22,11 @@ class PadStep(BaseProcessingStep):
     cuts drop tail samples/frames. A frame list's header duration is
     rewritten to the new actual length.
 
+    The selected target is also emitted as the separate ``duration``
+    product.  It is the message's standard duration even when a lane opts
+    out of cutting or extension and therefore keeps a different actual
+    length.
+
     Per-lane opt-outs via `behavior`: {"<input>": {"cut": false}} keeps
     that lane un-truncated, {"extend": false} keeps it un-extended (both
     default true). Lanes with unreadable duration are left untouched and
@@ -39,9 +44,12 @@ class PadStep(BaseProcessingStep):
 
     @classmethod
     def module_outputs(cls, config):
-        # every lane passes through under its own name
-        return [v.get("target") for v in config.get("input_vars", [])
-                if isinstance(v, dict) and isinstance(v.get("target"), str)]
+        # Every lane passes through under its own name; duration is the
+        # independently published alignment target selected for the message.
+        lanes = [v.get("target") for v in config.get("input_vars", [])
+                 if isinstance(v, dict)
+                 and isinstance(v.get("target"), str)]
+        return lanes + ["duration"]
 
     @classmethod
     def validate_config(cls, config):
@@ -107,6 +115,8 @@ class PadStep(BaseProcessingStep):
                     new = self._resize(kind, v, target)
                     changes.append(f"{k} {dur:.2f}s->{target:.2f}s")
             self.add_output(output_data, k, new)
+        if target is not None:
+            self.add_output(output_data, "duration", target)
         if changes:
             self.logger.info(f"pad ({self.mode}): {', '.join(changes)}")
         self.output_to_queue(output_data, pass_data)

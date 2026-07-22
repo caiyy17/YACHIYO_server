@@ -26,6 +26,7 @@ import uuid
 import logging
 import wave
 from io import BytesIO
+from pathlib import Path
 from queue import Empty, Queue
 
 import requests
@@ -36,6 +37,7 @@ import blivedm
 import blivedm.models.web as web_models
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Suppress noisy blivedm logging completely (from standalone test)
 logging.getLogger("blivedm").setLevel(logging.CRITICAL)
@@ -50,6 +52,23 @@ logging.getLogger("blivedm").setLevel(logging.CRITICAL)
 
 BLIVEDM_LISTEN_DURATION = 60  # seconds
 HTTP_TIMEOUT = 30
+
+
+def cleanup_client_artifacts(client_id):
+    ok = True
+    paths = (
+        PROJECT_ROOT / "history" / f"history_{client_id}.json",
+        PROJECT_ROOT / "logs" / f"client_{client_id}.log",
+    )
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            ok = False
+            print(f"[FAIL] Artifact cleanup failed for {path}: {error}")
+    return ok
 
 
 def wav_duration(base64_audio):
@@ -195,12 +214,14 @@ class ManualSession:
         self.thread = None
         self.ready = threading.Event()
         self.error = None
+        self.registered = False
 
     def start(self):
         r = requests.post(f"{YACHIYO_SERVER}/register/",
                           json={"client_id": MANUAL_CLIENT_ID},
                           timeout=HTTP_TIMEOUT)
         r.raise_for_status()
+        self.registered = True
         print(f"[YACHIYO] Register: {r.json()}")
         r = requests.post(f"{YACHIYO_SERVER}/init_pipeline/{MANUAL_CLIENT_ID}",
                           json={"config": MANUAL_PIPELINE_CONFIG},
@@ -251,14 +272,20 @@ class ManualSession:
         except Exception as e:
             print(f"[FAIL] session close: {e}")
             ok = False
-        try:
-            requests.post(f"{YACHIYO_SERVER}/unregister/",
-                          json={"client_id": MANUAL_CLIENT_ID},
-                          timeout=HTTP_TIMEOUT)
-        except Exception as e:
-            print(f"[FAIL] unregister: {e}")
-            ok = False
-        return ok
+        if self.registered:
+            try:
+                response = requests.post(
+                    f"{YACHIYO_SERVER}/unregister/",
+                    json={"client_id": MANUAL_CLIENT_ID},
+                    timeout=HTTP_TIMEOUT,
+                )
+                response.raise_for_status()
+                self.registered = False
+            except Exception as e:
+                print(f"[FAIL] unregister: {e}")
+                ok = False
+        artifacts_ok = cleanup_client_artifacts(MANUAL_CLIENT_ID)
+        return ok and artifacts_ok
 
 
 def manual_send_msg(session, text, user, msg_type="danmaku", **kwargs):
@@ -713,14 +740,8 @@ class YachiyoClient:
             except Exception as e:
                 cleanup_ok = False
                 print(f"[FAIL] Unregister failed: {e}")
-        try:
-            os.remove(os.path.join("logs", f"client_{SERVER_CLIENT_ID}.log"))
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            cleanup_ok = False
-            print(f"[FAIL] Test log cleanup failed: {e}")
-        return cleanup_ok
+        artifacts_ok = cleanup_client_artifacts(SERVER_CLIENT_ID)
+        return cleanup_ok and artifacts_ok
 
 
 # ===== blivedm Handler (server mode) =====

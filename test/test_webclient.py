@@ -11,11 +11,15 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 
 from playwright.sync_api import sync_playwright
+import requests
 
 PAGE = "http://127.0.0.1:15168/static/index.html"
+MAIN = "http://127.0.0.1:8910"
 WAV = Path(__file__).resolve().with_name("test_voice.wav")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FAIL = []
 
 
@@ -46,7 +50,7 @@ navigator.mediaDevices.getUserMedia = async (constraints) => {
 """
 
 
-def main():
+def run_test(client_state):
     wav_b64 = base64.b64encode(WAV.read_bytes()).decode()
     shim = SHIM_TEMPLATE % wav_b64
 
@@ -61,6 +65,7 @@ def main():
         page.add_init_script(shim)
         page.goto(PAGE)
         cid = page.input_value("#clientId")
+        client_state["id"] = cid
         print(f"client id: {cid}")
 
         page.click("#connectBtn")
@@ -97,14 +102,66 @@ def main():
     )
     check("page saw a reply (SoS logged)", "SoS" in page_log)
 
-    log = Path(f"logs/client_{cid}.log").read_text()
+    log = (PROJECT_ROOT / "logs" / f"client_{cid}.log").read_text()
+    vad_marks = re.findall(r"vad mark at sample (\d+)", log)
     check(
-        "server got both turns (2 vad start marks)",
-        len(re.findall(r"vad start pending|vad mark at sample", log)) == 2,
+        f"server completed exactly 2 vad marks {vad_marks}",
+        len(vad_marks) == 2,
     )
     check("server processed the cancels", "received cancel signal" in log)
     check("turn generated (response_id minted)", "resp_" in log)
     check("no ERROR in server log", "ERROR" not in log)
+
+
+def cleanup_client_artifacts(cid):
+    """Remove only this test client's persistent history and log files."""
+    paths = (
+        PROJECT_ROOT / "history" / f"history_{cid}.json",
+        PROJECT_ROOT / "logs" / f"client_{cid}.log",
+    )
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            print(f"OK   cleanup: already absent {path}")
+        except OSError as error:
+            description = f"cleanup failed for {path}: {error}"
+            print(f"FAIL {description}")
+            FAIL.append(description)
+        else:
+            print(f"OK   cleanup: removed {path}")
+
+
+def unregister_client(cid):
+    """Ensure an exceptional browser exit cannot leave a live pipeline."""
+    try:
+        response = requests.post(
+            f"{MAIN}/unregister/", json={"client_id": cid}, timeout=30
+        )
+        response.raise_for_status()
+        status = response.json().get("status")
+        if status not in {"unregistered", "not registered"}:
+            raise RuntimeError(f"unexpected unregister status: {status!r}")
+    except Exception as error:
+        check(f"client unregister failed: {error}", False)
+
+
+def main():
+    client_state = {}
+    try:
+        run_test(client_state)
+    except Exception as error:
+        traceback.print_exc()
+        check(
+            f"unexpected exception: {type(error).__name__}: {error}",
+            False,
+        )
+    finally:
+        cid = client_state.get("id")
+        if cid:
+            unregister_client(cid)
+            cleanup_client_artifacts(cid)
+
     print("ALL PASS" if not FAIL else f"{len(FAIL)} FAILURES")
     return 1 if FAIL else 0
 

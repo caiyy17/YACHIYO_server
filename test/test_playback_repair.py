@@ -5,8 +5,10 @@ ids actually reach the exit), snapshot the full history, send a
 playback_complete report for item 2 (exclusive: keep item 1 only),
 assert the history file is cut to a strict prefix + marker, then assert
 a stale second report is ignored."""
+import argparse
 import asyncio
 import json
+from pathlib import Path
 import sys
 import time
 import uuid
@@ -15,6 +17,7 @@ import requests
 import websockets
 
 MAIN = "http://127.0.0.1:8910"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # config -> (llm node id, prompt wire field)
 CASES = {
     "unity_chan_default":  (2, "1_text"),
@@ -25,21 +28,45 @@ CASES = {
 PROMPT = "请用三个完整的短句介绍你自己，每句都以句号结尾，不少于三句。"
 FAIL = []
 
+
 def check(d, c):
     print(("  OK   " if c else "  FAIL ") + d)
     if not c:
         FAIL.append(d)
 
 
+def cleanup_client_artifacts(client_id):
+    errors = []
+    paths = (
+        PROJECT_ROOT / "history" / f"history_{client_id}.json",
+        PROJECT_ROOT / "logs" / f"client_{client_id}.log",
+    )
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            errors.append(f"cleanup {path.name}: {error}")
+    return errors
+
+
 async def run_case(config, llm_node, field):
     print(f"== {config}")
     cid = f"evt_repair_{uuid.uuid4().hex[:8]}"
-    r = requests.post(f"{MAIN}/register/", json={"client_id": cid}, timeout=30)
-    r.raise_for_status()
-    r = requests.post(f"{MAIN}/init_pipeline/{cid}",
-                      json={"config": config}, timeout=180)
-    r.raise_for_status()
+    registered = False
     try:
+        r = requests.post(
+            f"{MAIN}/register/", json={"client_id": cid}, timeout=30
+        )
+        r.raise_for_status()
+        registered = True
+        r = requests.post(
+            f"{MAIN}/init_pipeline/{cid}",
+            json={"config": config},
+            timeout=180,
+        )
+        r.raise_for_status()
         async with websockets.connect(
                 f"ws://127.0.0.1:8910/ws/{cid}",
                 max_size=16 * 1024 * 1024) as ws:
@@ -65,8 +92,8 @@ async def run_case(config, llm_node, field):
                   rid is not None and len(items) >= 2)
             if not rid or len(items) < 2:
                 return
-            hist_path = f"history/history_{cid}.json"
-            full = json.load(open(hist_path))
+            hist_path = PROJECT_ROOT / "history" / f"history_{cid}.json"
+            full = json.loads(hist_path.read_text(encoding="utf-8"))
             full_content = full[-1]["content"]
             check("history holds full reply pre-report",
                   full[-1]["role"] == "assistant"
@@ -77,7 +104,7 @@ async def run_case(config, llm_node, field):
                 "signal": "playback_complete", "timestamp": time.time(),
                 "response_id": rid, "item_id": items[1]}))
             await asyncio.sleep(2)
-            cut = json.load(open(hist_path))
+            cut = json.loads(hist_path.read_text(encoding="utf-8"))
             cut_content = cut[-1]["content"]
             prefix = cut_content.removesuffix("\n---interrupted---")
             check("history cut to strict prefix + marker",
@@ -91,12 +118,23 @@ async def run_case(config, llm_node, field):
                 "response_id": rid, "item_id": items[0]}))
             await asyncio.sleep(2)
             check("stale second report ignored",
-                  json.load(open(hist_path))[-1]["content"] == cut_content)
-            log = open(f"logs/client_{cid}.log").read()
+                  json.loads(hist_path.read_text(encoding="utf-8"))[-1]["content"]
+                  == cut_content)
+            log_path = PROJECT_ROOT / "logs" / f"client_{cid}.log"
+            log = log_path.read_text(encoding="utf-8")
             check("no ERROR in server log", "ERROR" not in log)
     finally:
-        requests.post(f"{MAIN}/unregister/", json={"client_id": cid},
-                      timeout=30)
+        if registered:
+            try:
+                r = requests.post(
+                    f"{MAIN}/unregister/", json={"client_id": cid}, timeout=30
+                )
+                r.raise_for_status()
+            except Exception as error:
+                check(f"{config} unregister: {error}", False)
+        for error in cleanup_client_artifacts(cid):
+            check(error, False)
+
 
 async def main():
     for config, (node, field) in CASES.items():
@@ -105,5 +143,13 @@ async def main():
     sys.exit(1 if FAIL else 0)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Test playback-history repair across configured pipelines."
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    parse_args()
     asyncio.run(main())

@@ -1,11 +1,11 @@
 """End-to-end smoke tests for the supported representative pipelines."""
 
+import argparse
 import asyncio
 import array
 import base64
 import io
 import json
-import sys
 import time
 import uuid
 import wave
@@ -18,6 +18,7 @@ import websockets
 SERVER = "http://localhost:8910"
 WS_URL = "ws://localhost:8910/ws"
 TTS_API = "http://127.0.0.1:8011/v1"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Fields that must be present and non-empty in a completed response.
 CONFIGS = {
@@ -29,13 +30,13 @@ CONFIGS = {
     "demo": {
         "input_type": "audio",
         "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "text"],
+        "expected_final": ["audio_data", "duration", "text"],
     },
     "unity_chan_default": {
         "input_type": "audio",
         "expected_streaming": ["text"],
         "expected_final": [
-            "audio_data", "text", "action", "action_hint",
+            "audio_data", "duration", "text", "action", "action_hint",
             "expression", "expression_hint",
         ],
     },
@@ -43,7 +44,15 @@ CONFIGS = {
         "input_type": "vad_audio",
         "expected_streaming": ["text"],
         "expected_final": [
-            "audio_data", "text", "action", "action_hint",
+            "audio_data", "duration", "text", "action", "action_hint",
+            "expression", "expression_hint",
+        ],
+    },
+    "unity_chan_default_vad_auto": {
+        "input_type": "vad_audio",
+        "expected_streaming": ["text"],
+        "expected_final": [
+            "audio_data", "duration", "text", "action", "action_hint",
             "expression", "expression_hint",
         ],
     },
@@ -51,13 +60,14 @@ CONFIGS = {
         "input_type": "audio",
         "expected_streaming": ["text"],
         "expected_final": [
-            "audio_data", "action", "text", "action_hint", "expression",
+            "audio_data", "action", "duration", "text", "action_hint",
+            "expression",
         ],
     },
     "unity_chan_live": {
         "input_type": "danmaku",
         "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "action"],
+        "expected_final": ["audio_data", "action", "duration"],
     },
 }
 
@@ -123,6 +133,23 @@ def collect_fields(data, expected_final, collected_final):
     for key in expected_final:
         if data.get(key):
             collected_final[key] = data[key]
+
+
+def cleanup_client_files(client_id):
+    """Remove only the log and history created for this test client."""
+    ok = True
+    paths = (
+        ("client log", PROJECT_ROOT / "logs" / f"client_{client_id}.log"),
+        ("client history",
+         PROJECT_ROOT / "history" / f"history_{client_id}.json"),
+    )
+    for label, path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            print(f"  FAIL: {label} cleanup: {error}")
+            ok = False
+    return ok
 
 
 async def test_config(config_name, spec):
@@ -314,13 +341,21 @@ async def test_config(config_name, spec):
             except Exception as error:
                 cleanup_ok = False
                 print(f"  FAIL: cleanup: {error}")
-
-    Path(f"logs/client_{client_id}.log").unlink(missing_ok=True)
+        files_ok = cleanup_client_files(client_id)
+        cleanup_ok = files_ok and cleanup_ok
     return success and cleanup_ok
 
 
-async def main():
-    requested = sys.argv[1:]
+async def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run supported pipeline end-to-end smoke tests."
+    )
+    parser.add_argument(
+        "configs", nargs="*", metavar="CONFIG",
+        help="Config name(s); omit to run every supported config.",
+    )
+    args = parser.parse_args(argv)
+    requested = args.configs
     unknown = [name for name in requested if name not in CONFIGS]
     if unknown:
         print(f"FAIL: unknown config(s): {', '.join(unknown)}")

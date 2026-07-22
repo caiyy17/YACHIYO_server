@@ -456,6 +456,10 @@
                     {
                         "source": "action",
                         "target": "action"
+                    },
+                    {
+                        "source": "duration",
+                        "target": "duration"
                     }
                 ],
                 "catch_signals": [],

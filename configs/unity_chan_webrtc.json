@@ -460,6 +460,10 @@
                         "target": "7_audio_data"
                     },
                     {
+                        "source": "7_duration",
+                        "target": "7_duration"
+                    },
+                    {
                         "source": "7_text",
                         "target": "7_text"
                     },
@@ -543,6 +547,10 @@
                     {
                         "source": "7_text",
                         "target": "text"
+                    },
+                    {
+                        "source": "7_duration",
+                        "target": "duration"
                     },
                     {
                         "source": "7_action",

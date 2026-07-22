@@ -44,7 +44,7 @@
                 "end_offset_ms": 0,
                 "manual_start_offset_ms": 0,
                 "manual_end_offset_ms": 0,
-                "auto_detect": false,
+                "auto_detect": true,
                 "model": "silero_vad"
             }
         },
