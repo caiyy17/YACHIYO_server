@@ -470,17 +470,16 @@ The same pipeline framework supports multiple configurations without code change
 
 \begin{table}[h]
     \centering
-    \caption{Example pipeline configurations.}
+    \small
+    \caption{Representative pipeline configurations.}
     \label{tab:configs}
-    \begin{tabular}{ll}
+    \begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
         \toprule
         \textbf{Config} & \textbf{Pipeline} \\
         \midrule
-        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS \\
-        Conversation (WebRTC) & AudioCollector $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS $\rightarrow$ FrameSplitter \\
-        Conversation (cloud) & ASR\textsuperscript{cloud} $\rightarrow$ LLM\textsuperscript{cloud} $\rightarrow$ RAG $\times 2$ $\rightarrow$ TTS\textsuperscript{cloud} \\
-        Motion gen.\ (parallel) & ASR $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ Dispatch $\rightarrow$ MotionGen $\|$ TTS $\rightarrow$ Receive \\
-        VTuber livestream & DanmakuBuffer $\rightarrow$ LLM $\rightarrow$ RAG $\rightarrow$ Dispatch $\rightarrow$ MotionGen $\|$ TTS $\rightarrow$ Receive \\
+        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\times 2$ $\rightarrow$ TTS \\
+        Parallel humanoid & ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\rightarrow$ Dispatch $\rightarrow$ (MotionGeneration $\|$ TTS) $\rightarrow$ Receive $\rightarrow$ Pad \\
+        WebRTC video stream & FrameCollector $\rightarrow$ ServerVAD $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\times 2$ $\rightarrow$ StreamTTS $\rightarrow$ VideoChunkGeneration $\rightarrow$ FrameSplitter \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -664,7 +663,13 @@ Pass-through is only applied when a node actually processes a message; forwarded
         "output_vars": [{"source": "text",
                          "target": "3_text"},
                         {"source": "raw_text",
+                         "target": null},
+                        {"source": "response_id",
+                         "target": null},
+                        {"source": "item_id",
                          "target": null}],
+        "catch_events": [{"source": null,
+                          "target": "playback_complete"}],
         "emit_signals": [{"source": "SoS",
                           "target": "SoS"},
                          {"source": "EoS",

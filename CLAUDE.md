@@ -21,8 +21,8 @@
 
 - **节点 config 键序标准**:`input_vars → pass_vars → output_vars → catch_signals → pass_signals → emit_signals → (dispatch_vars/dispatch_signals/streams) → next_nodes → 模块参数`。程序化改 config 后必须保持此序,不允许把键追加到末尾。
 
-- `configs/` 里 **`dev_*` 开头的 config 是开发实验配置,不在 sync 范围内**:不纳入 `test/test_all_configs.py` 的正式在册列表,文档/测试同步时跳过。正式范围 = demo + unity_chan_* 系列。
-- `loopback.json` 是 collector/splitter 工具 config,不适用语音 e2e。
+- `configs/` 里 `dev_*` 是开发实验配置、`evt_*` 是临时配置,两者都不纳入 `test/test_all_configs.py`。正式可运行范围 = `demo`、`loopback` 和全部 `unity_chan_*`;增删正式配置时必须同步增删 `test/test_all_configs.py` 中对应的独立测试项。
+- `loopback.json` 是本地可直接使用的 collector/splitter 工具 config;它不是语音对话管线,但属于正式配置并通过 WebRTC 回环路径做 e2e。
 - **webrtc 类 config(含 collector/splitter 的管线)必须带顶层 `webrtc` 段**显式声明车道参数——网关 offer 期强制,缺段 400;不允许靠隐式默认。
 
 ## 环境与服务
@@ -34,8 +34,9 @@
 ## 测试
 
 - 重型 E2E 前先跑 `python test/test_connect.py --mode services`;该测试在本地监听进程早于其 Python 源码时失败并提示重启,不改变生产 API/行为。
-- 正式 e2e:`python test/test_all_configs.py [config名...]`(不带参数跑全部在册 config)
-- WebRTC 专用:`python test/test_webrtc.py --mode single|cancel|compat|lifecycle|multi|framesplitter`
+- 单元测试:`python -m unittest discover -s test -p 'test_*_unit.py'`;按连接层、WebRTC、单独模块和模块组合拆分,仅使用满足被测模块所需的最小 inline config/fake,不得读取或完整复制 `configs/` 下的正式配置拓扑。
+- 正式 config e2e:`python test/test_all_configs.py [config名...]`(不带参数逐一跑全部在册 config);这是正式配置完整运行测试的唯一总入口。
+- WebRTC 专项诊断:`python test/test_webrtc.py --mode single|cancel|compat|lifecycle|multi`;专项结果不能代替 `test_all_configs.py` 的正式配置覆盖。
 - 延迟采样:`python test/test_connect.py --mode latency` 是 benchmark,不设性能回归阈值;退出成功只表示采样完成。
 - `python test/test_llm.py --mode single|multi|instruction` 是 eval/diagnostic,非常规回归;模型输出问题只报告,请求/协议/输出缺失等执行错误才非零退出。
 - 客户端日志在 `logs/client_<id>.log`;信号接线错误 grep `undeclared signal`

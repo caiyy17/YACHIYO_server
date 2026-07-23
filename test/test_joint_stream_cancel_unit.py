@@ -1,7 +1,6 @@
 """Unit regressions for JointStream packing and cooperative cancellation."""
 
 import copy
-import json
 import os
 import queue
 import sys
@@ -65,6 +64,62 @@ class _ControlledIterator:
 
     def close(self):
         self.closed.set()
+
+
+def _joint_stream_config():
+    """Return a self-contained contract fixture for validation tests."""
+    return {
+        "input_vars": [
+            {"source": "text", "target": "text"},
+            {"source": "action", "target": "prompt"},
+        ],
+        "pass_vars": [
+            {"source": "text", "target": "text"},
+            {"source": "action", "target": "action_hint"},
+        ],
+        "output_vars": [
+            {"source": "audio", "target": "audio_data"},
+            {"source": "motion", "target": "action"},
+        ],
+        "catch_signals": [
+            {"source": "SoS", "target": "SoS"},
+        ],
+        "pass_signals": [
+            {"source": "EoS", "target": "EoS"},
+            {"source": "SoS", "target": "SoS"},
+        ],
+        "emit_signals": [
+            {"source": "SoS", "target": "stream_SoS"},
+            {"source": "EoS", "target": "stream_EoS"},
+        ],
+        "mode": "longest",
+        "streams": [
+            {
+                "caller": "openai_tts",
+                "extend": False,
+                "input": [{"source": "text", "target": "prompt"}],
+                "output": [{"source": "audio", "target": "audio"}],
+                "config": {
+                    "model": "unit_tts",
+                    "voice": "unit_voice",
+                    "stream_chunk_ms": 300,
+                },
+            },
+            {
+                "caller": "motion_generation",
+                "extend": False,
+                "input": [{"source": "prompt", "target": "prompt"}],
+                "output": [{"source": "motion", "target": "motion"}],
+                "config": {
+                    "model": "unit_motion",
+                    "duration": 5.0,
+                    "continuous": True,
+                    "stream_frames": 9,
+                },
+            },
+        ],
+        "next_nodes": [-1],
+    }
 
 
 class JointStreamCancelTest(unittest.TestCase):
@@ -271,14 +326,7 @@ class JointStreamCancelTest(unittest.TestCase):
         self.assertEqual(emitted, ["SoS", "EoS"])
 
     def test_config_modes_anchor_and_extend_validation(self):
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(project_root, "configs", "dev_joint_stream.json"),
-                  encoding="utf-8") as f:
-            full_config = json.load(f)
-        base = next(
-            node["config"] for node in full_config["pipeline"]
-            if node["function"] == "call_joint_stream"
-        )
+        base = _joint_stream_config()
 
         for mode in ("longest", "shortest"):
             config = copy.deepcopy(base)

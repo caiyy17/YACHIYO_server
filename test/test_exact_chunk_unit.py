@@ -1,4 +1,4 @@
-"""Unit regressions for stream-only exact_chunk behavior."""
+"""Unit tests for stream-only exact_chunk behavior."""
 
 import base64
 import io

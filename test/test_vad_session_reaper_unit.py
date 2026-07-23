@@ -1,4 +1,4 @@
-"""Regression tests for VADServer's independent idle-session reaper."""
+"""Unit tests for VADServer's independent idle-session reaper."""
 
 import asyncio
 import importlib.util
