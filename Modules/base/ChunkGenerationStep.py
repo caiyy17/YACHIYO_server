@@ -15,6 +15,8 @@ class ChunkGenerationSession:
     node-lifetime cleanup invoked by its concrete generation_dispose().
     """
 
+    passthrough = False
+
     def generate_chunk(self, inputs, chunk_index):
         raise NotImplementedError
 
@@ -26,6 +28,12 @@ class ChunkGenerationSession:
 
     def close(self):
         pass
+
+
+class PassthroughChunkGenerationSession(ChunkGenerationSession):
+    """A span that relays each configured pass-through payload unchanged."""
+
+    passthrough = True
 
 
 def frames_for_duration(duration_ms, framerate):
@@ -134,6 +142,10 @@ class ChunkGenerationStep(SpanProcessingStep):
             self.logger.warning("chunk outside an active stream; dropped")
             return
         if self.check_cancel():
+            return
+        if getattr(self._generation_session, "passthrough", False):
+            self.output_to_queue({}, pass_data, log_level=0)
+            self._chunk_index += 1
             return
 
         # Span context is the stable layer, then current pass/input fields

@@ -251,9 +251,53 @@ class TTSMotionStreamUnitTest(unittest.TestCase):
                     self.assertEqual(frames, 4800)
                     self.assertEqual(len(chunk["motion_chunk"]), 6)
 
+                # Only an absent/None hint bypasses Motion.
+                ingress.put(json.dumps({
+                    "timestamp": 11,
+                    "request_text": "audio only",
+                    "request_id": "request-11",
+                }))
+                item_start, audio_1, audio_2, item_end = [
+                    json.loads(output.get(timeout=2)) for _ in range(4)
+                ]
+                self.assertEqual(item_start["signal"], "item_start")
+                self.assertEqual(item_end["signal"], "item_end")
+                self.assertEqual(item_start["timestamp"], 11)
+                self.assertEqual(item_end["timestamp"], 11)
+                passthrough_audio = [
+                    _wav_payload(chunk["audio_chunk"])
+                    for chunk in (audio_1, audio_2)
+                ]
+                self.assertEqual(passthrough_audio, expected_audio)
+                self.assertNotIn("motion_chunk", audio_1)
+                self.assertNotIn("motion_chunk", audio_2)
+
+                # Empty and whitespace strings are present hints and are sent
+                # to Motion unchanged.
+                hinted_chunks = None
+                for timestamp, requested_motion in ((12, ""), (13, "   ")):
+                    ingress.put(json.dumps({
+                        "timestamp": timestamp,
+                        "request_text": "blank motion prompt",
+                        "requested_motion": requested_motion,
+                        "request_id": f"request-{timestamp}",
+                    }))
+                    item_start, hinted_1, hinted_2, item_end = [
+                        json.loads(output.get(timeout=2)) for _ in range(4)
+                    ]
+                    self.assertEqual(item_start["signal"], "item_start")
+                    self.assertEqual(item_end["signal"], "item_end")
+                    self.assertEqual(len(hinted_1["motion_chunk"]), 6)
+                    self.assertEqual(len(hinted_2["motion_chunk"]), 6)
+                    hinted_chunks = (hinted_1, hinted_2)
+
                 tts_caller = _FakeTTSCaller.instances[0]
                 self.assertEqual(
-                    tts_caller.calls, [("hello", "auto", "", None)]
+                    tts_caller.calls,
+                    [("hello", "auto", "", None),
+                     ("audio only", "auto", "", None),
+                     ("blank motion prompt", "auto", "", None),
+                     ("blank motion prompt", "auto", "", None)],
                 )
 
                 session = _FakeMotionWebSocketSession.instances[0]
@@ -262,23 +306,24 @@ class TTSMotionStreamUnitTest(unittest.TestCase):
                 self.assertEqual(
                     [context["motion_hint"]
                      for context in session.reset_contexts],
-                    ["probe motion", "step left"],
+                    ["probe motion", "step left", "", "   "],
                 )
                 self.assertEqual(
                     [index for _, index in session.generated],
-                    [0, 1, 2, 3, 4, 0, 1],
+                    [0, 1, 2, 3, 4, 0, 1, 0, 1, 0, 1],
                 )
                 self.assertEqual(
                     [inputs["audio_data"]
                      for inputs, _ in session.generated[-2:]],
-                    [first["audio_chunk"], second["audio_chunk"]],
+                    [hinted_chunks[0]["audio_chunk"],
+                     hinted_chunks[1]["audio_chunk"]],
                 )
                 self.assertEqual(
                     [inputs["motion_hint"]
                      for inputs, _ in session.generated[-2:]],
-                    ["step left", "step left"],
+                    ["   ", "   "],
                 )
-                self.assertEqual(session.finish_count, 2)
+                self.assertEqual(session.finish_count, 4)
                 self.assertEqual(session.abort_count, 0)
                 self.assertTrue(output.empty())
             finally:

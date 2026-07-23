@@ -189,6 +189,23 @@ class MotionWebSocketMemoryTest(unittest.TestCase):
         finally:
             session.close()
 
+    def test_empty_and_whitespace_hints_are_sent_verbatim(self):
+        protocol = _Protocol()
+        connector = _FakeConnector(protocol)
+        session = _session(connector)
+        try:
+            session.reset({"motion_hint": ""})
+            session.generate_chunk({}, 0)
+            session.finish()
+            session.reset({"motion_hint": "   "})
+            session.generate_chunk({}, 0)
+            self.assertEqual(
+                [message["text"] for message in protocol.messages],
+                ["", "   "],
+            )
+        finally:
+            session.close()
+
     def test_finish_releases_connection_and_next_reset_reconnects(self):
         protocol = _Protocol()
         connector = _FakeConnector(protocol)

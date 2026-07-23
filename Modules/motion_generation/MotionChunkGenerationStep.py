@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from ..base.ChunkGenerationStep import (
     ChunkGenerationCancelled,
     ChunkGenerationSession,
+    PassthroughChunkGenerationSession,
 )
 from ..motion_base.MotionChunkStep import CHUNK_DURATION_MS, MotionChunkStep
 from .MotionGenerationStep import _b64_decode_f32, _humanoid_to_frames
@@ -34,6 +35,15 @@ def _connect(uri, **kwargs):
     # the project requirement is pinned to a version with the sync API.
     from websockets.sync.client import connect
     return connect(uri, **kwargs)
+
+
+def _motion_hint_from(values, key):
+    value = values.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"motion hint '{key}' must be a string")
+    return value
 
 
 class MotionWebSocketSession(ChunkGenerationSession):
@@ -84,7 +94,7 @@ class MotionWebSocketSession(ChunkGenerationSession):
         self.connector = connector or _connect
         self.connection = None
         self._fresh = True
-        self._motion_hint = ""
+        self._motion_hint = None
         self._format = None
         self._first_frame = True
         self._prev_trans = None
@@ -129,9 +139,9 @@ class MotionWebSocketSession(ChunkGenerationSession):
 
     def reset(self, start_context=None):
         motion_hint = self._motion_hint_from(start_context or {})
-        if not motion_hint:
+        if motion_hint is None:
             raise ValueError(
-                f"stream start needs a non-empty motion hint in "
+                f"stream start needs a motion hint in "
                 f"'{self.motion_hint_key}'"
             )
         if self.connection is None:
@@ -140,7 +150,7 @@ class MotionWebSocketSession(ChunkGenerationSession):
         self._motion_hint = motion_hint
 
     def generate_chunk(self, inputs, chunk_index):
-        if not self._motion_hint:
+        if self._motion_hint is None:
             raise RuntimeError("motion session has not been reset for a span")
         try:
             primary, secondary, first = self._request_chunk()
@@ -205,17 +215,10 @@ class MotionWebSocketSession(ChunkGenerationSession):
     def _reset_local(self):
         self._clear_generation()
         self._fresh = True
-        self._motion_hint = ""
+        self._motion_hint = None
 
     def _motion_hint_from(self, values):
-        value = values.get(self.motion_hint_key)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise TypeError(
-                f"motion hint '{self.motion_hint_key}' must be a string"
-            )
-        return value.strip()
+        return _motion_hint_from(values, self.motion_hint_key)
 
     def _request_chunk(self):
         if self.connection is None:
@@ -389,7 +392,7 @@ class MotionWebSocketSession(ChunkGenerationSession):
 
 
 class MotionChunkGenerationStep(MotionChunkStep):
-    """Fixed chunks over a Flood WebSocket owned only for each TTS span."""
+    """Fixed Motion chunks per TTS span; hint-less spans pass through."""
 
     @classmethod
     def validate_config(cls, config):
@@ -489,6 +492,15 @@ class MotionChunkGenerationStep(MotionChunkStep):
         )
 
     def open_generation_session(self, start_context):
+        motion_hint = _motion_hint_from(
+            start_context,
+            self.get_config("motion_hint_key", "motion_hint"),
+        )
+        if motion_hint is None:
+            self.logger.info(
+                "motion hint is absent; passing item through without motion"
+            )
+            return PassthroughChunkGenerationSession()
         try:
             self.motion_session.reset(start_context)
         except Exception:
