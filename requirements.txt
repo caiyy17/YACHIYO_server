@@ -1,7 +1,7 @@
 # Core
 fastapi
 uvicorn
-websockets
+websockets>=11
 requests
 python-multipart
 openai

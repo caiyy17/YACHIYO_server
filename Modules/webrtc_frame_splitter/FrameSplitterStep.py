@@ -509,6 +509,10 @@ class FrameSplitterStep(BaseProcessingStep):
                         f"undeclared signal '{signal}' at splitter; dropped "
                         f"(declare it in pass_signals to forward)"
                     )
+                    # Dropping an in-band signal must not consume this
+                    # clock tick. Keep scanning; if no media follows,
+                    # queue.Empty below supplies the normal default group.
+                    continue
                 return
 
             # Content message: pass_vars data ships as a "meta" signal,

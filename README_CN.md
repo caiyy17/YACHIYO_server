@@ -58,9 +58,9 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | 纯文本对话（无音频）     |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
-| `unity_chan_default_vad` | VAD → ASR → LLM → DataQuery → DataQuery → TTS                                       | WebSocket 上的服务端 VAD(自动打断)  |
-| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC 帧级流式传输      |
+| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → StreamTTS → VideoChunk → FrameSplitter | WebRTC 音视频逐块生成 |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid 动作生成（并行）   |
+| `unity_chan_humanoid_stream` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | 信号控制录音；每个 TTS 音频块生成一个 Motion 块；客户端 item 使用 `item_SoS`/`item_EoS` |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber 弹幕直播          |
 
 ## 节点类型
@@ -75,8 +75,10 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `data_query_link`        | `call_data_query_link`              | 基于 BGE embedding 的 RAG 语义匹配                                             |
 | `danmaku_buffer`         | `call_danmaku_buffer`               | 缓冲和筛选弹幕用于 VTuber 回复                                                 |
 | `motion_generation`      | `call_motion_generation`            | 通过 HY-Motion API 生成动作；默认返回 Unity humanoid 格式（可选原始 SMPL-H）   |
+| `motion_generation`      | `call_motion_chunk_generation`      | init 真实生成约 1 秒测试 Motion 后立即释放；TTS SoS 建立 span 独占 Flood WebSocket，每个输入生成一个定长 Motion 块，TTS EoS 关闭 |
 | `tts_openai`             | `call_openai_tts`                   | 通过 OpenAI 兼容 API 进行语音合成                                              |
 | `video_base`             | `call_video`                        | 占位视频生成:纯色帧(config `color`),片长由参考时长驱动                         |
+| `video_base`             | `call_video_chunk_generation`       | span 生成器：每个输入块输出一个固定时长的纯色视频块                            |
 | `pad`                    | `pad`                               | 同消息内各产物(音频 WAV + 帧列表)时长对齐:最长/最短/锚定三模式,每车道可关 cut/extend |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | 时钟驱动输出：将 TTS 音频拆分为同步帧组                                        |
 | `parallel`               | `call_dispatcher` / `call_receiver` | 分发-接收并行执行括号                                                          |
@@ -86,6 +88,9 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 仅 stream 路径使用 `exact_chunk`（默认 `true`，非 stream 完全不受影响）。
 VAD/TTS 会为自然短尾补静音；Motion/Video 会复制最后一帧，直到短尾达到
 `stream_frames`。设为 `false` 时保留短尾。请求时长始终保持原值。
+
+基于 span 的 chunk generator 使用 `chunk_duration_ms`：SoS 重置 span，之后每个
+输入包严格生成一个定长块，EoS 结束 span。
 
 ## API
 
@@ -99,7 +104,7 @@ POST /unregister/                   清理
 
 WebRTC：在端口 15168 上 `POST /offer/{client_id}` 进行 SDP 交换，之后通过 audio/video track 和 DataChannel 通信。浏览器测试客户端：`http://<服务器>:15168/`。
 
-WebRTC 会话的帧率参数（audio/video/data fps）写在 pipeline 配置里与 `pipeline` 平行的顶层 `webrtc` 段——网关在 offer 时经 `GET /clients/{client_id}` 读取（单一来源，与 FrameSplitter 的分组打包保持一致），且该段对 webrtc 类配置**必需**。offer 在应答前会对照管线校验：缺 `webrtc` 段、缺轨道或 DataChannel、`audio_fps` ≠ 50（线上固定 20ms Opus 帧）、video/data fps 不在支持列表内，均返回 400 并附具体缺口。视频分辨率由客户端自定（offer body 携带），网关将输出视频缩放到该尺寸。DataChannel 上，媒体走分组的 audio/video 车道，而每轮/每句的元数据（prompt、字幕文本、动作/表情）搭在信号的 `pass_data` 字段上；分组的 data 车道保留给帧对齐载荷。客户端消息的 `"direct": true` 标记（网关消费）是唯一的车道选择器：带标记的消息——信号也在内——经扣押 FIFO 以独立消息直入管线；不带标记的一律为 data 车道帧对齐载荷。例如把文本 prompt 打上 direct 直接定址到某个节点。stream TTS 接 WebRTC（纯配置，见 `dev_webrtc_stream`）按块流式发音频，每句带 `tts_SoS`/`tts_EoS` 包络。
+WebRTC 会话的帧率参数（audio/video/data fps）写在 pipeline 配置里与 `pipeline` 平行的顶层 `webrtc` 段——网关在 offer 时经 `GET /clients/{client_id}` 读取（单一来源，与 FrameSplitter 的分组打包保持一致），且该段对 webrtc 类配置**必需**。offer 在应答前会对照管线校验：缺 `webrtc` 段、缺轨道或 DataChannel、`audio_fps` ≠ 50（线上固定 20ms Opus 帧）、video/data fps 不在支持列表内，均返回 400 并附具体缺口。视频分辨率由客户端自定（offer body 携带），网关将输出视频缩放到它。DataChannel 上，媒体走分组的 audio/video 车道，而每轮/每句的元数据（prompt、字幕文本、动作/表情）搭在信号的 `pass_data` 字段上；分组的 data 车道保留给帧对齐载荷。客户端消息的 `"direct": true` 标记（网关消费）是唯一的车道选择器：带标记的消息——信号也在内——经扣押 FIFO 以独立消息直入管线；不带标记的一律为 data 车道帧对齐载荷。例如把文本 prompt 打上 direct 直接定址到某个节点。WebRTC 的 stream TTS 按块流式发音频；`tts_SoS`/`tts_EoS` 只作为管线内部边界，其中 `tts_SoS` 映射为既有客户端 `meta` 信号，`tts_EoS` 被抑制。客户端可见包络保持为 `SoS → (meta → 媒体组)×N → EoS`。
 
 ## Web UI
 

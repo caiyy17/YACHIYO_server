@@ -107,13 +107,22 @@ class SpanProcessingStep(BaseProcessingStep):
                         }
                         filtered_data["signal"] = self.catch_signal_map[signal]
                         self.logger.info(f"processing data: {filtered_data}")
-                        self.span_process(filtered_data,
-                                          {"timestamp": data.get("timestamp")})
-                    # Consume-then-relay: relay AFTER span_process so
-                    # anything the node emitted stays ahead of the copy
-                    if signal in self.pass_signal_set:
+                        # Catch always runs first, but a handler failure
+                        # cannot suppress a separately declared pass.  The
+                        # finally preserves both guarantees: anything the
+                        # handler emitted stays ahead of the relay, and the
+                        # relay still happens when span_process() raises.
+                        try:
+                            self.span_process(
+                                filtered_data,
+                                {"timestamp": data.get("timestamp")},
+                            )
+                        finally:
+                            if signal in self.pass_signal_set:
+                                self._relay_caught(data, signal)
+                    elif signal in self.pass_signal_set:
                         self._relay_caught(data, signal)
-                    elif not caught:
+                    else:
                         self.logger.warning(
                             f"undeclared signal '{signal}' at node "
                             f"{self.index}; dropped (declare it in "
@@ -134,7 +143,7 @@ class SpanProcessingStep(BaseProcessingStep):
 
             except Exception as e:
                 self.logger.error(
-                    f"run iteration failed; dropped current message: "
+                    f"run iteration failed while processing current message: "
                     f"{type(e).__name__}: {e}"
                 )
                 failed_timestamp = self.current_timestamp

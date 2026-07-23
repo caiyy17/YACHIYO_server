@@ -23,7 +23,6 @@
 
 - `configs/` 里 **`dev_*` 开头的 config 是开发实验配置,不在 sync 范围内**:不纳入 `test/test_all_configs.py` 的正式在册列表,文档/测试同步时跳过。正式范围 = demo + unity_chan_* 系列。
 - `loopback.json` 是 collector/splitter 工具 config,不适用语音 e2e。
-- `unity_chan_default_vad` 是 vad-chunk 类 config,已以 `vad_audio` 输入类型纳入 `test_all_configs`(客户端逐块流式喂 audio_data);依赖 VAD 服务(8012)。
 - **webrtc 类 config(含 collector/splitter 的管线)必须带顶层 `webrtc` 段**显式声明车道参数——网关 offer 期强制,缺段 400;不允许靠隐式默认。
 
 ## 环境与服务

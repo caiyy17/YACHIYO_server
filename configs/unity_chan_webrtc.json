@@ -380,23 +380,23 @@
                 "pass_vars": [
                     {
                         "source": "6_text",
-                        "target": "7_text"
+                        "target": "text"
                     },
                     {
                         "source": "6_action",
-                        "target": "7_action"
+                        "target": "action"
                     },
                     {
                         "source": "6_action_hint",
-                        "target": "7_action_hint"
+                        "target": "action_hint"
                     },
                     {
                         "source": "6_expression",
-                        "target": "7_expression"
+                        "target": "expression"
                     },
                     {
                         "source": "6_expression_hint",
-                        "target": "7_expression_hint"
+                        "target": "expression_hint"
                     },
                     {
                         "source": "response_id",
@@ -414,7 +414,7 @@
                     },
                     {
                         "source": "duration",
-                        "target": "7_duration"
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -435,74 +435,56 @@
                         "target": "recording_start"
                     }
                 ],
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "tts_SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "tts_EoS"
+                    }
+                ],
                 "next_nodes": [8],
                 "model": "qwen_tts",
-                "voice": "test_cn"
+                "voice": "test_cn",
+                "stream": true,
+                "stream_chunk_ms": 200,
+                "exact_chunk": true
             }
         },
         {
             "node_id": 8,
-            "function": "call_video",
+            "function": "call_video_chunk_generation",
             "config": {
                 "input_vars": [
                     {
-                        "source": null,
-                        "target": "prompt"
-                    },
-                    {
-                        "source": "7_duration",
-                        "target": "duration"
+                        "source": "7_audio_data",
+                        "target": "audio"
                     }
                 ],
                 "pass_vars": [
                     {
                         "source": "7_audio_data",
-                        "target": "7_audio_data"
-                    },
-                    {
-                        "source": "7_duration",
-                        "target": "7_duration"
-                    },
-                    {
-                        "source": "7_text",
-                        "target": "7_text"
-                    },
-                    {
-                        "source": "7_action",
-                        "target": "7_action"
-                    },
-                    {
-                        "source": "7_action_hint",
-                        "target": "7_action_hint"
-                    },
-                    {
-                        "source": "7_expression",
-                        "target": "7_expression"
-                    },
-                    {
-                        "source": "7_expression_hint",
-                        "target": "7_expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
+                        "target": "8_audio_data"
                     }
                 ],
                 "output_vars": [
                     {
                         "source": "video",
                         "target": "8_video"
-                    },
-                    {
-                        "source": "duration",
-                        "target": null
                     }
                 ],
-                "catch_signals": [],
+                "catch_signals": [
+                    {
+                        "source": "tts_SoS",
+                        "target": "stream_start"
+                    },
+                    {
+                        "source": "tts_EoS",
+                        "target": "stream_end"
+                    }
+                ],
                 "pass_signals": [
                     {
                         "source": "EoS",
@@ -519,10 +501,19 @@
                     {
                         "source": "recording_start",
                         "target": "recording_start"
+                    },
+                    {
+                        "source": "tts_SoS",
+                        "target": "tts_SoS"
+                    },
+                    {
+                        "source": "tts_EoS",
+                        "target": "tts_EoS"
                     }
                 ],
                 "emit_signals": [],
                 "next_nodes": [9],
+                "chunk_duration_ms": 200,
                 "video_fps": 30,
                 "video_width": 640,
                 "video_height": 320,
@@ -535,7 +526,7 @@
             "config": {
                 "input_vars": [
                     {
-                        "source": "7_audio_data",
+                        "source": "8_audio_data",
                         "target": "audio_data"
                     },
                     {
@@ -543,40 +534,7 @@
                         "target": "video_data"
                     }
                 ],
-                "pass_vars": [
-                    {
-                        "source": "7_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "7_duration",
-                        "target": "duration"
-                    },
-                    {
-                        "source": "7_action",
-                        "target": "action"
-                    },
-                    {
-                        "source": "7_action_hint",
-                        "target": "action_hint"
-                    },
-                    {
-                        "source": "7_expression",
-                        "target": "expression"
-                    },
-                    {
-                        "source": "7_expression_hint",
-                        "target": "expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
-                ],
+                "pass_vars": [],
                 "output_vars": [
                     {
                         "source": "audio",
@@ -607,14 +565,13 @@
                     {
                         "source": "recording_start",
                         "target": "recording_start"
-                    }
-                ],
-                "emit_signals": [
+                    },
                     {
-                        "source": "meta",
+                        "source": "tts_SoS",
                         "target": "meta"
                     }
                 ],
+                "emit_signals": [],
                 "catch_events": [
                     {
                         "source": "connection_start",
@@ -626,6 +583,7 @@
                 "video_fps": 30,
                 "video_width": 1280,
                 "video_height": 720,
+                "data_fps": 20,
                 "add_frame_index": true
             }
         }

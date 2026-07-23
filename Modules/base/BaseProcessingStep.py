@@ -387,7 +387,8 @@ class BaseProcessingStep:
         # Signal routing — declared ENTIRELY in config, like input_vars:
         #   catch_signals: deliver to process() (renamed to target)
         #   pass_signals:  relay downstream (renamed to target); when combined
-        #                  with catch, relay happens AFTER process() returns
+        #                  with catch, relay happens AFTER its handler
+        #                  finishes, including exceptional completion
         # Entries are explicit {"source": arriving_name, "target": new_name}
         # objects — both fields spelled out, same-name included (no
         # shorthand, no implicit defaults). Declarations are ONE-TO-ONE maps
@@ -516,14 +517,20 @@ class BaseProcessingStep:
                         }
                         filtered_data["signal"] = self.catch_signal_map[signal]
                         self.logger.info(f"processing data: {filtered_data}")
-                        self.process(filtered_data,
-                                     {"timestamp": data.get("timestamp")})
-                    # Consume-then-relay: relay AFTER process() returns, so
-                    # anything the node emitted for the signal stays ahead
-                    # of the relayed copy.
-                    if signal in self.pass_signal_set:
+                        # Catch always runs first, but a handler failure
+                        # cannot suppress a separately declared pass.  The
+                        # finally preserves both guarantees: anything the
+                        # handler emitted stays ahead of the relay, and the
+                        # relay still happens when process() raises.
+                        try:
+                            self.process(filtered_data,
+                                         {"timestamp": data.get("timestamp")})
+                        finally:
+                            if signal in self.pass_signal_set:
+                                self._relay_caught(data, signal)
+                    elif signal in self.pass_signal_set:
                         self._relay_caught(data, signal)
-                    elif not caught:
+                    else:
                         self.logger.warning(
                             f"undeclared signal '{signal}' at node "
                             f"{self.index}; dropped (declare it in "
@@ -542,7 +549,7 @@ class BaseProcessingStep:
                 self.current_timestamp = None
             except Exception as e:
                 self.logger.error(
-                    f"run iteration failed; dropped current message: "
+                    f"run iteration failed while processing current message: "
                     f"{type(e).__name__}: {e}"
                 )
                 self.current_timestamp = None

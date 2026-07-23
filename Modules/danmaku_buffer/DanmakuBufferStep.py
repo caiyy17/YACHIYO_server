@@ -25,8 +25,8 @@ class DanmakuBufferStep(SpanProcessingStep):
       2. Idle talk: from the last activity of any kind (every handled
          message — including dropped low-priority ones — and span cancel
          reset it). Talk when idle long enough.
-      3. Max wait: from the first danmaku of the current span.
-         Force-release a stale buffer.
+      3. Max wait: from the earliest-arriving danmaku still retained in
+         the current span. Force-release a stale buffer.
 
     Release identity: every handled message's context enters a bounded ring
     (ctx_ring_size); a released batch is stamped from the newest surviving
@@ -73,7 +73,9 @@ class DanmakuBufferStep(SpanProcessingStep):
         # turn. Mirrors the vad's ring: content there, identity here.
         self._ctx_ring = deque(
             maxlen=int(self.get_config("ctx_ring_size", 1000)))
+        self._cancel_clean_ts = 0     # cancel side effects last applied
         self._ring_clean_ts = 0       # cancel stamp the ring was last swept to
+        self._buffer_clean_ts = 0     # cancel stamp buffer was last swept to
         # Wall clocks for timer logic (all 0 = never triggered)
         self.last_release_time = 0   # for playback timeout + release interval
         self.idle_start_time = 0     # for idle talk
@@ -83,12 +85,25 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.total_received = 0
         self.total_dropped = 0
 
+    def check_cancel(self):
+        """Apply every new cancel watermark, even without an active span.
+
+        SpanProcessingStep only invokes custom_cancel() when a cancel
+        invalidates an active collection span. Danmaku also has idle and
+        playback-wait state outside a span, so that state observes the same
+        watermark immediately after Base drains the control queue.
+        """
+        cancelled = super().check_cancel()
+        self._apply_cancel_watermark()
+        return cancelled
+
     def custom_event(self, event):
         """playback_complete (control plane): the client's pacing ack.
         Same bookkeeping as any handled message — reset the idle timer,
         record the identity — then try to unlock."""
         if event.get("signal") != "playback_complete":
             return
+        self._apply_cancel_watermark()
         self.idle_start_time = time.time()
         self._evict_cancelled_ctx()
         ctx = self.stamp({}, event)
@@ -114,7 +129,9 @@ class DanmakuBufferStep(SpanProcessingStep):
         # Any message resets idle timer and records its identity. Internal
         # retention reads the message's own stamp (the data view); the pass
         # context is for stamping immediate outputs.
-        self.idle_start_time = time.time()
+        self._apply_cancel_watermark()
+        buffered_at = time.time()
+        self.idle_start_time = buffered_at
         self._evict_cancelled_ctx()
         ctx = self.stamp({}, data)
         if "timestamp" in ctx:
@@ -131,10 +148,11 @@ class DanmakuBufferStep(SpanProcessingStep):
         if priority <= 1:
             return
 
-        # Start span on first danmaku (if not already collecting)
-        if not self.span_active:
-            self.start_span(data["timestamp"])
-            self.span_start_time = time.time()
+        # Start the wall-clock window when the retained buffer becomes
+        # non-empty. The span timestamp itself is synchronized after all
+        # buffer mutations so it always tracks the oldest retained item.
+        if not self.buffer:
+            self.span_start_time = buffered_at
 
         self.buffer.append({
             "text": text,
@@ -142,6 +160,7 @@ class DanmakuBufferStep(SpanProcessingStep):
             "msg_type": msg_type,
             "priority": priority,
             "timestamp": data["timestamp"],
+            "_buffered_at": buffered_at,
             "guard_level": data.get("guard_level", 0),
             "num": data.get("num", 0),
             "price": price,
@@ -155,6 +174,8 @@ class DanmakuBufferStep(SpanProcessingStep):
             self.buffer = self.buffer[: self.max_buffer_size]
             self.total_dropped += dropped
 
+        self._sync_span_to_buffer()
+
         self.logger.info(
             f"buffered [{msg_type}] {user}: {text} "
             f"(priority={priority}, buf={len(self.buffer)})"
@@ -164,13 +185,76 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.custom_update()
 
     def on_span_cancel(self, cancel_message):
-        """Cancel during collection: clear buffer and the invalidated
-        identity history."""
-        self.buffer = []
+        """Cancel removes only old entries; processing errors clear them."""
+        if cancel_message.get("signal") != "cancel":
+            self.idle_start_time = time.time()
+            self.buffer = []
+            self.span_start_time = 0
+            self.logger.info("span error, buffer cleared")
+            return
+        self._apply_cancel_watermark()
+        self.logger.info(
+            f"span cancelled, retained {len(self.buffer)} current messages"
+        )
+
+    def custom_cancel(self, cancel_message):
+        """Let Span close the cancelled view, then reopen any surviving
+        post-cancel buffer under its own oldest timestamp."""
+        super().custom_cancel(cancel_message)
+        self._sync_span_to_buffer()
+
+    def _sync_span_to_buffer(self):
+        """The span and max-wait clock follow the retained buffer exactly."""
+        if self.buffer:
+            # Every production item carries its local arrival wall time.
+            # Populate a defensive fallback for manually restored/test data.
+            missing = [
+                message for message in self.buffer
+                if "_buffered_at" not in message
+            ]
+            if missing:
+                fallback = time.time()
+                for message in missing:
+                    message["_buffered_at"] = fallback
+            self.start_span(min(m["timestamp"] for m in self.buffer))
+            self.span_start_time = min(
+                m["_buffered_at"] for m in self.buffer
+            )
+        else:
+            self.end_span()
+            self.span_start_time = 0
+
+    def _apply_cancel_watermark(self):
+        """Apply one cancel boundary to all Danmaku-owned state exactly once."""
+        if self.cancel_timestamp <= self._cancel_clean_ts:
+            return
+        self._cancel_clean_ts = self.cancel_timestamp
         self.idle_start_time = time.time()
+        self._evict_cancelled_buffer()
         self._evict_cancelled_ctx()
-        self.span_start_time = 0
-        self.logger.info("span cancelled, buffer cleared")
+
+        # A cancelled release will never receive its playback_complete.
+        # Unlock it, while retaining last_release_time: release_interval is
+        # a rate limit from the last batch actually sent, cancelled or not.
+        if self.waiting_for_playback \
+                and self.last_release_pts < self.cancel_timestamp:
+            self.waiting_for_playback = False
+            self.logger.info(
+                f"cancel invalidated last batch, unlocking "
+                f"(buf={len(self.buffer)})"
+            )
+
+    def _evict_cancelled_buffer(self):
+        """Drop buffered messages older than the newest cancel watermark.
+        Arrival order is not assumed to match timestamp order."""
+        if self.cancel_timestamp <= self._buffer_clean_ts:
+            return
+        self._buffer_clean_ts = self.cancel_timestamp
+        self.buffer = [
+            message for message in self.buffer
+            if message["timestamp"] >= self.cancel_timestamp
+        ]
+        self._sync_span_to_buffer()
 
     def _evict_cancelled_ctx(self):
         """Drop identity entries older than the newest cancel stamp (order
@@ -196,17 +280,13 @@ class DanmakuBufferStep(SpanProcessingStep):
 
     def custom_update(self):
         """Release decision logic. Called after each message AND on timeout."""
+        self._apply_cancel_watermark()
         now = time.time()
 
         # Locked: waiting for playback_complete
         if self.waiting_for_playback:
-            # Cancel arrived after last release: the batch was cancelled, no playback expected
-            if self.last_release_pts < self.cancel_timestamp:
-                self.waiting_for_playback = False
-                self.buffer = []
-                self.logger.info("cancel invalidated last batch, unlocking")
             # Playback timeout: force unlock
-            elif self.last_release_time > 0 and \
+            if self.last_release_time > 0 and \
                  (now - self.last_release_time) >= self.playback_timeout:
                 self.logger.info(
                     f"playback_complete timeout after {self.playback_timeout}s, "
@@ -285,8 +365,9 @@ class DanmakuBufferStep(SpanProcessingStep):
         self.waiting_for_playback = True
         self.total_released += len(batch)
 
-        # End span after release; new span starts when next danmaku arrives
-        self.end_span()
+        # The released entries leave the cancelable span; any remainder is
+        # immediately rebased to its own oldest timestamp.
+        self._sync_span_to_buffer()
 
         self.logger.info(
             f"released batch: {len(batch)} msgs, ts={self.last_release_pts}, "

@@ -3,6 +3,12 @@ from .BaseProcessingStep import DefaultStep
 from .BaseProcessingStep import FuncA
 from .BaseProcessingStep import FuncB
 from .SpanProcessingStep import SpanProcessingStep
+from .ChunkGenerationStep import (
+    ChunkGenerationCancelled,
+    ChunkGenerationSession,
+    ChunkGenerationStep,
+    frames_for_duration,
+)
 
 function_map = {
     "default": DefaultStep,

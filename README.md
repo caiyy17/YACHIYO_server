@@ -58,9 +58,9 @@ Each service runs in its own conda environment. The model services expose OpenAI
 | `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | Text-only conversation (no audio)                  |
 | `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
-| `unity_chan_default_vad` | VAD → ASR → LLM → DataQuery → DataQuery → TTS                                       | Server-side VAD over WebSocket (auto barge-in)     |
-| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → TTS → Video → FrameSplitter | WebRTC frame-level streaming                       |
+| `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → StreamTTS → VideoChunk → FrameSplitter | Incremental WebRTC audio/video generation |
 | `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid motion generation (parallel)                 |
+| `unity_chan_humanoid_stream` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | Signal-controlled recording; one Motion block per TTS audio chunk; client items use `item_SoS`/`item_EoS` |
 | `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber danmaku livestream                          |
 
 ## Node Types
@@ -75,8 +75,10 @@ Each service runs in its own conda environment. The model services expose OpenAI
 | `data_query_link`        | `call_data_query_link`              | RAG-based semantic matching via BGE embedding                                                                            |
 | `danmaku_buffer`         | `call_danmaku_buffer`               | Buffers and selects danmaku (live comments) for VTuber responses                                                         |
 | `motion_generation`      | `call_motion_generation`            | Text-to-motion via HY-Motion API; returns Unity humanoid motion by default (or raw SMPL-H)                               |
+| `motion_generation`      | `call_motion_chunk_generation`      | Span-scoped Flood WebSocket generation: init generates a real ~1s test motion then releases; TTS SoS opens, each input generates one fixed Motion block, and TTS EoS closes |
 | `tts_openai`             | `call_openai_tts`                   | Text-to-speech via OpenAI-compatible API                                                                                 |
 | `video_base`             | `call_video`                        | Placeholder video generator: solid-color frames (config `color`), clip length driven by a reference duration             |
+| `video_base`             | `call_video_chunk_generation`       | Span generator: one fixed-duration solid-color Video block per input chunk                                               |
 | `pad`                    | `pad`                               | Length-aligns the products in one message (audio WAV + frame lists) to the longest/shortest/anchor duration, per-lane cut/extend opt-outs |
 | `webrtc_frame_splitter`  | `frame_splitter`                    | Clock-driven output: splits TTS audio into synchronized frame groups                                                     |
 | `parallel`               | `call_dispatcher` / `call_receiver` | Fork-join parallel execution bracket                                                                                     |
@@ -88,6 +90,10 @@ non-stream calls are unaffected). VAD/TTS zero-pad a natural short audio tail;
 Motion/Video repeat the last frame of a natural short tail until it reaches
 `stream_frames`. Set it to `false` to preserve a short final chunk. Request
 durations are never changed.
+
+The span-based chunk generators use `chunk_duration_ms`: their SoS resets
+span state, every input packet produces exactly one fixed block, and EoS closes
+the span.
 
 ## API
 
@@ -101,7 +107,7 @@ POST /unregister/                   Cleanup
 
 WebRTC: `POST /offer/{client_id}` on port 15168 for SDP exchange, then communicate via audio/video tracks and DataChannel. Browser test client available at `http://<server>:15168/`.
 
-WebRTC session timing (audio/video/data fps) lives in a top-level `webrtc` block in the pipeline config, parallel to `pipeline` — the gateway fetches it via `GET /clients/{client_id}` at offer time (single source, kept in sync with the FrameSplitter's group packing), and the block is mandatory for webrtc-facing configs. The offer is validated against the pipeline before answering: a missing `webrtc` block, missing tracks or DataChannel, `audio_fps` ≠ 50 (the wire is fixed at 20 ms Opus frames), or a video/data fps outside the supported divisor list is rejected with 400 and the concrete mismatches. Video resolution is the client's own choice, sent in the offer body; the gateway rescales outgoing video to it. On the DataChannel, media rides the group's audio/video lanes while per-turn/per-sentence metadata (prompt, subtitle text, action/expression) rides signals under a `pass_data` field; the group's data lane is reserved for frame-aligned payloads. The `"direct": true` flag (consumed at the gateway) is the sole lane selector for client messages: flagged messages — signals included — enter the pipeline as ordinary standalone messages on a held FIFO; unflagged messages are data-lane payloads. E.g. a text prompt flagged direct and addressed straight to a node. Stream TTS over WebRTC (config-only, see `dev_webrtc_stream`) streams audio chunk-by-chunk with a per-sentence `tts_SoS`/`tts_EoS` envelope.
+WebRTC session timing (audio/video/data fps) lives in a top-level `webrtc` block in the pipeline config, parallel to `pipeline` — the gateway fetches it via `GET /clients/{client_id}` at offer time (single source, kept in sync with the FrameSplitter's group packing), and the block is mandatory for webrtc-facing configs. The offer is validated against the pipeline before answering: a missing `webrtc` block, missing tracks or DataChannel, `audio_fps` ≠ 50 (the wire is fixed at 20 ms Opus frames), or a video/data fps outside the supported divisor list is rejected with 400 and the concrete mismatches. Video resolution is the client's own choice, sent in the offer body; the gateway rescales outgoing video to it. On the DataChannel, media rides the group's audio/video lanes while per-turn/per-sentence metadata (prompt, subtitle text, action/expression) rides signals under a `pass_data` field; the group's data lane is reserved for frame-aligned payloads. The `"direct": true` flag (consumed at the gateway) is the sole lane selector for client messages: flagged messages — signals included — enter the pipeline as ordinary standalone messages on a held FIFO; unflagged messages are data-lane payloads. E.g. a text prompt flagged direct and addressed straight to a node. Stream TTS over WebRTC streams audio chunk-by-chunk; `tts_SoS`/`tts_EoS` remain internal pipeline boundaries, with `tts_SoS` mapped to the existing client `meta` signal and `tts_EoS` suppressed. The client-visible envelope remains `SoS → (meta → media groups)×N → EoS`.
 
 ## Web UI
 

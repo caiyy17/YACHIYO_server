@@ -22,7 +22,8 @@ class EventHandler:
     submits its barge-in cancel with source = its node id), and 0 for the
     pipeline boundary — client cancels (the entry FORCES 0, so a client
     cannot impersonate a node) and lifecycle teardown. Absent still means
-    0, as a default only.
+    0, as a default only. `source` is routing metadata owned and consumed
+    here; dispatched node/client messages never contain it.
     A dedicated thread consumes events in order and applies the policy:
 
       cancel — broadcast to every node's control queue EXCEPT the source
@@ -69,8 +70,12 @@ class EventHandler:
             wire = self._inbox.get()
             event = json.loads(wire)
             verb = event.get("signal")
+            # Internal routing metadata is consumed once. Handlers and the
+            # client receive only the event contract, never EventHandler's
+            # source-exclusion implementation detail.
+            source = event.pop("source", 0)
+            wire = json.dumps(event)
             if verb == "cancel":
-                source = event.get("source", 0)   # 0 = pipeline boundary
                 event["timestamp"] -= CANCEL_EPSILON
                 wire = json.dumps(event)
                 self._log(f"event: cancel from {source} dispatched: {event}")
@@ -88,7 +93,6 @@ class EventHandler:
             else:
                 # config-declared event verb: plain broadcast (the entry
                 # only admits verbs from the pipeline's events list)
-                source = event.get("source", 0)
                 self._log(f"event: {verb} from {source} dispatched: {event}")
                 for nid, q in self._node_queues.items():
                     if nid != source:

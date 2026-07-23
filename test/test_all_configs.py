@@ -2,13 +2,10 @@
 
 import argparse
 import asyncio
-import array
 import base64
-import io
 import json
 import time
 import uuid
-import wave
 from pathlib import Path
 
 import httpx
@@ -34,22 +31,6 @@ CONFIGS = {
     },
     "unity_chan_default": {
         "input_type": "audio",
-        "expected_streaming": ["text"],
-        "expected_final": [
-            "audio_data", "duration", "text", "action", "action_hint",
-            "expression", "expression_hint",
-        ],
-    },
-    "unity_chan_default_vad": {
-        "input_type": "vad_audio",
-        "expected_streaming": ["text"],
-        "expected_final": [
-            "audio_data", "duration", "text", "action", "action_hint",
-            "expression", "expression_hint",
-        ],
-    },
-    "unity_chan_default_vad_auto": {
-        "input_type": "vad_audio",
         "expected_streaming": ["text"],
         "expected_final": [
             "audio_data", "duration", "text", "action", "action_hint",
@@ -84,49 +65,6 @@ async def generate_test_audio(text="你好，今天天气怎么样"):
             f"TTS failed: {response.status_code} {response.text[:200]}"
         )
     return base64.b64encode(response.content).decode()
-
-
-async def generate_vad_chunks(text="你好，今天天气怎么样"):
-    """Generate 48 kHz PCM16 and package each 20 ms input as a WAV chunk."""
-    async with httpx.AsyncClient(timeout=30) as http:
-        response = await http.post(
-            f"{TTS_API}/audio/speech",
-            json={
-                "model": "tts",
-                "input": text,
-                "voice": "test_cn",
-                "response_format": "pcm",
-            },
-        )
-    if response.status_code != 200 or not response.content:
-        raise RuntimeError(
-            f"TTS PCM failed: {response.status_code} {response.text[:200]}"
-        )
-    sample_rate = int(response.headers.get("X-Sample-Rate", "24000"))
-    if 48000 % sample_rate:
-        raise RuntimeError(f"unsupported TTS sample rate: {sample_rate}")
-    samples = array.array("h")
-    samples.frombytes(response.content)
-    factor = 48000 // sample_rate
-    if factor != 1:
-        samples = array.array(
-            "h", (sample for sample in samples for _ in range(factor))
-        )
-    raw = samples.tobytes()
-    chunk_bytes = 960 * 2
-    return [wav_chunk(raw[i:i + chunk_bytes])
-            for i in range(0, len(raw), chunk_bytes)
-            if raw[i:i + chunk_bytes]]
-
-
-def wav_chunk(pcm):
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(48000)
-        wav_file.writeframes(pcm)
-    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def collect_fields(data, expected_final, collected_final):
@@ -197,8 +135,6 @@ async def test_config(config_name, spec):
                 "audio_file": await generate_test_audio(),
                 "timestamp": time.time(),
             }
-        elif input_type == "vad_audio":
-            input_message = None
         elif input_type == "danmaku":
             input_message = {
                 "text": "今天直播好有趣",
@@ -215,37 +151,7 @@ async def test_config(config_name, spec):
         async with websockets.connect(
             f"{WS_URL}/{client_id}", max_size=None
         ) as websocket:
-            if input_type == "vad_audio":
-                chunks = await generate_vad_chunks()
-                silence = wav_chunk(bytes(960 * 2))
-                for _ in range(10):
-                    await websocket.send(json.dumps({
-                        "audio_data": silence,
-                        "timestamp": time.time(),
-                    }))
-                    await asyncio.sleep(0.02)
-                await websocket.send(json.dumps({
-                    "signal": "recording_start",
-                    "timestamp": time.time(),
-                }))
-                for chunk in chunks:
-                    await websocket.send(json.dumps({
-                        "audio_data": chunk,
-                        "timestamp": time.time(),
-                    }))
-                    await asyncio.sleep(0.02)
-                await websocket.send(json.dumps({
-                    "signal": "recording_end",
-                    "timestamp": time.time(),
-                }))
-                for _ in range(10):
-                    await websocket.send(json.dumps({
-                        "audio_data": silence,
-                        "timestamp": time.time(),
-                    }))
-                    await asyncio.sleep(0.02)
-            else:
-                await websocket.send(json.dumps(input_message))
+            await websocket.send(json.dumps(input_message))
             if input_type == "danmaku":
                 for extra in ("好厉害啊", "666", "来首歌吧"):
                     await websocket.send(json.dumps({

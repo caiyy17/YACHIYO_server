@@ -584,6 +584,39 @@ async def _run_test_once():
         print(f"[FAIL] Test audio not found: {TEST_WAV}")
         return False
 
+    config_path = os.path.join(
+        SCRIPT_DIR, "..", "configs", f"{PIPELINE_CONFIG}.json"
+    )
+    with open(config_path, encoding="utf-8") as config_file:
+        pipeline_config = json.load(config_file)
+    stream_tts = any(
+        node.get("function") in ("call_tts", "call_openai_tts")
+        and node.get("config", {}).get("stream") is True
+        for node in pipeline_config.get("pipeline", [])
+    )
+    splitter_node = next((
+        node for node in pipeline_config.get("pipeline", [])
+        if node.get("function") == "frame_splitter"
+    ), None)
+    splitter_pass_map = {
+        entry["source"]: entry["target"]
+        for entry in (splitter_node or {}).get("config", {}).get(
+            "pass_signals", []
+        )
+    }
+    stream_metadata_signal = splitter_pass_map.get("tts_SoS")
+    video_node = next((
+        node for node in pipeline_config.get("pipeline", [])
+        if node.get("function") in (
+            "call_video", "call_video_chunk_generation"
+        )
+    ), None)
+    expected_video_color = np.asarray(
+        video_node.get("config", {}).get("color", [144, 238, 144])
+        if video_node is not None else [0, 255, 0],
+        dtype=np.float64,
+    )
+
     audio_frames = load_test_audio(TEST_WAV)
     speech_duration = len(audio_frames) * AUDIO_PTIME
     print("=" * 60)
@@ -815,10 +848,35 @@ async def _run_test_once():
     print(f"\n[Received]")
     print(f"  Audio: {len(recv_audio_frames)} frames "
           f"({len(recv_audio_frames) * AUDIO_PTIME:.1f}s)")
-    nonsilent = sum(1 for p in recv_audio_frames if np.any(p != 0))
+    nonsilent_indices = [
+        index for index, pcm in enumerate(recv_audio_frames)
+        if np.any(pcm != 0)
+    ]
+    nonsilent = len(nonsilent_indices)
     print(f"  Audio (non-silent): {nonsilent} frames")
     print(f"  Video: {len(recv_video_frames)} frames "
           f"({len(recv_video_frames) / VIDEO_FPS:.1f}s)")
+    content_video = []
+    for index, (_, rgb) in enumerate(recv_video_frames):
+        mean_color = rgb.mean(axis=(0, 1))
+        if np.linalg.norm(mean_color - expected_video_color) < 80:
+            content_video.append(index)
+    print(f"  Video (content): {len(content_video)} frames")
+    if recv_start[0] is not None:
+        if nonsilent_indices:
+            first_audio = (
+                recv_start[0]
+                + nonsilent_indices[0] * AUDIO_PTIME
+                - test_start
+            )
+            print(f"  First non-silent audio: {first_audio:.3f}s")
+        if content_video:
+            first_video = (
+                recv_start[0]
+                + recv_video_frames[content_video[0]][0]
+                - test_start
+            )
+            print(f"  First content video: {first_video:.3f}s")
     print(f"  DataChannel: {len(recv_dc_messages)} messages")
     # data slots are dispatched one DC message per slot, the slot dict as-is
     echoed = sum(1 for m in recv_dc_messages
@@ -836,6 +894,18 @@ async def _run_test_once():
         and m["pass_data"]["duration"] > 0
     ]
     print(f"  Meta audio duration: {meta_durations}")
+    stream_envelopes = [
+        m.get("pass_data")
+        for m in recv_dc_messages
+        if isinstance(m, dict)
+        and m.get("signal") == stream_metadata_signal
+        and isinstance(m.get("pass_data"), dict)
+    ]
+    if stream_tts:
+        print(
+            f"  Stream metadata envelopes "
+            f"({stream_metadata_signal}): {len(stream_envelopes)}"
+        )
 
     # --- Record MP4 ---
     recording_ok = record_mp4(
@@ -856,9 +926,14 @@ async def _run_test_once():
     checks = [
         ("EoS received", eos_seen),
         ("non-silent audio received", nonsilent > 0),
-        ("video received", bool(recv_video_frames)),
+        ("content video received", bool(content_video)),
         ("DataChannel messages received", bool(recv_dc_messages)),
-        ("audio duration received in meta", bool(meta_durations)),
+        (
+            "stream metadata envelope received" if stream_tts
+            else "audio duration received in meta",
+            bool(stream_envelopes) if stream_tts
+            else bool(meta_durations),
+        ),
         ("MP4 recorded", recording_ok),
         ("receivers completed without error", not receiver_errors),
     ]
