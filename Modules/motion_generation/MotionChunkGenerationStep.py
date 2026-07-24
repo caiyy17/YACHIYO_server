@@ -47,13 +47,21 @@ def _motion_hint_from(values, key):
 
 
 class MotionWebSocketSession(ChunkGenerationSession):
-    """Span-scoped Flood session with one request and one block per input.
+    """Span-scoped, pipelined Flood session: one request per input, replies
+    consumed in FIFO order as they arrive.
 
     A span's motion hint is captured at SoS/reset and remains unchanged until
-    EoS. The first input sends ``start`` and every later input sends exactly one
-    ``continue``; each request produces one fixed-size Motion chunk. ``finish``
-    closes the WebSocket so the remote exclusive slot is released at EoS.
+    EoS. The first input sends ``start`` and every later input sends exactly
+    one ``continue``; each request produces one fixed-size Motion chunk.
+    Requests don't wait for their replies (pipelined = True), so the remote
+    generates back-to-back instead of idling one round trip per chunk; a
+    request never depends on input content (only the span hint), which is
+    what makes firing ahead safe. ``finish`` closes the WebSocket so the
+    remote exclusive slot is released at EoS; ``abort`` additionally discards
+    everything in flight.
     """
+
+    pipelined = True
 
     def __init__(
         self,
@@ -93,12 +101,7 @@ class MotionWebSocketSession(ChunkGenerationSession):
         self.cancel_check = cancel_check
         self.connector = connector or _connect
         self.connection = None
-        self._fresh = True
-        self._motion_hint = None
-        self._format = None
-        self._first_frame = True
-        self._prev_trans = None
-        self._ref_y = None
+        self._reset_local()
         self.connect()
 
     def connect(self):
@@ -150,38 +153,46 @@ class MotionWebSocketSession(ChunkGenerationSession):
         self._motion_hint = motion_hint
 
     def generate_chunk(self, inputs, chunk_index):
+        # Serial convenience (init probe, direct callers): one request,
+        # wait for its reply.
+        self.submit(inputs, chunk_index)
+        return self.next_result()
+
+    def submit(self, inputs, chunk_index):
         if self._motion_hint is None:
             raise RuntimeError("motion session has not been reset for a span")
-        try:
-            primary, secondary, first = self._request_chunk()
-            count = len(primary)
-            if first and count == self.frames_per_chunk + 1:
-                # Flood's start delta contains one bootstrap frame followed by
-                # the requested timeline. Dropping that first frame makes the
-                # first output 1..N and the following continue N+1..2N.
-                if secondary is not None and self.humanoid_output:
-                    # Preserve the anchor for the first emitted frame's root
-                    # delta and session-relative pelvis height.
-                    self._prev_trans = [
-                        float(value) for value in secondary[0]
-                    ]
-                    self._ref_y = float(secondary[0][1])
-                primary = primary[1:]
-                if secondary is not None:
-                    secondary = secondary[1:]
-            elif count != self.frames_per_chunk:
-                raise MotionWebSocketError(
-                    f"motion server returned {count} frames for "
-                    f"{'start' if first else 'continue'}; expected "
-                    f"{self.frames_per_chunk}"
-                    + (f" or {self.frames_per_chunk + 1}" if first else "")
-                )
-            return {"motion": self._package(primary, secondary)}
-        except ChunkGenerationCancelled:
-            raise
-        except Exception:
-            self.abort()
-            raise
+        if self.connection is None:
+            self.connect()
+        if self._fresh:
+            message = {"type": "start", "text": self._motion_hint}
+            message.update({
+                key: value for key, value in self.start_options.items()
+                if value is not None
+            })
+            self._fresh = False
+            self._awaiting_started = True
+            self._expect_bootstrap = True
+            self._send(message)
+        else:
+            self._send({"type": "continue", "text": self._motion_hint})
+        self._inflight += 1
+
+    def poll(self):
+        results = []
+        while self._inflight > 0:
+            result = self._receive_result(block=False)
+            if result is None:
+                break
+            results.append(result)
+        return results
+
+    def has_pending(self):
+        return self._inflight > 0
+
+    def next_result(self):
+        if self._inflight <= 0:
+            raise RuntimeError("no motion request in flight")
+        return self._receive_result(block=True)
 
     def finish(self):
         # Flood has no finish message. Closing the transport is the session
@@ -211,6 +222,9 @@ class MotionWebSocketSession(ChunkGenerationSession):
         self._first_frame = True
         self._prev_trans = None
         self._ref_y = None
+        self._inflight = 0
+        self._awaiting_started = False
+        self._expect_bootstrap = False
 
     def _reset_local(self):
         self._clear_generation()
@@ -220,27 +234,6 @@ class MotionWebSocketSession(ChunkGenerationSession):
     def _motion_hint_from(self, values):
         return _motion_hint_from(values, self.motion_hint_key)
 
-    def _request_chunk(self):
-        if self.connection is None:
-            self.connect()
-        first = self._fresh
-        if first:
-            message = {"type": "start", "text": self._motion_hint}
-            message.update({
-                key: value for key, value in self.start_options.items()
-                if value is not None
-            })
-            self._send(message)
-            started = self._receive("session.started")
-            self._accept_started(started)
-            delta = self._receive("motion.delta")
-            self._fresh = False
-        else:
-            self._send({"type": "continue", "text": self._motion_hint})
-            delta = self._receive("motion.delta")
-        primary, secondary = self._decode_delta(delta)
-        return primary, secondary, first
-
     def _send(self, message):
         try:
             self.connection.send(json.dumps(message))
@@ -248,7 +241,48 @@ class MotionWebSocketSession(ChunkGenerationSession):
             self.abort()
             raise
 
-    def _receive(self, expected_type):
+    def _receive_result(self, block):
+        """Consume events until one motion.delta decodes into a chunk
+        (session.started is validated and swallowed on the way). In
+        non-blocking mode, returns None as soon as nothing is ready.
+        Any failure aborts the session (in-flight replies are gone with
+        the transport, so a dead session must not look reusable)."""
+        try:
+            while True:
+                if block:
+                    raw = self._receive_raw()
+                else:
+                    try:
+                        raw = self.connection.recv(timeout=0)
+                    except TimeoutError:
+                        return None
+                event = self._parse_event(raw)
+                if event.get("type") == "error":
+                    error = event.get("error")
+                    message = error.get("message") \
+                        if isinstance(error, dict) else error
+                    raise MotionWebSocketError(str(message or error or event))
+                if self._awaiting_started:
+                    if event.get("type") != "session.started":
+                        raise MotionWebSocketError(
+                            f"expected session.started, "
+                            f"got {event.get('type')!r}"
+                        )
+                    self._accept_started(event)
+                    self._awaiting_started = False
+                    continue
+                if event.get("type") != "motion.delta":
+                    raise MotionWebSocketError(
+                        f"expected motion.delta, got {event.get('type')!r}"
+                    )
+                return self._decode_result(event)
+        except ChunkGenerationCancelled:
+            raise
+        except Exception:
+            self.abort()
+            raise
+
+    def _receive_raw(self):
         deadline = time.monotonic() + self.receive_timeout
         while True:
             if self.cancel_check is not None and self.cancel_check():
@@ -257,28 +291,41 @@ class MotionWebSocketSession(ChunkGenerationSession):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
-                    f"motion websocket timed out waiting for {expected_type}"
+                    "motion websocket timed out waiting for an event"
                 )
             try:
-                raw = self.connection.recv(
+                return self.connection.recv(
                     timeout=min(self.poll_interval, remaining)
                 )
             except TimeoutError:
                 continue
-            except Exception:
-                self.abort()
-                raise
-            event = self._parse_event(raw)
-            if event.get("type") == "error":
-                error = event.get("error")
-                message = error.get("message") if isinstance(error, dict) \
-                    else error
-                raise MotionWebSocketError(str(message or error or event))
-            if event.get("type") != expected_type:
-                raise MotionWebSocketError(
-                    f"expected {expected_type}, got {event.get('type')!r}"
-                )
-            return event
+
+    def _decode_result(self, event):
+        primary, secondary = self._decode_delta(event)
+        count = len(primary)
+        first = self._expect_bootstrap
+        if first and count == self.frames_per_chunk + 1:
+            # Flood's start delta contains one bootstrap frame followed by
+            # the requested timeline. Dropping that first frame makes the
+            # first output 1..N and the following continue N+1..2N.
+            if secondary is not None and self.humanoid_output:
+                # Preserve the anchor for the first emitted frame's root
+                # delta and session-relative pelvis height.
+                self._prev_trans = [float(value) for value in secondary[0]]
+                self._ref_y = float(secondary[0][1])
+            primary = primary[1:]
+            if secondary is not None:
+                secondary = secondary[1:]
+        elif count != self.frames_per_chunk:
+            raise MotionWebSocketError(
+                f"motion server returned {count} frames for "
+                f"{'start' if first else 'continue'}; expected "
+                f"{self.frames_per_chunk}"
+                + (f" or {self.frames_per_chunk + 1}" if first else "")
+            )
+        self._expect_bootstrap = False
+        self._inflight -= 1
+        return {"motion": self._package(primary, secondary)}
 
     @staticmethod
     def _parse_event(raw):

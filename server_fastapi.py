@@ -238,10 +238,16 @@ class ClientConnection:
         each module's own responsibility (module-specific policies)."""
         while self.connected:
             try:
+                # Blocking get runs in a worker thread (same wait semantics
+                # as the node threads): queued data is relayed immediately
+                # instead of on the next poll tick. The timeout only bounds
+                # how long this loop takes to notice self.connected turned
+                # False, so keep it small.
                 try:
-                    data = self.send_queue.get(timeout=0)
+                    data = await asyncio.to_thread(
+                        self.send_queue.get, timeout=TIME_INTERVAL
+                    )
                 except queue.Empty:
-                    await asyncio.sleep(TIME_INTERVAL)
                     continue
                 data_dict = json.loads(data)
 
@@ -597,7 +603,7 @@ async def init_pipeline(client_id: str, data: ConfigData):
                 detail={"error": "config not found", "config": config_name},
             )
         global_logger.info(f"Client {client_id} config file: {config_name}")
-        with open(json_file, "r") as file:
+        with open(json_file, "r", encoding="utf-8") as file:
             pipeline_config = json.load(file)
 
         # Static validation before building: per-node self-consistency (each

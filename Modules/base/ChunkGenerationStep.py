@@ -1,3 +1,4 @@
+from collections import deque
 from fractions import Fraction
 
 from .SpanProcessingStep import SpanProcessingStep
@@ -13,11 +14,35 @@ class ChunkGenerationSession:
     finish() and abort() must completely release span-local state. A caller
     may reuse the object (and a transport) across spans; close() is then the
     node-lifetime cleanup invoked by its concrete generation_dispose().
+
+    A remote-backed session may set pipelined = True and implement the
+    submit/poll/has_pending/next_result quartet instead of a blocking
+    generate_chunk: the step then fires one request per input without
+    waiting for its reply, emits replies as they return (FIFO, replies
+    carry no ids), and drains the in-flight tail at stream_end. abort()
+    must discard everything in flight.
     """
 
     passthrough = False
+    pipelined = False
 
     def generate_chunk(self, inputs, chunk_index):
+        raise NotImplementedError
+
+    def submit(self, inputs, chunk_index):
+        """Pipelined only: fire one chunk request without waiting."""
+        raise NotImplementedError
+
+    def poll(self):
+        """Pipelined only: already-arrived results, oldest first."""
+        raise NotImplementedError
+
+    def has_pending(self):
+        """Pipelined only: True while any request is still in flight."""
+        return False
+
+    def next_result(self):
+        """Pipelined only: block until the oldest in-flight result returns."""
         raise NotImplementedError
 
     def finish(self):
@@ -94,6 +119,9 @@ class ChunkGenerationStep(SpanProcessingStep):
         self._generation_session = None
         self._span_context = {}
         self._chunk_index = 0
+        # Pipelined sessions: per-request pass-through context, so a reply
+        # emits with ITS OWN meta/timestamp (FIFO, same order as requests).
+        self._pending = deque()
         self.generation_init()
 
     def generation_init(self):
@@ -154,10 +182,19 @@ class ChunkGenerationStep(SpanProcessingStep):
         inputs = dict(self._span_context)
         inputs.update(pass_data)
         inputs.update(data)
+        session = self._generation_session
+        if getattr(session, "pipelined", False):
+            # Fire-and-continue: the reply for this request emits on a
+            # later input (or at stream_end), paired FIFO with the context
+            # queued here. Nothing blocks, so no cancel window opens.
+            session.submit(inputs, self._chunk_index)
+            self._pending.append(dict(pass_data))
+            self._chunk_index += 1
+            for result in session.poll():
+                self._emit_result(result, self._pending.popleft())
+            return
         try:
-            result = self._generation_session.generate_chunk(
-                inputs, self._chunk_index
-            )
+            result = session.generate_chunk(inputs, self._chunk_index)
         except ChunkGenerationCancelled:
             self._abort_generation()
             self.end_span()
@@ -166,6 +203,10 @@ class ChunkGenerationStep(SpanProcessingStep):
         # A cancel may have arrived while a blocking generator was working.
         if self.check_cancel() or not self.span_active:
             return
+        self._emit_result(result, pass_data)
+        self._chunk_index += 1
+
+    def _emit_result(self, result, pass_data):
         if not isinstance(result, dict) or not result:
             raise ValueError("generate_chunk() must return a non-empty object")
         expected = set(self.module_outputs(self.config))
@@ -173,12 +214,10 @@ class ChunkGenerationStep(SpanProcessingStep):
             raise ValueError(
                 f"generate_chunk() returned none of {sorted(expected)}"
             )
-
         output = {}
         for key, value in result.items():
             self.add_output(output, key, value)
         self.output_to_queue(output, pass_data, log_level=0)
-        self._chunk_index += 1
 
     def _start_generation(self, data):
         # A repeated owning SoS is a reset boundary. Drop the unfinished old
@@ -203,6 +242,19 @@ class ChunkGenerationStep(SpanProcessingStep):
 
     def _finish_generation(self):
         session = self._generation_session
+        if session is not None and getattr(session, "pipelined", False):
+            # Chunk-count contract: every submitted request must come back
+            # before the envelope closes. A cancel arriving during this
+            # wait aborts the span; in-flight replies are discarded.
+            try:
+                while session.has_pending():
+                    self._emit_result(
+                        session.next_result(), self._pending.popleft()
+                    )
+            except ChunkGenerationCancelled:
+                self._abort_generation()
+                self.end_span()
+                return
         if session is not None:
             # Keep it attached until finish succeeds. If finish raises, the
             # SpanProcessingStep error boundary can still abort it.
@@ -210,6 +262,7 @@ class ChunkGenerationStep(SpanProcessingStep):
         self._generation_session = None
         self._span_context = {}
         self._chunk_index = 0
+        self._pending.clear()
         self.end_span()
 
     def _abort_generation(self):
@@ -217,6 +270,7 @@ class ChunkGenerationStep(SpanProcessingStep):
         self._generation_session = None
         self._span_context = {}
         self._chunk_index = 0
+        self._pending.clear()
         if session is None:
             return
         try:

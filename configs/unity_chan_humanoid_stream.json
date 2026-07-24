@@ -5,13 +5,9 @@
             "node_id": 1,
             "function": "call_server_vad",
             "config": {
-                "input_vars": [
-                    { "source": "audio_data", "target": "audio_data" }
-                ],
+                "input_vars": [{ "source": "audio_data", "target": "audio_data" }],
                 "pass_vars": [],
-                "output_vars": [
-                    { "source": "audio_file", "target": "1_audio_file" }
-                ],
+                "output_vars": [{ "source": "audio_file", "target": "1_audio_file" }],
                 "catch_signals": [
                     { "source": "recording_end", "target": "recording_end" },
                     { "source": "recording_start", "target": "recording_start" }
@@ -79,7 +75,7 @@
                 "history_length": 30,
                 "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
-                "sentence_length_threshold": 5,
+                "sentence_length_threshold": 20,
                 "extra_info": {
                     "action": { "start_mark": "[", "end_mark": "]" },
                     "expression": { "start_mark": "(", "end_mark": ")" }

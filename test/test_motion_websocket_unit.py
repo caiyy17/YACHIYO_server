@@ -270,6 +270,52 @@ class MotionWebSocketMemoryTest(unittest.TestCase):
         finally:
             session.close()
 
+    def test_pipelined_backlog_pairs_replies_in_order(self):
+        protocol = _Protocol()
+        connector = _FakeConnector(protocol)
+        session = _session(connector)
+        try:
+            session.reset({"motion_hint": "walk"})
+            for index in range(3):
+                session.submit({}, index)
+            self.assertTrue(session.has_pending())
+            chunks = session.poll()
+            while session.has_pending():
+                chunks.append(session.next_result())
+            self.assertEqual(
+                [_frame_ids(chunk) for chunk in chunks],
+                [list(range(i, i + 6)) for i in range(1, 18, 6)],
+            )
+            self.assertEqual(
+                [message["type"] for message in protocol.messages],
+                ["start", "continue", "continue"],
+            )
+            self.assertIn("header", chunks[0]["motion"][0])
+            self.assertNotIn("header", chunks[1]["motion"][0])
+            self.assertFalse(session.has_pending())
+        finally:
+            session.close()
+
+    def test_abort_discards_in_flight_and_next_reset_reconnects(self):
+        protocol = _Protocol()
+        connector = _FakeConnector(protocol)
+        session = _session(connector)
+        try:
+            session.reset({"motion_hint": "walk"})
+            session.submit({}, 0)
+            session.submit({}, 1)
+            self.assertTrue(session.has_pending())
+            session.abort()
+            self.assertFalse(session.has_pending())
+            self.assertTrue(connector.connections[0].closed)
+
+            session.reset({"motion_hint": "wave"})
+            recovered = session.generate_chunk({}, 0)
+            self.assertEqual(connector.calls, 2)
+            self.assertEqual(_frame_ids(recovered), list(range(1, 7)))
+        finally:
+            session.close()
+
     def test_abort_closes_and_next_reset_reconnects(self):
         connector = _FakeConnector(_Protocol())
         session = _session(connector)
@@ -517,12 +563,12 @@ class MotionWebSocketLoopbackTest(unittest.TestCase):
             input_queue.put(json.dumps({
                 "timestamp": 1, "audio": "trigger"
             }))
-            chunk = json.loads(output_queue.get(timeout=2))
-            self.assertEqual(server.snapshot(), (2, 1, 1))
-
+            # Pipelined session: the reply emits on a later poll or at the
+            # stream_end drain — either way before the relayed envelope end.
             input_queue.put(json.dumps({
                 "signal": "tts_EoS", "timestamp": 1
             }))
+            chunk = json.loads(output_queue.get(timeout=2))
             end = json.loads(output_queue.get(timeout=2))
             wait_snapshot((2, 2, 0))
             self.assertEqual(start["signal"], "item_SoS")

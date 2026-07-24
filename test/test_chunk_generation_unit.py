@@ -291,6 +291,148 @@ class _FailingStep(ChunkGenerationStep):
         return _FailingSession(self)
 
 
+class _ManualPipelinedSession(ChunkGenerationSession):
+    """Pipelined fake whose replies are released manually by the test
+    (owner.replies); submit never blocks and carries no reply."""
+
+    pipelined = True
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def submit(self, inputs, chunk_index):
+        self.owner.submitted.append((chunk_index, dict(inputs)))
+        self.owner.inflight += 1
+
+    def poll(self):
+        results = []
+        while self.owner.inflight > 0 and not self.owner.replies.empty():
+            results.append(self.owner.replies.get_nowait())
+            self.owner.inflight -= 1
+        return results
+
+    def has_pending(self):
+        return self.owner.inflight > 0
+
+    def next_result(self):
+        result = self.owner.replies.get(timeout=2)
+        self.owner.inflight -= 1
+        return result
+
+    def abort(self):
+        self.owner.inflight = 0
+        self.owner.abort_count += 1
+
+
+class _PipelinedStep(ChunkGenerationStep):
+    OUTPUTS = ["value"]
+
+    def generation_init(self):
+        self.submitted = []
+        self.inflight = 0
+        self.abort_count = 0
+        self.replies = queue.Queue()
+
+    def open_generation_session(self, start_context):
+        return _ManualPipelinedSession(self)
+
+
+def _wait_for(condition, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return condition()
+
+
+class ChunkGenerationPipelinedTest(unittest.TestCase):
+    def test_replies_pair_with_their_own_pass_data_and_eos_drains(self):
+        runner = _RunningStep(
+            _PipelinedStep, _config("value", inputs=("audio", "mood"))
+        )
+        try:
+            runner.put({"signal": "tts_SoS", "timestamp": 10})
+            self.assertEqual(runner.take()["signal"], "av_SoS")
+            runner.put({"timestamp": 10, "audio": "a0", "mood": "happy"})
+            runner.put({"timestamp": 10, "audio": "a1", "mood": "calm"})
+            self.assertTrue(
+                _wait_for(lambda: len(runner.step.submitted) == 2)
+            )
+            time.sleep(0.05)
+            self.assertTrue(runner.output.empty())
+
+            # Two replies arrive, then a third input polls them out: each
+            # must carry the pass context of ITS OWN request, not the
+            # current input's.
+            runner.step.replies.put({"value": "r0"})
+            runner.step.replies.put({"value": "r1"})
+            runner.put({"timestamp": 10, "audio": "a2", "mood": "focus"})
+            first, second = runner.take(), runner.take()
+            self.assertEqual(
+                (first["value"], first["audio"], first["mood"]),
+                ("r0", "a0", "happy"),
+            )
+            self.assertEqual(
+                (second["value"], second["audio"], second["mood"]),
+                ("r1", "a1", "calm"),
+            )
+
+            # stream_end blocks until the in-flight tail returns, emits it,
+            # then the envelope closes.
+            runner.put({"signal": "tts_EoS", "timestamp": 10})
+            runner.step.replies.put({"value": "r2"})
+            tail = runner.take()
+            self.assertEqual(
+                (tail["value"], tail["audio"], tail["mood"]),
+                ("r2", "a2", "focus"),
+            )
+            self.assertEqual(runner.take()["signal"], "av_EoS")
+            self.assertFalse(runner.step.span_active)
+        finally:
+            runner.close()
+
+    def test_cancel_discards_in_flight_and_next_span_is_clean(self):
+        runner = _RunningStep(
+            _PipelinedStep, _config("value", inputs=("audio", "mood"))
+        )
+        try:
+            runner.put({"signal": "tts_SoS", "timestamp": 10})
+            self.assertEqual(runner.take()["signal"], "av_SoS")
+            runner.put({"timestamp": 10, "audio": "a0", "mood": "happy"})
+            self.assertTrue(
+                _wait_for(lambda: len(runner.step.submitted) == 1)
+            )
+            runner.cancel.put(json.dumps({
+                "signal": "cancel", "timestamp": 11,
+            }))
+            self.assertTrue(
+                _wait_for(lambda: runner.step.abort_count == 1)
+            )
+            time.sleep(0.05)
+            self.assertTrue(runner.output.empty())
+            self.assertFalse(runner.step.span_active)
+
+            # A stale reply from the killed span must not leak into the
+            # next one: the pending queue was cleared with the abort.
+            runner.put({"signal": "tts_SoS", "timestamp": 12})
+            self.assertEqual(runner.take()["signal"], "av_SoS")
+            runner.put({"timestamp": 12, "audio": "b0", "mood": "next"})
+            self.assertTrue(
+                _wait_for(lambda: len(runner.step.submitted) == 2)
+            )
+            runner.step.replies.put({"value": "r-new"})
+            runner.put({"signal": "tts_EoS", "timestamp": 12})
+            chunk = runner.take()
+            self.assertEqual(
+                (chunk["value"], chunk["audio"], chunk["mood"]),
+                ("r-new", "b0", "next"),
+            )
+            self.assertEqual(runner.take()["signal"], "av_EoS")
+        finally:
+            runner.close()
+
+
 class ChunkGenerationCancelTest(unittest.TestCase):
     def test_cancel_after_generate_returns_cannot_publish_stale_chunk(self):
         config = _config("value", inputs=("audio", "mood"))
