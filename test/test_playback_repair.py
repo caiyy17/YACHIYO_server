@@ -25,8 +25,8 @@ CASES = {
     "unity_chan_live":     (2, "1_prompt"),
     "unity_chan_text":     (1, "text"),
 }
-PROMPT = ("请用三个完整的句子介绍你自己，每个句子不少于十五个字，"
-          "都以句号结尾，不少于三句。")
+PROMPT = ("请用五个完整的句子介绍你自己，每个句子不少于十五个字，"
+          "并且都以句号结尾。")
 FAIL = []
 
 
@@ -71,26 +71,40 @@ async def run_case(config, llm_node, field):
         async with websockets.connect(
                 f"ws://127.0.0.1:8910/ws/{cid}",
                 max_size=16 * 1024 * 1024) as ws:
-            await ws.send(json.dumps({field: PROMPT, "destination": llm_node,
-                                      "timestamp": time.time()}))
-            # collect client-side messages until EoS (ids must be there)
+            # The repair scenario structurally needs >=2 items in one turn
+            # (a report names the item that was playing; with one item
+            # there is nothing before it to keep). The prompt demands five
+            # long sentences to force that shape; residual model variance
+            # is absorbed by retrying the turn, so a short reply is never
+            # reported as a protocol failure.
             rid, items = None, []
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                except asyncio.TimeoutError:
-                    continue
-                m = json.loads(raw)
-                # ids ride flat on classic sentence messages, and under
-                # pass_data on stream envelopes (item_SoS)
-                carrier = m if m.get("item_id") else (m.get("pass_data") or {})
-                if carrier.get("item_id"):
-                    rid = carrier.get("response_id") or rid
-                    if carrier["item_id"] not in items:
-                        items.append(carrier["item_id"])
-                if m.get("signal") == "EoS":
+            for attempt in range(3):
+                await ws.send(json.dumps({field: PROMPT,
+                                          "destination": llm_node,
+                                          "timestamp": time.time()}))
+                # collect client-side messages until EoS (ids must be there)
+                rid, items = None, []
+                deadline = time.time() + 60
+                while time.time() < deadline:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                    except asyncio.TimeoutError:
+                        continue
+                    m = json.loads(raw)
+                    # ids ride flat on classic sentence messages, and under
+                    # pass_data on stream envelopes (item_SoS)
+                    carrier = m if m.get("item_id") \
+                        else (m.get("pass_data") or {})
+                    if carrier.get("item_id"):
+                        rid = carrier.get("response_id") or rid
+                        if carrier["item_id"] not in items:
+                            items.append(carrier["item_id"])
+                    if m.get("signal") == "EoS":
+                        break
+                if rid is not None and len(items) >= 2:
                     break
+                print(f"  (attempt {attempt + 1}: {len(items)} item(s), "
+                      f"precondition <2 — retrying turn)")
             check(f"client received ids on sentences "
                   f"({len(items)} items, resp={bool(rid)})",
                   rid is not None and len(items) >= 2)
