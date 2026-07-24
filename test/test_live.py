@@ -309,7 +309,10 @@ def manual_collect_response(send_queue, timeout=30):
 
         data = json.loads(raw)
         signal = data.get("signal", "")
-        text = data.get("text", "")
+        # text rides flat on classic sentence messages, and under
+        # pass_data on stream envelopes (item_SoS)
+        text = data.get("text", "") \
+            or (data.get("pass_data") or {}).get("text", "")
 
         if signal == "SoS":
             started = True
@@ -653,7 +656,10 @@ class YachiyoClient:
                 self.responses.append({"data": parsed, "time": time.time()})
 
                 signal = parsed.get("signal", "")
-                text = parsed.get("text", "")
+                # text rides flat on classic sentence messages, and under
+                # pass_data on stream envelopes (item_SoS)
+                carried = parsed.get("pass_data") or {}
+                text = parsed.get("text", "") or carried.get("text", "")
 
                 if signal == "SoS":
                     self._current_response = ""
@@ -689,8 +695,10 @@ class YachiyoClient:
                 elif text:
                     self._current_response += text
                     # Also print action/expression tags
-                    action = parsed.get("action", "")
-                    expression = parsed.get("expression", "")
+                    action = parsed.get("action", "") \
+                        or carried.get("action_hint", "")
+                    expression = parsed.get("expression", "") \
+                        or carried.get("expression", "")
                     tags = ""
                     if action:
                         tags += f"[{action}]"

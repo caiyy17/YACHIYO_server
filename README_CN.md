@@ -58,11 +58,10 @@ server_fastapi.py（端口 8910）          Pipeline 服务器
 | `demo`                | ASR → LLM → TTS                                                                        | 最小对话                 |
 | `loopback`            | FrameCollector → FrameSplitter                                                         | 本地 WebRTC 音频/视频/数据回环工具 |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | 纯文本对话（无音频）     |
-| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | 对话 + RAG 表情/动作匹配 |
+| `unity_chan_default`  | ASR → LLM → DataQuery → Dispatch → MotionRAG ∥ TTS → Receive → Pad | RAG 表情+动作匹配对话（并行分支示例） |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → StreamTTS → VideoChunk → FrameSplitter | WebRTC 音视频逐块生成 |
-| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid 动作生成（并行）   |
-| `unity_chan_humanoid_stream` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | 流式对话 + 音频驱动动作 |
-| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber 弹幕直播          |
+| `unity_chan_humanoid` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | 流式对话 + 音频驱动动作 |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → StreamTTS → MotionChunk | VTuber 弹幕直播（流式配对块） |
 
 ## 节点类型
 

@@ -3,191 +3,106 @@
     "pipeline": [
         {
             "node_id": 1,
-            "function": "call_openai_asr",
+            "function": "call_server_vad",
             "config": {
-                "input_vars": [
-                    {
-                        "source": "audio_file",
-                        "target": "audio_file"
-                    }
-                ],
+                "input_vars": [{ "source": "audio_data", "target": "audio_data" }],
                 "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "result",
-                        "target": "1_text"
-                    },
-                    {
-                        "source": "language",
-                        "target": null
-                    }
+                "output_vars": [{ "source": "audio_file", "target": "1_audio_file" }],
+                "catch_signals": [
+                    { "source": "recording_end", "target": "recording_end" },
+                    { "source": "recording_start", "target": "recording_start" }
                 ],
-                "pass_signals": [
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
+                "pass_signals": [],
+                "emit_signals": [
+                    { "source": "vad_start", "target": "recording_start" },
+                    { "source": "vad_end", "target": "recording_end" }
                 ],
                 "next_nodes": [2],
-                "model": "qwen_asr"
+                "start_offset_ms": -200,
+                "end_offset_ms": 0,
+                "manual_start_offset_ms": 0,
+                "manual_end_offset_ms": 0,
+                "auto_detect": false,
+                "model": "silero_vad"
             }
         },
         {
             "node_id": 2,
-            "function": "call_openai_llm",
+            "function": "call_openai_asr",
             "config": {
-                "input_vars": [
-                    {
-                        "source": "1_text",
-                        "target": "prompt"
-                    }
-                ],
-                "pass_vars": [
-                    {
-                        "source": "1_text",
-                        "target": "prompt"
-                    }
-                ],
+                "input_vars": [{ "source": "1_audio_file", "target": "audio_file" }],
+                "pass_vars": [],
                 "output_vars": [
-                    {
-                        "source": "text",
-                        "target": "2_text"
-                    },
-                    {
-                        "source": "action",
-                        "target": "2_action"
-                    },
-                    {
-                        "source": "expression",
-                        "target": "2_expression"
-                    },
-                    {
-                        "source": "raw_text",
-                        "target": null
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
+                    { "source": "result", "target": "2_text" },
+                    { "source": "language", "target": null }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
-                ],
-                "emit_signals": [
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    },
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    }
-                ],
-                "catch_events": [
-                    {
-                        "source": "playback_complete",
-                        "target": "playback_complete"
-                    }
+                    { "source": "recording_start", "target": "recording_start" },
+                    { "source": "recording_end", "target": "recording_end" }
                 ],
                 "next_nodes": [3],
-                "history_mode": "tavern",
-                "lorebooks": [
-                    {
-                        "name": "unity_chan",
-                        "offset": 0
-                    }
+                "model": "qwen_asr"
+            }
+        },
+        {
+            "node_id": 3,
+            "function": "call_openai_llm",
+            "config": {
+                "input_vars": [{ "source": "2_text", "target": "prompt" }],
+                "pass_vars": [{ "source": "2_text", "target": "prompt" }],
+                "output_vars": [
+                    { "source": "text", "target": "3_text" },
+                    { "source": "action", "target": "3_action" },
+                    { "source": "expression", "target": "3_expression" },
+                    { "source": "raw_text", "target": null },
+                    { "source": "response_id", "target": "response_id" },
+                    { "source": "item_id", "target": "item_id" }
                 ],
+                "pass_signals": [
+                    { "source": "recording_start", "target": "recording_start" },
+                    { "source": "recording_end", "target": "recording_end" }
+                ],
+                "emit_signals": [
+                    { "source": "SoS", "target": "SoS" },
+                    { "source": "EoS", "target": "EoS" }
+                ],
+                "catch_events": [{ "source": "playback_complete", "target": "playback_complete" }],
+                "next_nodes": [4],
+                "history_mode": "tavern",
+                "lorebooks": [{ "name": "unity_chan", "offset": 0 }],
                 "similarity_threshold": 0.8,
                 "reset_history": true,
                 "history_length": 30,
                 "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
-                "sentence_length_threshold": 5,
+                "sentence_length_threshold": 20,
                 "extra_info": {
-                    "action": {
-                        "start_mark": "[",
-                        "end_mark": "]"
-                    },
-                    "expression": {
-                        "start_mark": "(",
-                        "end_mark": ")"
-                    }
+                    "action": { "start_mark": "[", "end_mark": "]" },
+                    "expression": { "start_mark": "(", "end_mark": ")" }
                 },
                 "tool_names": ["get_weather", "web_search"]
             }
         },
         {
-            "node_id": 3,
+            "node_id": 4,
             "function": "call_data_query_link",
             "config": {
-                "input_vars": [
-                    {
-                        "source": "2_expression",
-                        "target": "prompt"
-                    }
-                ],
+                "input_vars": [{ "source": "3_expression", "target": "prompt" }],
                 "pass_vars": [
-                    {
-                        "source": "2_text",
-                        "target": "3_text"
-                    },
-                    {
-                        "source": "2_action",
-                        "target": "3_action"
-                    },
-                    {
-                        "source": "2_expression",
-                        "target": "3_expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
+                    { "source": "3_text", "target": "4_text" },
+                    { "source": "3_action", "target": "4_action" },
+                    { "source": "3_expression", "target": "4_expression_hint" },
+                    { "source": "response_id", "target": "response_id" },
+                    { "source": "item_id", "target": "item_id" }
                 ],
-                "output_vars": [
-                    {
-                        "source": "result",
-                        "target": "3_expression"
-                    }
-                ],
+                "output_vars": [{ "source": "result", "target": "4_expression" }],
                 "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    },
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
+                    { "source": "EoS", "target": "EoS" },
+                    { "source": "SoS", "target": "SoS" },
+                    { "source": "recording_start", "target": "recording_start" },
+                    { "source": "recording_end", "target": "recording_end" }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [5],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -195,319 +110,75 @@
             }
         },
         {
-            "node_id": 4,
-            "function": "call_dispatcher",
+            "node_id": 5,
+            "function": "call_openai_tts",
             "config": {
                 "input_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "action"
-                    }
+                    { "source": "4_text", "target": "text" },
+                    { "source": null, "target": "language" },
+                    { "source": null, "target": "speaker" },
+                    { "source": null, "target": "duration" }
                 ],
                 "pass_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "4_text"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "4_action_hint"
-                    },
-                    {
-                        "source": "3_expression",
-                        "target": "4_expression"
-                    },
-                    {
-                        "source": "3_expression_hint",
-                        "target": "4_expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
+                    { "source": "4_text", "target": "text" },
+                    { "source": "4_action", "target": "action_hint" },
+                    { "source": "4_expression", "target": "expression" },
+                    { "source": "4_expression_hint", "target": "expression_hint" },
+                    { "source": "response_id", "target": "response_id" },
+                    { "source": "item_id", "target": "item_id" }
                 ],
                 "output_vars": [
-                    {
-                        "source": "text",
-                        "target": "4_audio_text"
-                    },
-                    {
-                        "source": "action",
-                        "target": "4_action"
-                    }
+                    { "source": "audio_file", "target": "5_audio_data" },
+                    { "source": "duration", "target": null }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    },
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
+                    { "source": "EoS", "target": "EoS" },
+                    { "source": "SoS", "target": "SoS" },
+                    { "source": "recording_start", "target": "recording_start" },
+                    { "source": "recording_end", "target": "recording_end" }
                 ],
                 "emit_signals": [
-                    {
-                        "source": "dispatch_start",
-                        "target": "dispatch_start"
-                    },
-                    {
-                        "source": "dispatch_end",
-                        "target": "dispatch_end"
-                    }
+                    { "source": "SoS", "target": "tts_SoS" },
+                    { "source": "EoS", "target": "tts_EoS" }
                 ],
-                "dispatch_vars": [["4_action"], ["4_audio_text"]],
-                "next_nodes": [5, 6, 7]
-            }
-        },
-        {
-            "node_id": 5,
-            "function": "call_motion_generation",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "4_action",
-                        "target": "prompt"
-                    },
-                    {
-                        "source": null,
-                        "target": "duration"
-                    }
-                ],
-                "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "motion",
-                        "target": "5_action"
-                    },
-                    {
-                        "source": "duration",
-                        "target": null
-                    }
-                ],
-                "next_nodes": [7],
-                "duration": 3.0,
-                "model": "hy_motion"
+                "next_nodes": [6],
+                "model": "qwen_tts",
+                "voice": "test_cn",
+                "stream": true,
+                "stream_chunk_ms": 200,
+                "exact_chunk": true
             }
         },
         {
             "node_id": 6,
-            "function": "call_openai_tts",
+            "function": "call_motion_chunk_generation",
             "config": {
-                "input_vars": [
-                    {
-                        "source": "4_audio_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": null,
-                        "target": "language"
-                    },
-                    {
-                        "source": null,
-                        "target": "speaker"
-                    },
-                    {
-                        "source": null,
-                        "target": "duration"
-                    }
-                ],
-                "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "audio_file",
-                        "target": "6_audio"
-                    },
-                    {
-                        "source": "duration",
-                        "target": null
-                    }
-                ],
-                "next_nodes": [7],
-                "model": "qwen_tts",
-                "voice": "test_cn"
-            }
-        },
-        {
-            "node_id": 7,
-            "function": "call_receiver",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "6_audio",
-                        "target": "audio"
-                    },
-                    {
-                        "source": "5_action",
-                        "target": "action"
-                    }
-                ],
+                "input_vars": [{ "source": "5_audio_data", "target": "audio_data" }],
                 "pass_vars": [
-                    {
-                        "source": "4_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "4_action_hint",
-                        "target": "action_hint"
-                    },
-                    {
-                        "source": "4_expression",
-                        "target": "expression"
-                    },
-                    {
-                        "source": "4_expression_hint",
-                        "target": "expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
+                    { "source": "5_audio_data", "target": "audio_data" },
+                    { "source": "action_hint", "target": "motion_hint" }
                 ],
-                "output_vars": [
-                    {
-                        "source": "audio",
-                        "target": "audio_data"
-                    },
-                    {
-                        "source": "action",
-                        "target": "action"
-                    }
-                ],
+                "output_vars": [{ "source": "motion", "target": "motion" }],
                 "catch_signals": [
-                    {
-                        "source": "dispatch_end",
-                        "target": "dispatch_end"
-                    },
-                    {
-                        "source": "dispatch_start",
-                        "target": "dispatch_start"
-                    }
+                    { "source": "tts_SoS", "target": "stream_start" },
+                    { "source": "tts_EoS", "target": "stream_end" }
                 ],
                 "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    },
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
-                ],
-                "next_nodes": [8]
-            }
-        },
-        {
-            "node_id": 8,
-            "function": "pad",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "audio_data",
-                        "target": "audio_data"
-                    },
-                    {
-                        "source": "action",
-                        "target": "action"
-                    }
-                ],
-                "pass_vars": [
-                    {
-                        "source": "text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "action_hint",
-                        "target": "action_hint"
-                    },
-                    {
-                        "source": "expression",
-                        "target": "expression"
-                    },
-                    {
-                        "source": "expression_hint",
-                        "target": "expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
-                ],
-                "output_vars": [
-                    {
-                        "source": "audio_data",
-                        "target": "audio_data"
-                    },
-                    {
-                        "source": "action",
-                        "target": "action"
-                    },
-                    {
-                        "source": "duration",
-                        "target": "duration"
-                    }
-                ],
-                "catch_signals": [],
-                "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    },
-                    {
-                        "source": "recording_start",
-                        "target": "recording_start"
-                    },
-                    {
-                        "source": "recording_end",
-                        "target": "recording_end"
-                    }
+                    { "source": "tts_SoS", "target": "item_SoS" },
+                    { "source": "tts_EoS", "target": "item_EoS" },
+                    { "source": "EoS", "target": "EoS" },
+                    { "source": "SoS", "target": "SoS" },
+                    { "source": "recording_start", "target": "recording_start" },
+                    { "source": "recording_end", "target": "recording_end" }
                 ],
                 "emit_signals": [],
                 "next_nodes": [-1],
-                "mode": "anchor",
-                "anchor": "audio_data",
-                "behavior": {
-                    "action": {
-                        "extend": false,
-                        "cut": false
-                    }
-                }
+                "model": "flood",
+                "framerate": 30,
+                "chunk_duration_ms": 200,
+                "init_test_text": "test",
+                "init_test_duration_ms": 1000,
+                "humanoid_output": true
             }
         }
     ]

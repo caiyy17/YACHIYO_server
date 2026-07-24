@@ -1,5 +1,7 @@
 {
-    "events": ["playback_complete"],
+    "events": [
+        "playback_complete"
+    ],
     "pipeline": [
         {
             "node_id": 1,
@@ -32,7 +34,9 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [2],
+                "next_nodes": [
+                    2
+                ],
                 "model": "qwen_asr"
             }
         },
@@ -104,7 +108,9 @@
                         "target": "playback_complete"
                     }
                 ],
-                "next_nodes": [3],
+                "next_nodes": [
+                    3
+                ],
                 "history_mode": "tavern",
                 "lorebooks": [
                     {
@@ -128,7 +134,10 @@
                         "end_mark": ")"
                     }
                 },
-                "tool_names": ["get_weather", "web_search"]
+                "tool_names": [
+                    "get_weather",
+                    "web_search"
+                ]
             }
         },
         {
@@ -187,7 +196,9 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [4],
+                "next_nodes": [
+                    4
+                ],
                 "dataset": "unity_chan_expression_list",
                 "type": "BGE",
                 "k": 5,
@@ -196,12 +207,16 @@
         },
         {
             "node_id": 4,
-            "function": "call_data_query_link",
+            "function": "call_dispatcher",
             "config": {
                 "input_vars": [
                     {
+                        "source": "3_text",
+                        "target": "text"
+                    },
+                    {
                         "source": "3_action",
-                        "target": "prompt"
+                        "target": "action"
                     }
                 ],
                 "pass_vars": [
@@ -210,16 +225,16 @@
                         "target": "4_text"
                     },
                     {
+                        "source": "3_action",
+                        "target": "4_action_hint"
+                    },
+                    {
                         "source": "3_expression",
                         "target": "4_expression"
                     },
                     {
                         "source": "3_expression_hint",
                         "target": "4_expression_hint"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "4_action_hint"
                     },
                     {
                         "source": "response_id",
@@ -232,7 +247,11 @@
                 ],
                 "output_vars": [
                     {
-                        "source": "result",
+                        "source": "text",
+                        "target": "4_audio_text"
+                    },
+                    {
+                        "source": "action",
                         "target": "4_action"
                     }
                 ],
@@ -254,7 +273,51 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [5],
+                "emit_signals": [
+                    {
+                        "source": "dispatch_start",
+                        "target": "dispatch_start"
+                    },
+                    {
+                        "source": "dispatch_end",
+                        "target": "dispatch_end"
+                    }
+                ],
+                "dispatch_vars": [
+                    [
+                        "4_action"
+                    ],
+                    [
+                        "4_audio_text"
+                    ]
+                ],
+                "next_nodes": [
+                    5,
+                    6,
+                    7
+                ]
+            }
+        },
+        {
+            "node_id": 5,
+            "function": "call_data_query_link",
+            "config": {
+                "input_vars": [
+                    {
+                        "source": "4_action",
+                        "target": "prompt"
+                    }
+                ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "source": "result",
+                        "target": "5_action"
+                    }
+                ],
+                "next_nodes": [
+                    7
+                ],
                 "dataset": "unity_chan_motion_list",
                 "type": "BGE",
                 "k": 5,
@@ -262,12 +325,12 @@
             }
         },
         {
-            "node_id": 5,
+            "node_id": 6,
             "function": "call_openai_tts",
             "config": {
                 "input_vars": [
                     {
-                        "source": "4_text",
+                        "source": "4_audio_text",
                         "target": "text"
                     },
                     {
@@ -283,14 +346,42 @@
                         "target": "duration"
                     }
                 ],
+                "pass_vars": [],
+                "output_vars": [
+                    {
+                        "source": "audio_file",
+                        "target": "6_audio"
+                    },
+                    {
+                        "source": "duration",
+                        "target": null
+                    }
+                ],
+                "next_nodes": [
+                    7
+                ],
+                "model": "qwen_tts",
+                "voice": "test_cn"
+            }
+        },
+        {
+            "node_id": 7,
+            "function": "call_receiver",
+            "config": {
+                "input_vars": [
+                    {
+                        "source": "6_audio",
+                        "target": "audio"
+                    },
+                    {
+                        "source": "5_action",
+                        "target": "action"
+                    }
+                ],
                 "pass_vars": [
                     {
                         "source": "4_text",
                         "target": "text"
-                    },
-                    {
-                        "source": "4_action",
-                        "target": "action"
                     },
                     {
                         "source": "4_action_hint",
@@ -315,12 +406,22 @@
                 ],
                 "output_vars": [
                     {
-                        "source": "audio_file",
+                        "source": "audio",
                         "target": "audio_data"
                     },
                     {
-                        "source": "duration",
-                        "target": "duration"
+                        "source": "action",
+                        "target": "action"
+                    }
+                ],
+                "catch_signals": [
+                    {
+                        "source": "dispatch_end",
+                        "target": "dispatch_end"
+                    },
+                    {
+                        "source": "dispatch_start",
+                        "target": "dispatch_start"
                     }
                 ],
                 "pass_signals": [
@@ -341,9 +442,96 @@
                         "target": "recording_end"
                     }
                 ],
-                "next_nodes": [-1],
-                "model": "qwen_tts",
-                "voice": "test_cn"
+                "next_nodes": [
+                    8
+                ]
+            }
+        },
+        {
+            "node_id": 8,
+            "function": "pad",
+            "config": {
+                "input_vars": [
+                    {
+                        "source": "audio_data",
+                        "target": "audio_data"
+                    },
+                    {
+                        "source": "action",
+                        "target": "action"
+                    }
+                ],
+                "pass_vars": [
+                    {
+                        "source": "text",
+                        "target": "text"
+                    },
+                    {
+                        "source": "action_hint",
+                        "target": "action_hint"
+                    },
+                    {
+                        "source": "expression",
+                        "target": "expression"
+                    },
+                    {
+                        "source": "expression_hint",
+                        "target": "expression_hint"
+                    },
+                    {
+                        "source": "response_id",
+                        "target": "response_id"
+                    },
+                    {
+                        "source": "item_id",
+                        "target": "item_id"
+                    }
+                ],
+                "output_vars": [
+                    {
+                        "source": "audio_data",
+                        "target": "audio_data"
+                    },
+                    {
+                        "source": "action",
+                        "target": "action"
+                    },
+                    {
+                        "source": "duration",
+                        "target": "duration"
+                    }
+                ],
+                "catch_signals": [],
+                "pass_signals": [
+                    {
+                        "source": "EoS",
+                        "target": "EoS"
+                    },
+                    {
+                        "source": "SoS",
+                        "target": "SoS"
+                    },
+                    {
+                        "source": "recording_start",
+                        "target": "recording_start"
+                    },
+                    {
+                        "source": "recording_end",
+                        "target": "recording_end"
+                    }
+                ],
+                "emit_signals": [],
+                "next_nodes": [
+                    -1
+                ],
+                "mode": "anchor",
+                "anchor": "audio_data",
+                "behavior": {
+                    "action": {
+                        "extend": false,
+                        "cut": false
+                    }
+                }
             }
         }
     ]

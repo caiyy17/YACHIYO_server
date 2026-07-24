@@ -21,11 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # config -> (llm node id, prompt wire field)
 CASES = {
     "unity_chan_default":  (2, "1_text"),
-    "unity_chan_humanoid": (2, "1_text"),
+    "unity_chan_humanoid": (3, "2_text"),
     "unity_chan_live":     (2, "1_prompt"),
     "unity_chan_text":     (1, "text"),
 }
-PROMPT = "请用三个完整的短句介绍你自己，每句都以句号结尾，不少于三句。"
+PROMPT = ("请用三个完整的句子介绍你自己，每个句子不少于十五个字，"
+          "都以句号结尾，不少于三句。")
 FAIL = []
 
 
@@ -81,10 +82,13 @@ async def run_case(config, llm_node, field):
                 except asyncio.TimeoutError:
                     continue
                 m = json.loads(raw)
-                if m.get("item_id"):
-                    rid = m.get("response_id") or rid
-                    if m["item_id"] not in items:
-                        items.append(m["item_id"])
+                # ids ride flat on classic sentence messages, and under
+                # pass_data on stream envelopes (item_SoS)
+                carrier = m if m.get("item_id") else (m.get("pass_data") or {})
+                if carrier.get("item_id"):
+                    rid = carrier.get("response_id") or rid
+                    if carrier["item_id"] not in items:
+                        items.append(carrier["item_id"])
                 if m.get("signal") == "EoS":
                     break
             check(f"client received ids on sentences "

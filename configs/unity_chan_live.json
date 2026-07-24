@@ -124,7 +124,7 @@
                 "history_length": 10,
                 "model": "gemma",
                 "punctuations": "、：，。？！:,.?!\n\t",
-                "sentence_length_threshold": 5,
+                "sentence_length_threshold": 20,
                 "extra_info": {
                     "action": {
                         "start_mark": "[",
@@ -195,115 +195,11 @@
         },
         {
             "node_id": 4,
-            "function": "call_dispatcher",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "text"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "action"
-                    }
-                ],
-                "pass_vars": [
-                    {
-                        "source": "3_text",
-                        "target": "4_text"
-                    },
-                    {
-                        "source": "3_action",
-                        "target": "4_action_hint"
-                    },
-                    {
-                        "source": "3_expression",
-                        "target": "4_expression"
-                    },
-                    {
-                        "source": "3_expression_hint",
-                        "target": "4_expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
-                    }
-                ],
-                "output_vars": [
-                    {
-                        "source": "text",
-                        "target": "4_audio_text"
-                    },
-                    {
-                        "source": "action",
-                        "target": "4_action"
-                    }
-                ],
-                "pass_signals": [
-                    {
-                        "source": "EoS",
-                        "target": "EoS"
-                    },
-                    {
-                        "source": "SoS",
-                        "target": "SoS"
-                    }
-                ],
-                "emit_signals": [
-                    {
-                        "source": "dispatch_start",
-                        "target": "dispatch_start"
-                    },
-                    {
-                        "source": "dispatch_end",
-                        "target": "dispatch_end"
-                    }
-                ],
-                "dispatch_vars": [["4_action"], ["4_audio_text"]],
-                "next_nodes": [5, 6, 7]
-            }
-        },
-        {
-            "node_id": 5,
-            "function": "call_motion_generation",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "4_action",
-                        "target": "prompt"
-                    },
-                    {
-                        "source": null,
-                        "target": "duration"
-                    }
-                ],
-                "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "motion",
-                        "target": "5_action"
-                    },
-                    {
-                        "source": "duration",
-                        "target": null
-                    }
-                ],
-                "next_nodes": [7],
-                "duration": 5.0,
-                "model": "hy_motion"
-            }
-        },
-        {
-            "node_id": 6,
             "function": "call_openai_tts",
             "config": {
                 "input_vars": [
                     {
-                        "source": "4_audio_text",
+                        "source": "3_text",
                         "target": "text"
                     },
                     {
@@ -319,51 +215,21 @@
                         "target": "duration"
                     }
                 ],
-                "pass_vars": [],
-                "output_vars": [
-                    {
-                        "source": "audio_file",
-                        "target": "6_audio"
-                    },
-                    {
-                        "source": "duration",
-                        "target": null
-                    }
-                ],
-                "next_nodes": [7],
-                "model": "qwen_tts",
-                "voice": "test_cn"
-            }
-        },
-        {
-            "node_id": 7,
-            "function": "call_receiver",
-            "config": {
-                "input_vars": [
-                    {
-                        "source": "6_audio",
-                        "target": "audio"
-                    },
-                    {
-                        "source": "5_action",
-                        "target": "action"
-                    }
-                ],
                 "pass_vars": [
                     {
-                        "source": "4_text",
+                        "source": "3_text",
                         "target": "text"
                     },
                     {
-                        "source": "4_action_hint",
+                        "source": "3_action",
                         "target": "action_hint"
                     },
                     {
-                        "source": "4_expression",
+                        "source": "3_expression",
                         "target": "expression"
                     },
                     {
-                        "source": "4_expression_hint",
+                        "source": "3_expression_hint",
                         "target": "expression_hint"
                     },
                     {
@@ -377,22 +243,12 @@
                 ],
                 "output_vars": [
                     {
-                        "source": "audio",
-                        "target": "audio_data"
+                        "source": "audio_file",
+                        "target": "4_audio_data"
                     },
                     {
-                        "source": "action",
-                        "target": "action"
-                    }
-                ],
-                "catch_signals": [
-                    {
-                        "source": "dispatch_end",
-                        "target": "dispatch_end"
-                    },
-                    {
-                        "source": "dispatch_start",
-                        "target": "dispatch_start"
+                        "source": "duration",
+                        "target": null
                     }
                 ],
                 "pass_signals": [
@@ -405,65 +261,69 @@
                         "target": "SoS"
                     }
                 ],
-                "next_nodes": [8]
+                "emit_signals": [
+                    {
+                        "source": "SoS",
+                        "target": "tts_SoS"
+                    },
+                    {
+                        "source": "EoS",
+                        "target": "tts_EoS"
+                    }
+                ],
+                "next_nodes": [5],
+                "model": "qwen_tts",
+                "voice": "test_cn",
+                "stream": true,
+                "stream_chunk_ms": 200,
+                "exact_chunk": true
             }
         },
         {
-            "node_id": 8,
-            "function": "pad",
+            "node_id": 5,
+            "function": "call_motion_chunk_generation",
             "config": {
                 "input_vars": [
                     {
-                        "source": "audio_data",
+                        "source": "4_audio_data",
                         "target": "audio_data"
-                    },
-                    {
-                        "source": "action",
-                        "target": "action"
                     }
                 ],
                 "pass_vars": [
                     {
-                        "source": "text",
-                        "target": "text"
+                        "source": "4_audio_data",
+                        "target": "audio_data"
                     },
                     {
                         "source": "action_hint",
-                        "target": "action_hint"
-                    },
-                    {
-                        "source": "expression",
-                        "target": "expression"
-                    },
-                    {
-                        "source": "expression_hint",
-                        "target": "expression_hint"
-                    },
-                    {
-                        "source": "response_id",
-                        "target": "response_id"
-                    },
-                    {
-                        "source": "item_id",
-                        "target": "item_id"
+                        "target": "motion_hint"
                     }
                 ],
                 "output_vars": [
                     {
-                        "source": "audio_data",
-                        "target": "audio_data"
-                    },
-                    {
-                        "source": "action",
-                        "target": "action"
-                    },
-                    {
-                        "source": "duration",
-                        "target": "duration"
+                        "source": "motion",
+                        "target": "motion"
                     }
                 ],
-                "catch_signals": [],
+                "catch_signals": [
+                    {
+                        "source": "tts_SoS",
+                        "target": "stream_start"
+                    },
+                    {
+                        "source": "tts_EoS",
+                        "target": "stream_end"
+                    }
+                ],
                 "pass_signals": [
+                    {
+                        "source": "tts_SoS",
+                        "target": "item_SoS"
+                    },
+                    {
+                        "source": "tts_EoS",
+                        "target": "item_EoS"
+                    },
                     {
                         "source": "EoS",
                         "target": "EoS"
@@ -475,14 +335,12 @@
                 ],
                 "emit_signals": [],
                 "next_nodes": [-1],
-                "mode": "anchor",
-                "anchor": "audio_data",
-                "behavior": {
-                    "action": {
-                        "extend": false,
-                        "cut": false
-                    }
-                }
+                "model": "flood",
+                "framerate": 30,
+                "chunk_duration_ms": 200,
+                "init_test_text": "test",
+                "init_test_duration_ms": 1000,
+                "humanoid_output": true
             }
         }
     ]

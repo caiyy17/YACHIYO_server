@@ -66,21 +66,6 @@ CONFIGS = {
 
     # configs/unity_chan_humanoid.json
     "unity_chan_humanoid": {
-        "runner": "websocket",
-        "input_type": "audio_file",
-        "expected_streaming": ["text"],
-        "expected_final": [
-            "audio_data",
-            "action",
-            "duration",
-            "text",
-            "action_hint",
-            "expression",
-        ],
-    },
-
-    # configs/unity_chan_humanoid_stream.json
-    "unity_chan_humanoid_stream": {
         "runner": "server_vad",
         "input_type": "audio_chunks",
         "expected_signals": ["recording_start", "recording_end",
@@ -94,8 +79,10 @@ CONFIGS = {
     "unity_chan_live": {
         "runner": "websocket",
         "input_type": "danmaku",
-        "expected_streaming": ["text"],
-        "expected_final": ["audio_data", "action", "duration"],
+        "expected_signals": ["SoS", "item_SoS", "item_EoS", "EoS"],
+        "expected_chunk_fields": ["audio_data", "motion"],
+        "audio_chunk_ms": 200,
+        "motion_frames": 6,
     },
 
     # configs/unity_chan_text.json
@@ -411,8 +398,18 @@ async def run_websocket_pipeline(client_id, spec):
                 }))
                 await asyncio.sleep(0.2)
 
-        _, full_text, final_fields = await receive_until_eos(
-            websocket, spec["expected_final"]
+        collected = spec.get("expected_chunk_fields") or spec["expected_final"]
+        messages, full_text, final_fields = await receive_until_eos(
+            websocket, collected
+        )
+
+    # Streaming-chunk configs share the paired-chunk contract with the
+    # server_vad runner; classic configs assert streamed text + final fields.
+    if "expected_chunk_fields" in spec:
+        total, paired = verify_paired_chunk_output(messages, spec)
+        return (
+            f"{input_type} -> {total} x {spec['audio_chunk_ms']}ms "
+            f"audio chunks ({paired} motion-paired)"
         )
 
     missing = []
@@ -457,48 +454,72 @@ async def run_server_vad_pipeline(client_id, spec):
             websocket, spec["expected_chunk_fields"]
         )
 
+    total, paired = verify_paired_chunk_output(messages, spec)
+    return (
+        f"{len(chunks)} input chunks/{input_duration:.3f}s -> "
+        f"{total} x {spec['audio_chunk_ms']}ms audio chunks "
+        f"({paired} motion-paired)"
+    )
+
+
+def verify_paired_chunk_output(messages, spec):
+    """Assert the streaming-chunk contract on one collected response:
+    expected signal subsequence; within one item span the chunks are
+    either all paired audio+motion or all audio-only (a hint-less
+    sentence passes through without motion by design — mixing is a bug);
+    every chunk carries the exact audio duration, paired chunks the exact
+    motion frame count, and the run must contain at least one paired
+    chunk. Returns (total, paired) chunk counts."""
     signals = [
         message["signal"] for message in messages
         if isinstance(message.get("signal"), str)
     ]
     require_signal_subsequence(spec["expected_signals"], signals)
 
-    output_chunks = [
-        message for message in messages
-        if has_value(message, "audio_data") or has_value(message, "motion")
-    ]
-    if not output_chunks:
-        raise RuntimeError("no paired audio/motion chunks received")
-
-    expected_fields = spec["expected_chunk_fields"]
     expected_duration = spec["audio_chunk_ms"] / 1000
     expected_motion_frames = spec["motion_frames"]
-    for index, chunk in enumerate(output_chunks):
-        missing = [field for field in expected_fields
-                   if not has_value(chunk, field)]
-        if missing:
-            raise RuntimeError(
-                f"output chunk {index} missing paired field(s): "
-                + ", ".join(missing)
-            )
-        duration = wav_duration(chunk["audio_data"])
+    total = paired_total = 0
+    span_index = -1
+    span_kinds = {}
+    for index, message in enumerate(messages):
+        if message.get("signal") == "item_SoS":
+            span_index += 1
+            continue
+        if not (has_value(message, "audio_data")
+                or has_value(message, "motion")):
+            continue
+        total += 1
+        if not has_value(message, "audio_data"):
+            raise RuntimeError(f"message {index} has motion without audio")
+        duration = wav_duration(message["audio_data"])
         if abs(duration - expected_duration) > 1e-6:
             raise RuntimeError(
-                f"output chunk {index} audio is {duration:.6f}s, "
+                f"output chunk (message {index}) audio is {duration:.6f}s, "
                 f"expected {expected_duration:.6f}s"
             )
-        motion = chunk["motion"]
-        if not isinstance(motion, list) or len(motion) != expected_motion_frames:
-            size = len(motion) if isinstance(motion, list) else type(motion).__name__
-            raise RuntimeError(
-                f"output chunk {index} motion size is {size}, "
-                f"expected {expected_motion_frames}"
-            )
-
-    return (
-        f"{len(chunks)} input chunks/{input_duration:.3f}s -> "
-        f"{len(output_chunks)} paired 200ms audio+motion chunks"
-    )
+        paired = has_value(message, "motion")
+        span_kinds.setdefault(span_index, set()).add(paired)
+        if paired:
+            paired_total += 1
+            motion = message["motion"]
+            if not isinstance(motion, list) \
+                    or len(motion) != expected_motion_frames:
+                size = len(motion) if isinstance(motion, list) \
+                    else type(motion).__name__
+                raise RuntimeError(
+                    f"output chunk (message {index}) motion size is {size}, "
+                    f"expected {expected_motion_frames}"
+                )
+    if total == 0:
+        raise RuntimeError("no output chunks received")
+    mixed = [span for span, kinds in span_kinds.items() if len(kinds) > 1]
+    if mixed:
+        raise RuntimeError(
+            f"span(s) {mixed} mix paired and audio-only chunks"
+        )
+    if paired_total == 0:
+        raise RuntimeError("no paired audio+motion chunk in the response")
+    return total, paired_total
 
 
 async def wait_for(predicate, timeout, description):

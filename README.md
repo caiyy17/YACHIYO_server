@@ -58,11 +58,10 @@ Each service runs in its own conda environment. The model services expose OpenAI
 | `demo`                | ASR → LLM → TTS                                                                        | Minimal conversation                               |
 | `loopback`            | FrameCollector → FrameSplitter                                                         | Local WebRTC audio/video/data loopback utility     |
 | `unity_chan_text`     | LLM → DataQuery → DataQuery                                                            | Text-only conversation (no audio)                  |
-| `unity_chan_default`  | ASR → LLM → DataQuery → DataQuery → TTS                                                | Conversation with RAG expression + action matching |
+| `unity_chan_default`  | ASR → LLM → DataQuery → Dispatch → MotionRAG ∥ TTS → Receive → Pad | Conversation with RAG expression + action matching (parallel example) |
 | `unity_chan_webrtc`   | FrameCollector → VAD → ASR → LLM → DataQuery → DataQuery → StreamTTS → VideoChunk → FrameSplitter | Incremental WebRTC audio/video generation |
-| `unity_chan_humanoid` | ASR → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                           | Humanoid motion generation (parallel)                 |
-| `unity_chan_humanoid_stream` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | Streaming conversation with audio-driven motion |
-| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → Dispatch → MotionGen ∥ TTS → Receive                 | VTuber danmaku livestream                          |
+| `unity_chan_humanoid` | ServerVAD → ASR → LLM → DataQuery → StreamTTS → MotionChunk | Streaming conversation with audio-driven motion |
+| `unity_chan_live`     | DanmakuBuffer → LLM → DataQuery → StreamTTS → MotionChunk | VTuber danmaku livestream (streaming chunks) |
 
 ## Node Types
 
