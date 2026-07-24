@@ -6,7 +6,7 @@ A real-time streaming pipeline server for embodied conversational agents. Orches
 
 - **Linearized pipeline** — DAG of processing nodes executed as a sequential queue chain with formal temporal consistency (causal order, internal order, cancellation)
 - **Intra-pipeline streaming** — LLM streams sentences incrementally to TTS; first audio output begins before full generation completes
-- **Parallel execution** — dispatcher-receiver bracket enables concurrent processing of independent branches (e.g., TTS ∥ MotionGen)
+- **Parallel execution** — dispatcher-receiver bracket enables concurrent processing of independent branches (e.g., TTS ∥ motion RAG)
 - **WebSocket & WebRTC** — sentence-level streaming via WebSocket; frame-level (20ms) synchronized streaming via WebRTC with configurable fps/resolution
 - **Service-oriented** — lightweight per-user pipeline instances; compute-heavy models run as shared standalone services (OpenAI-compatible APIs for ASR/LLM/TTS; custom protocols where none exists, e.g. streaming VAD)
 - **Config-driven** — pipelines, models, and characters defined entirely in JSON; swap local/cloud backends by changing one config file

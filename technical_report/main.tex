@@ -266,7 +266,7 @@ Pipelines are validated statically at initialization time, and the validation is
 
 Environment failures are separated from configuration failures. Node initialization is sequential; each node's \texttt{custom\_init} runs under a timeout and records its outcome. A failed init (dependent model service down, bad settings entry) \emph{fails fast}: nodes built so far are killed, the client state is reset to re-initializable, and the endpoint returns HTTP 503 with the failing node and cause --- distinct from the validator's 400 (fix the config) in that a 503 is retryable once the service is back.
 
-Not everything is a signal. When a message's meaning depends on its position in the data flow (\texttt{SoS} before its stream, \texttt{EoS} after the last chunk), it must ride in band as above. But some facts are \emph{session-level}: they reference the past by timestamp or identity alone, and in-band ordering buys them nothing while costing latency and per-hop declarations. These are \emph{events}, delivered out of band on the control plane. Cancellation (Section~\ref{sec:cancel}) is the built-in archetype---its semantics are deliberately order-free (invalidate everything older than $T$). Beyond the built-in verbs (\texttt{cancel}, \texttt{kill}), a pipeline declares its event vocabulary in config, mirroring the signal surface: a top-level \texttt{events} list names the verbs the entry routes to the control plane (also exempting them from the monotonicity check, since events reference the past), and each consuming node declares \texttt{catch\_events} entries---the same explicit one-to-one \texttt{\{source, target\}} format as \texttt{catch\_signals}, renames and null opt-outs included---matched exactly against its class contract \texttt{REQUIRED\_CATCH\_EVENTS}. Delivery is broadcast: the per-pipeline event handler copies the verb into every node's control queue (excluding the emitting node); a node that declared it consumes it through a dedicated hook, every other node skips it silently, and events never touch cancellation state. One pipeline-level check closes the loop: the \texttt{events} list must equal the union of the nodes' wired \texttt{catch\_events} sources, exactly both ways---every declared verb has a catcher, no node catches an undeclared verb. Current event verbs: \texttt{connection\_start} (transport ready; starts clock-driven output) and \texttt{playback\_complete} (the client's playback-pacing acknowledgment).
+Not everything is a signal. When a message's meaning depends on its position in the data flow (\texttt{SoS} before its stream, \texttt{EoS} after the last chunk), it must ride in band as above. But some facts are \emph{session-level}: they reference the past by timestamp or identity alone, and in-band ordering buys them nothing while costing latency and per-hop declarations. These are \emph{events}, delivered out of band on the control plane. Cancellation (Section~\ref{sec:cancel}) is the built-in archetype---its semantics are deliberately order-free (invalidate everything older than $T$). Beyond the built-in verbs (\texttt{cancel}, \texttt{kill}), a pipeline declares its event vocabulary in config, mirroring the signal surface: a top-level \texttt{events} list names the verbs the entry routes to the control plane (also exempting them from the monotonicity check, since events reference the past), and each consuming node declares \texttt{catch\_events} entries---the same explicit one-to-one \texttt{\{source, target\}} format as \texttt{catch\_signals}, renames and null opt-outs included---matched exactly against its class contract \texttt{REQUIRED\_CATCH\_EVENTS}. Delivery is broadcast: the per-pipeline event handler copies the verb into every node's control queue (excluding the emitting node); a node that declared it consumes it through a dedicated hook, every other node skips it silently, and events never touch cancellation state. One pipeline-level check closes the loop: the \texttt{events} list must equal the union of the nodes' wired \texttt{catch\_events} sources, exactly both ways---every declared verb has a catcher, no node catches an undeclared verb. Current event verbs: \texttt{connection\_start} (transport ready; starts clock-driven output) and \texttt{playback\_complete} (the client's playback acknowledgment: it paces batched-input release, and---carrying the \texttt{response\_id}/\texttt{item\_id} of the item that was playing when playback stopped---lets the LLM node truncate the persisted turn to the prefix that was actually heard).
 
 \subsection{Timestamps and Cancellation}
 \label{sec:cancel}
@@ -316,7 +316,7 @@ Adapter nodes bridge the paradigms. The frame $\rightarrow$ event side is a pair
 
 \subsection{Motivation: From Sentence-Level to Frame-Level}
 
-In WebSocket mode, the message boundary is a complete TTS segment ($\sim$0.5--1\,s of audio). The client receives a whole audio clip and then plays it, resulting in a perceptible ``chunk'' rhythm. WebRTC mode re-granularizes the output to frame-level:
+In WebSocket mode, output is organized per sentence: a message carries a complete TTS segment ($\sim$0.5--1\,s of audio) or, in the streaming configurations, one fixed 200\,ms chunk inside the sentence's envelope. Either way the client receives self-contained clips and paces playback itself. WebRTC mode re-granularizes the output to frame-level:
 \begin{itemize}[nosep]
     \item Audio: 20\,ms PCM frames (960 samples at 48\,kHz).
     \item Video: $\sim$33\,ms JPEG frames (30\,fps).
@@ -362,7 +362,7 @@ Video/data rates and video resolution are configurable per session and the GCD c
         \toprule
         \textbf{Aspect} & \textbf{WebSocket} & \textbf{WebRTC} \\
         \midrule
-        Message granularity & Sentence ($\sim$0.5--1\,s) & Frame group (100\,ms) \\
+        Message granularity & Sentence or 200\,ms chunk & Frame group (100\,ms) \\
         Output continuity & Discrete chunks & Continuous stream \\
         Audio format & Base64 WAV & Raw PCM (20\,ms) \\
         Synchronization & Timestamp per message & Atomic frame groups \\
@@ -382,26 +382,28 @@ Pipeline state consists of threads, queues, and per-user context (conversation h
 
 \begin{figure}[h]
     \centering
-    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[System architecture. Unity client $\leftrightarrow$ WebSocket/WebRTC $\leftrightarrow$ FastAPI server $\leftrightarrow$ Standalone services (ASR, LLM, TTS, VectorDB)]}\vspace{2em}}}
+    \fbox{\parbox{0.9\linewidth}{\centering\vspace{2em}\textit{[System architecture. Unity client $\leftrightarrow$ WebSocket/WebRTC $\leftrightarrow$ FastAPI server $\leftrightarrow$ Standalone services (ASR, LLM, TTS, Motion, VAD, VectorDB)]}\vspace{2em}}}
     \caption{System architecture. The client communicates with the pipeline server via WebSocket or WebRTC. The pipeline server orchestrates per-user pipeline instances, each calling shared standalone model services via HTTP APIs.}
     \label{fig:architecture}
 \end{figure}
 
-Each user gets an exclusive pipeline instance (threads, queues, conversation state). Compute-heavy models are deployed as standalone HTTP services:
+Each user gets an exclusive pipeline instance (threads, queues, conversation state). Compute-heavy models are deployed as standalone services:
 \begin{itemize}[nosep]
     \item ASR: Qwen3-ASR server (GPU, vLLM backend)
     \item LLM: vLLM server (GPU)
     \item TTS: Qwen3-TTS server (GPU, faster-qwen3-tts)
+    \item Motion: Flood streaming text-to-motion server (GPU, WebSocket)
+    \item VAD: streaming voice-activity service (silero)
     \item Vector DB: BGE embedding + FAISS server (GPU/CPU)
 \end{itemize}
 
-Pipeline nodes are thin HTTP clients: they create an OpenAI SDK client, call the API, and process the response. Multiple users' pipelines share the same model servers concurrently. The model services expose OpenAI-compatible endpoints, so swapping a local model for a cloud API requires only a configuration change; services with no official API shape (the streaming VAD) use a small custom protocol behind the same settings mechanism.
+Pipeline nodes are thin service clients: they create an OpenAI SDK client (or the service's small custom client), call the API, and process the response. Multiple users' pipelines share the same model servers concurrently. The model services expose OpenAI-compatible endpoints, so swapping a local model for a cloud API requires only a configuration change; services with no official API shape (the streaming VAD, the Flood motion WebSocket, the vector query) use small custom protocols behind the same settings mechanism.
 
 \subsection{Implementation Overview}
 
 The server is implemented in Python 3.12 using FastAPI and uvicorn for HTTP/WebSocket serving, aiortc for WebRTC, and the OpenAI Python SDK for model service calls. Each client follows the lifecycle: \texttt{register} $\rightarrow$ \texttt{init\_pipeline} (from a JSON configuration) $\rightarrow$ \texttt{connect} (WebSocket or WebRTC) $\rightarrow$ pipeline runs $\rightarrow$ \texttt{unregister}. The pipeline is instantiated per-client with a dedicated thread per node and inter-node queues.
 
-The client is built with Unity 6 (C\#) using WebSocket-Sharp and Unity WebRTC for communication, and the Animator controller with blend shapes for character animation. The system comprises $\sim$15 pipeline module types, dynamically discovered via a module registry. All configuration is JSON-based: pipeline configs, dataset configs, and model configs. Deployment uses per-service conda environments with a startup script that launches services sequentially and verifies port readiness.
+The client is built with Unity 6 (C\#) using WebSocket-Sharp and Unity WebRTC for communication, and the Animator controller with blend shapes for character animation. The system comprises $\sim$25 pipeline module types, dynamically discovered via a module registry. All configuration is JSON-based: pipeline configs, dataset configs, and model configs. Deployment uses per-service conda environments with a startup script that launches services sequentially and verifies port readiness.
 
 % ============================================================
 \section{Evaluation}
@@ -477,38 +479,15 @@ The same pipeline framework supports multiple configurations without code change
         \toprule
         \textbf{Config} & \textbf{Pipeline} \\
         \midrule
-        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\times 2$ $\rightarrow$ TTS \\
-        Parallel humanoid & ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\rightarrow$ Dispatch $\rightarrow$ (MotionGeneration $\|$ TTS) $\rightarrow$ Receive $\rightarrow$ Pad \\
+        Conversation & ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\rightarrow$ Dispatch $\rightarrow$ (Motion RAG $\|$ TTS) $\rightarrow$ Receive $\rightarrow$ Pad \\
+        Streaming humanoid & ServerVAD $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\rightarrow$ StreamTTS $\rightarrow$ MotionChunkGeneration \\
+        VTuber livestream & DanmakuBuffer $\rightarrow$ LLM $\rightarrow$ DataQuery $\rightarrow$ StreamTTS $\rightarrow$ MotionChunkGeneration \\
         WebRTC video stream & FrameCollector $\rightarrow$ ServerVAD $\rightarrow$ ASR $\rightarrow$ LLM $\rightarrow$ DataQuery $\times 2$ $\rightarrow$ StreamTTS $\rightarrow$ VideoChunkGeneration $\rightarrow$ FrameSplitter \\
         \bottomrule
     \end{tabular}
 \end{table}
 
 Switching between local and cloud models requires only editing the model JSON configuration file (changing \texttt{api\_base} and \texttt{api\_key}).
-
-\subsection{Motion Generation and Parallel Execution}
-
-An alternative pipeline replaces RAG with a text-to-motion generation service (HY-Motion), which produces SMPLH body parameters from LLM action descriptions. The HY-Motion per-stage latency (mean $\pm$ std over 3 runs): prompt rewriting $127 \pm 10$\,ms, text encoding $53 \pm 1$\,ms, ODE solver (50 steps) $276 \pm 5$\,ms, decode + SMPLH $9 \pm 0$\,ms; end-to-end $884 \pm 36$\,ms.
-
-Since MotionGen and TTS are independent (both consume LLM output), they can be parallelized via the dispatcher--receiver bracket (Section~\ref{sec:parallel}):
-
-\begin{table}[h]
-    \centering
-    \caption{First-audio latency: sequential vs.\ parallel motion generation pipeline (mean $\pm$ std over 3 runs, single RTX 5090).}
-    \label{tab:parallel}
-    \begin{tabular}{lr}
-        \toprule
-        \textbf{Configuration} & \textbf{First Audio (ms)} \\
-        \midrule
-        Sequential (MotionGen $\rightarrow$ TTS) & $1649 \pm 199$ \\
-        Parallel (MotionGen $\|$ TTS) & $1536 \pm 172$ \\
-        \midrule
-        Improvement & $113$\,ms ($\downarrow$6.9\%) \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-The improvement ($113$\,ms, 6.9\%) is modest because the MotionGen service adds $\sim$540\,ms to the pipeline (sequential first audio $1649$\,ms vs.\ standard $1110$\,ms), but TTS ($\sim$875\,ms) still dominates the critical path in the parallel configuration. The theoretical maximum improvement equals the MotionGen latency ($\sim$540\,ms), but is limited by the dispatcher--receiver overhead and the fact that both branches share GPU resources.
 
 % ============================================================
 \section{Discussion and Conclusion}
@@ -717,7 +696,7 @@ Note: \texttt{node\_id} values (1, 3, 6) are non-contiguous but monotonically in
 \paragraph{Motivation.}
 Pipeline nodes communicate with model services via HTTP, which provides environment isolation (each service runs in its own process with its own dependencies). The remaining design choice is the HTTP protocol: a custom API or an existing standard. The OpenAI API has become the de facto standard in the LLM ecosystem---every major model serving framework (vLLM, Ollama, TGI) already implements it, and client SDKs are freely available. Adopting this standard minimizes integration effort: swapping a local model for a cloud API (or vice versa) requires only changing the configuration file, with no code modification.
 
-All standalone services expose OpenAI-compatible endpoints:
+The model services expose OpenAI-compatible endpoints wherever an official API shape exists:
 \begin{itemize}[nosep]
     \item ASR: \texttt{POST /v1/audio/transcriptions} (Whisper API format)
     \item LLM: \texttt{POST /v1/chat/completions} (Chat Completions API format)
@@ -741,7 +720,7 @@ The trade-off is HTTP overhead per call ($\sim$1--10\,ms), which is negligible w
 
 \subsection{Client Architecture}
 
-The Unity client mirrors the server's pipeline design: modules (recording, content, action, audio playback, WebSocket/WebRTC communication) are connected in a sequential queue chain with the same destination-based routing (per-module edge tables sharing the \texttt{-1} exit-vertex convention), timestamp propagation, and cancel-queue mechanism. Signals follow the same four-state declared routing as Section~\ref{sec:signals}: each module's catch/pass lists are serialized scene fields---the client's analogue of the server's pipeline config---with the same consume-then-relay ordering, and undeclared signals dropped loudly. Renaming is deliberately omitted on the client: its chain is short and single-instance, so wire names are simply the module contract names. Contracts mirror the server's per-node validation philosophy: each module declares the signals it cannot function without (\texttt{RequiredCatchSignals}), checked at initialization strictly against the module's own wiring, and any finding or module init failure stops the pipeline with a \texttt{pipeline\_error} event---the client-side counterpart of the server's 400/503 split. Two boundary conventions complete the picture: the network modules' catch lists serve as the per-scene \emph{export manifest} (declaring which client-side signals cross into the remote server pipeline), and after a successful start the client sends a \texttt{pipeline\_ready} message addressed to the exit vertex, whose traversal of every queue doubles as a liveness self-test. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
+The Unity client mirrors the server's pipeline design: modules (recording, content, action, WebSocket/WebRTC communication) are connected in a sequential queue chain with the same destination-based routing (per-module edge tables sharing the \texttt{-1} exit-vertex convention), timestamp propagation, and cancel-queue mechanism. Playback sits behind the chain: action modules only project fields and schedule the audio and humanoid-motion players through a shared player interface, so playback state never lives in the pipeline modules; the content module alone paces standard input and reports \texttt{playback\_complete} (on natural end of playback and on a voiding cancel alike). Signals follow the same four-state declared routing as Section~\ref{sec:signals}: each module's catch/pass lists are serialized scene fields---the client's analogue of the server's pipeline config---with the same consume-then-relay ordering, and undeclared signals dropped loudly. Renaming is deliberately omitted on the client: its chain is short and single-instance, so wire names are simply the module contract names. Contracts mirror the server's per-node validation philosophy: each module declares the signals it cannot function without (\texttt{RequiredCatchSignals}), checked at initialization strictly against the module's own wiring, and any finding or module init failure stops the pipeline with a \texttt{pipeline\_error} event---the client-side counterpart of the server's 400/503 split. Two boundary conventions complete the picture: the network modules' catch lists serve as the per-scene \emph{export manifest} (declaring which client-side signals cross into the remote server pipeline), and after a successful start the client sends a \texttt{pipeline\_ready} message addressed to the exit vertex, whose traversal of every queue doubles as a liveness self-test. This symmetry means the client and server share the same correctness guarantees (temporal consistency, cancellation consistency) without additional coordination logic.
 
 \begin{figure}[h]
     \centering
@@ -757,7 +736,7 @@ A three-state machine governs the interaction flow:
     \item \textbf{Answering}: the client plays back server responses (audio, text, animation) in FIFO order. On \texttt{answering\_end} it returns to Idle; a barge-in (\texttt{listening\_start}) interrupts playback and returns to Listening.
 \end{itemize}
 
-The state machine is purely client-side; the server does not track client state. For motion generation pipelines, retargeting happens on the server: the motion node converts SMPL-H results to an engine-native humanoid format (per-bone rotations keyed by Unity's \texttt{HumanBodyBones}, plus root motion). The client's humanoid motion player only consumes this pre-retargeted format, playing back a continuous frame buffer at the motion's native framerate with crossfade blending between motions and idle auto-refill.
+The state machine is purely client-side; the server does not track client state. For motion generation pipelines, retargeting happens on the server: the motion node converts SMPL-H results to an engine-native humanoid format (per-bone rotations keyed by Unity's \texttt{HumanBodyBones}, plus root motion). The client's humanoid motion player only consumes this pre-retargeted format, playing back a continuous frame buffer at the motion's native framerate: whole motions and the first chunk of a streamed motion crossfade-blend in on injection (the first chunk preserving a configured lead window), later streamed chunks append raw at the plan tail, and idle auto-refills the buffer when it runs low.
 
 \subsection{LLM Workflow}
 
